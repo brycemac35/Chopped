@@ -14,13 +14,29 @@ import sys
 import time
 
 
-def _fix_stdio():
+def _fix_stdio(log_path=None):
     # A PyInstaller --windowed exe has no console, so sys.stdout is None and
-    # the first print() would take the whole game down. Point them somewhere harmless.
+    # the first print() would take the whole game down. Point them somewhere
+    # harmless -- or at --log FILE, which is how CI (and you, when something
+    # breaks on a friend's PC) gets to read what the exe had to say.
+    if log_path:
+        try:
+            f = open(log_path, "w", buffering=1, encoding="utf-8", errors="replace")
+            sys.stdout = sys.stderr = f
+            return
+        except OSError:
+            pass
     if sys.stdout is None:
         sys.stdout = open(os.devnull, "w")
     if sys.stderr is None:
         sys.stderr = open(os.devnull, "w")
+
+
+def _windows_tweaks():
+    # Without this, Windows "helpfully" bitmap-stretches the window on 125%/150%
+    # display scaling and our crisp pixels turn to porridge. SDL reads hints
+    # from same-named environment variables; everywhere else it's ignored.
+    os.environ.setdefault("SDL_WINDOWS_DPI_AWARENESS", "permonitorv2")
 
 
 def parse_args(argv=None):
@@ -35,6 +51,7 @@ def parse_args(argv=None):
     ap.add_argument("--seconds", type=float, default=None, help="selftest/server: seconds to run")
     ap.add_argument("--mute", action="store_true", help="no audio")
     ap.add_argument("--no-upnp", dest="no_upnp", action="store_true", help="don't try UPnP")
+    ap.add_argument("--log", metavar="FILE", help="write all output (and crash tracebacks) to FILE")
     return ap.parse_args(argv)
 
 
@@ -71,6 +88,9 @@ def run_server(args):
 def main(argv=None):
     _fix_stdio()
     args = parse_args(argv)
+    if args.log:
+        _fix_stdio(args.log)
+    _windows_tweaks()
     if args.server:
         return run_server(args)
     if args.selftest:
@@ -79,7 +99,13 @@ def main(argv=None):
     from chopped.game import App, run_selftest
     if args.selftest:
         return run_selftest(args)
-    App(args).run()
+    try:
+        App(args).run()
+    except Exception:
+        import traceback
+        traceback.print_exc()        # lands in --log FILE if given; the exe also shows a dialog
+        sys.stderr.flush()
+        raise
     return 0
 
 

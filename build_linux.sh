@@ -28,11 +28,9 @@ fi
 "$PY" -m pip install $PIPFLAGS -q pygame-ce==2.5.8 pyinstaller==6.22.3
 "$PY" -m pip install $PIPFLAGS -q miniupnpc==2.3.3 || echo "!! miniupnpc failed to install - building without UPnP (game still works)"
 
-"$PY" -m PyInstaller --noconfirm --clean --onefile --windowed --name Chopped \
-  --hidden-import miniupnpc \
-  --collect-submodules chopped \
-  main.py
+"$PY" tools/make_icon.py
+"$PY" -m PyInstaller --noconfirm --clean Chopped.spec
 
-echo "== verifying the binary boots headless"
-SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./dist/Chopped --selftest --frames 300
+echo "== smoke test: headless selftest + a host and a client binary talking over UDP"
+"$PY" tools/smoke_exe.py dist/Chopped
 echo "== built dist/Chopped"

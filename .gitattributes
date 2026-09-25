@@ -1,0 +1,3 @@
+# cmd.exe misreads labels (goto :fail) in LF-only batch files. CRLF it is.
+*.bat text eol=crlf
+*.sh text eol=lf

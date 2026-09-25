@@ -81,11 +81,7 @@ class App:
         self.fullscreen = False
         self.window_size = self._default_window()
         try:
-            # window icon: our lime-green hero hatchback, blown up 2x
-            icon = art.make_car(0, 0, 0x3FFF, 0, 0, 0, 0)
-            canvas = pygame.Surface((32, 32), pygame.SRCALPHA)
-            canvas.blit(pygame.transform.scale(icon, (17, 31)), (8, 1))
-            pygame.display.set_icon(canvas)
+            pygame.display.set_icon(art.make_icon(32))   # same badge as the exe icon
         except Exception:
             pass
         self.screen = pygame.display.set_mode(self.window_size, pygame.RESIZABLE)
@@ -125,7 +121,9 @@ class App:
             dw, dh = pygame.display.get_desktop_sizes()[0]
         except Exception:
             dw, dh = C.DEFAULT_WINDOW
-        k = max(1, min((dw - 60) // W, (dh - 120) // H, 4))
+        # biggest whole-number scale that fits with room for the taskbar; up to
+        # 6x so a DPI-aware window on a 4K laptop isn't postage-stamp sized
+        k = max(1, min((dw - 60) // W, (dh - 120) // H, 6))
         return (W * k, H * k)
 
     # ------------------------------------------------------------------ flow

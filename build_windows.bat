@@ -1,6 +1,9 @@
 @echo off
-REM Builds dist\Chopped.exe (single file, no console window).
+REM Builds dist\Chopped.exe (single file, no console window, with icon).
 REM Needs Python 3.12 from python.org (the "py" launcher): py -3.12 --version
+REM
+REM Don't have Python? You don't need it: every push to GitHub builds the exe
+REM for you (Actions tab -> latest "Windows exe" run -> Chopped-windows artifact).
 setlocal
 cd /d "%~dp0"
 
@@ -23,15 +26,15 @@ if errorlevel 1 (
   python -m pip install pygame-ce==2.5.8 pyinstaller==6.22.3 || goto :fail
 )
 
-python -m PyInstaller --noconfirm --clean --onefile --windowed --name Chopped ^
-  --hidden-import miniupnpc ^
-  --collect-submodules chopped ^
-  main.py || goto :fail
+echo == drawing the icon ^(generated from the game's own sprite code^)
+python tools\make_icon.py || goto :fail
 
-echo == verifying the exe boots (headless selftest, ~5 s)
-start /wait "" dist\Chopped.exe --selftest --frames 300
+python -m PyInstaller --noconfirm --clean Chopped.spec || goto :fail
+
+echo == smoke test: headless selftest + a host and a client exe talking over UDP
+python tools\smoke_exe.py dist\Chopped.exe
 if errorlevel 1 (
-  echo !! selftest failed - the exe may still run; try launching dist\Chopped.exe
+  echo !! smoke test failed - logs are in dist\smoke-logs. The exe may still run; try launching it.
   exit /b 1
 )
 echo.

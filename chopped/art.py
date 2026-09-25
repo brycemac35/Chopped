@@ -12,6 +12,7 @@ import pygame
 from . import config as C
 from . import mapgen as M
 from .parts import SLOT_INDEX, PART_IDS, PART_DEFS
+from .sim import PERSONAL, COP
 
 # ---------------------------------------------------------------------------
 # Palette (~40 colours). Reuse these; resist the urge to invent new greys.
@@ -137,7 +138,7 @@ def _bit(mask, slot):
 def make_car(kind, color_idx, mask, tuned, damage, phase, seed):
     s = pygame.Surface((12, 22), pygame.SRCALPHA)
     f = s.fill
-    if kind == 2:                                   # cop
+    if kind == COP:
         body = (36, 36, 48)
     else:
         body = CAR_COLORS[color_idx % len(CAR_COLORS)]
@@ -166,15 +167,15 @@ def make_car(kind, color_idx, mask, tuned, damage, phase, seed):
     # windshield, roof, rear window, trunk
     f(P["glass"], (2, 7, 8, 2))
     f(shade(P["glass"], 1.15), (3, 7, 3, 1))
-    roof = P["white"] if kind == 2 else shade(body, 0.92)
+    roof = P["white"] if kind == COP else shade(body, 0.92)
     f(roof, (2, 9, 8, 6))
     f(P["glass_d"], (2, 15, 8, 2))
     f(body, (2, 17, 8, 3))
     f(hi, (2, 17, 8, 1))
-    if kind == 0:                                   # personal ride: racing stripes, obviously
+    if kind == PERSONAL:                            # personal ride: racing stripes, obviously
         f((40, 90, 30), (5, 2, 1, 18) if _bit(mask, "Hood") else (5, 7, 1, 13))
         f((40, 90, 30), (6, 2, 1, 18) if _bit(mask, "Hood") else (6, 7, 1, 13))
-    if kind == 2:                                   # light bar
+    if kind == COP:                                 # light bar
         l_on, r_on = (phase == 0), (phase == 1)
         f(P["red"] if l_on else P["red_d"], (3, 11, 3, 2))
         f(P["blue"] if r_on else P["blue_d"], (6, 11, 3, 2))
@@ -187,7 +188,7 @@ def make_car(kind, color_idx, mask, tuned, damage, phase, seed):
     seat_c = P["red_d"] if _bit(tuned, "Seats") else P["wood_d"]
     for slot, x0, xi in (("DoorL", 1, 2), ("DoorR", 9, 9)):
         if _bit(mask, slot):
-            dc = P["white"] if kind == 2 else body
+            dc = P["white"] if kind == COP else body
             f(dc, (x0, 9, 2, 5))
             f(lo, (x0, 8, 2, 1))
             f(lo, (x0, 14, 2, 1))
@@ -239,6 +240,23 @@ def make_car(kind, color_idx, mask, tuned, damage, phase, seed):
             c = s.get_at((x, y))
             if c.a:
                 s.set_at((x, y), shade(c, 0.7))
+    return s
+
+
+def make_icon(size):
+    """Square app icon: the hero hatchback on a dark badge with a gold rim.
+    Used for the window icon and (via tools/make_icon.py) the exe icon.
+    Integer nearest-neighbour scaling only -- smoothed pixel art looks like
+    it went through a car wash."""
+    s = pygame.Surface((size, size), pygame.SRCALPHA)
+    r = max(2, size // 6)
+    pygame.draw.rect(s, P["ink"], (0, 0, size, size), border_radius=r)
+    if size >= 24:
+        pygame.draw.rect(s, P["gold"], (0, 0, size, size), max(1, size // 24), border_radius=r)
+    car = make_car(PERSONAL, 0, (1 << len(SLOT_INDEX)) - 1, 0, 0, 0, 0)
+    k = max(1, int((size * 0.86) // car.get_height()))
+    big = pygame.transform.scale(car, (car.get_width() * k, car.get_height() * k))
+    s.blit(big, ((size - big.get_width()) // 2, (size - big.get_height()) // 2))
     return s
 
 
@@ -540,7 +558,7 @@ class SpriteBank:
         self.shadow_rot = {}
 
     def car(self, kind, color, mask, tuned, damage, phase, seed, ang):
-        key = (kind, color, mask, tuned, damage, phase if kind == 2 else 0, seed if damage else 0)
+        key = (kind, color, mask, tuned, damage, phase if kind == COP else 0, seed if damage else 0)
         base = self.cars.get(key)
         if base is None:
             if len(self.cars) > 400:

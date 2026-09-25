@@ -1,0 +1,114 @@
+# Builds and tests Chopped on every push. The Windows job produces the
+# double-clickable Chopped.exe as a downloadable artifact; pushing a tag like
+# v0.4.0 also publishes it as a GitHub Release (a public download link).
+name: Build
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SDL_VIDEODRIVER: dummy
+  SDL_AUDIODRIVER: dummy
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  tests:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+  windows-exe:
+    name: Windows exe
+    needs: tests
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pyinstaller==6.22.3
+      - name: Draw the icon (generated from the game's sprite code)
+        run: python tools/make_icon.py
+      - name: Build Chopped.exe
+        run: python -m PyInstaller --noconfirm --clean Chopped.spec
+      - name: Smoke test the exe (selftest + host/client over UDP)
+        run: python tools/smoke_exe.py dist/Chopped.exe
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+          Copy-Item dist/Chopped.exe package/
+          @"
+          CHOPPED - co-op car theft for 1-4 crooks
+          ========================================
+
+          Double-click Chopped.exe. No install, no Python needed.
+
+          HOST: pick HOST GAME and tell your friends the IP on screen.
+                The first time, Windows Firewall asks about Chopped: click Allow
+                (tick Private networks). Over the internet, the game tries to open
+                UDP port 27015 on your router itself (UPnP). If the screen says
+                UPNP FAILED, forward UDP 27015 to your PC, or use Tailscale/ZeroTier.
+          JOIN: pick JOIN GAME and type the host's IP.
+
+          Windows SmartScreen may say "Windows protected your PC" because the exe
+          isn't code-signed: click "More info" -> "Run anyway".
+
+          Build: ${{ github.sha }}  (${{ github.ref_name }})
+          "@ | Set-Content -Path package/README.txt -Encoding utf8
+      - name: Upload Chopped.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: Chopped-windows
+          path: package/
+          if-no-files-found: error
+      - name: Upload smoke-test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-logs
+          path: dist/smoke-logs/
+          if-no-files-found: ignore
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: windows-exe
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Chopped-windows
+          path: package
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" package/Chopped.exe package/README.txt \
+            --repo "${{ github.repository }}" --title "Chopped ${{ github.ref_name }}" --generate-notes
