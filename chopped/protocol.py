@@ -13,7 +13,7 @@ import zlib
 
 from . import config as C
 from .parts import SLOTS, PART_INDEX, NO_PART, part_tuned
-from .sim import COP, TUMBLE, CUFFED
+from .sim import COP, TUMBLE, CUFFED, FOOT, DRIVER
 
 MAGIC = b"CH"
 P_JOIN, P_WELCOME, P_REJECT, P_INPUT, P_SNAPSHOT, P_LEAVE, P_SHUTDOWN = range(1, 8)
@@ -23,9 +23,18 @@ JOIN = struct.Struct("<IB")               # nonce, is_local
 WELCOME = struct.Struct("<BII")           # pid, map_seed, nonce
 INPUT = struct.Struct("<IIIBBBB")         # seq, client_ms, ack_event, buttons, use, drop, exit
 
-SNAP_HDR = struct.Struct("<IIBiHHBBBBHBB")
+SNAP_HDR = struct.Struct("<IIBiHHBBBBHBBI")
 # tick, echo_ms, your_pid, cash, rent_ds, debt_ds, heat, witness(|128 cooling),
-# cops, gameover_ds, run, hold_byte, nplayers_total
+# cops, gameover_ds, run, hold_byte, nplayers_total, ack_input (last input seq applied for you)
+
+# Your own physics state at full precision, for client-side prediction. The
+# regular entity rows are 1/16 m fixed point; rewinding to a rounded position
+# and replaying 10 inputs on top of it would make your own car shimmer.
+SELF = struct.Struct("<BBHffffffffHbB")
+# mode (0 none / 1 on foot / 2 driving), hands_used, car_id, x, y, vx, vy, ang, w,
+# stamina, regen_delay, power, pull, flags
+ME_NONE, ME_FOOT, ME_DRIVER = 0, 1, 2
+SF_EXHAUSTED = 1
 COUNTS = struct.Struct("<BBBBB")
 CAR = struct.Struct("<HBBBBHHHHhhHBBB")
 PLAYER = struct.Struct("<BBBBHHhhHBBBH")
@@ -77,9 +86,22 @@ def encode_text(s, maxlen=80):
 
 
 # ---------------------------------------------------------------------------
-def encode_snapshot(world, pid, echo_ms, ack_event):
+def encode_self(world, me):
+    """The SELF block: exactly what the client's Predictor needs to rewind to."""
+    if me is not None and me.state == DRIVER:
+        car = world.cars.get(me.car_id)
+        if car is not None:
+            return SELF.pack(ME_DRIVER, 0, car.id, car.x, car.y, car.vx, car.vy, car.ang, car.w,
+                             0.0, 0.0, min(65535, car.power()), -1 if car.pull < 0 else 1, 0)
+    if me is not None and me.state == FOOT:
+        return SELF.pack(ME_FOOT, me.hands_used(), 0, me.x, me.y, me.vx, me.vy, me.ang, 0.0,
+                         me.stamina, me.regen_delay, 0, 0, SF_EXHAUSTED if me.exhausted else 0)
+    return SELF.pack(ME_NONE, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0)
+
+
+def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
     """Build one client's snapshot. Per-client so we can cull by distance and
-    tuck in their private prompt text."""
+    tuck in their private prompt text and prediction state."""
     me = world.players.get(pid)
     px, py = (me.x, me.y) if me else world.map.garage_center
     cops = sum(1 for c in world.cars.values() if c.kind == COP)
@@ -89,8 +111,9 @@ def encode_snapshot(world, pid, echo_ms, ack_event):
         world.tick & 0xFFFFFFFF, echo_ms & 0xFFFFFFFF, pid, int(world.cash),
         min(65535, max(0, int(world.rent_t * 10))), min(65535, max(0, int(world.debt_t * 10))),
         int(round(world.heat)), wit, cops, min(255, max(0, int(world.gameover_t * 10))),
-        world.run & 0xFFFF, int((me.hold_frac if me else 0) * 255), len(world.players))
-    prompt = encode_text(me.prompt if me else "")
+        world.run & 0xFFFF, int((me.hold_frac if me else 0) * 255), len(world.players),
+        max(0, ack_input) & 0xFFFFFFFF)
+    prompt = encode_text(me.prompt if me else "") + encode_self(world, me)
 
     cars = []
     for car in world.cars.values():
@@ -161,8 +184,8 @@ def encode_snapshot(world, pid, echo_ms, ack_event):
 
 class Snapshot:
     __slots__ = ("tick", "time", "echo_ms", "pid", "cash", "rent", "debt", "heat", "witness",
-                 "cooling", "cops", "gameover", "run", "hold", "nplayers", "prompt",
-                 "cars", "players", "npcs", "pickups", "events", "arrival")
+                 "cooling", "cops", "gameover", "run", "hold", "nplayers", "prompt", "ack_input",
+                 "me", "cars", "players", "npcs", "pickups", "events", "arrival")
 
 
 def _text(data, off):
@@ -174,13 +197,16 @@ def decode_snapshot(payload):
     data = zlib.decompress(payload)
     s = Snapshot()
     (s.tick, s.echo_ms, s.pid, s.cash, rent, debt, s.heat, wit, s.cops, go, s.run, hold,
-     s.nplayers) = SNAP_HDR.unpack_from(data, 0)
+     s.nplayers, s.ack_input) = SNAP_HDR.unpack_from(data, 0)
     s.time = s.tick / C.SIM_HZ
     s.rent, s.debt, s.gameover = rent / 10.0, debt / 10.0, go / 10.0
     s.witness, s.cooling = wit & 127, bool(wit & 128)
     s.hold = hold / 255.0
     off = SNAP_HDR.size
     s.prompt, off = _text(data, off)
+    # (mode, hands_used, car_id, x, y, vx, vy, ang, w, stamina, regen, power, pull, flags)
+    s.me = SELF.unpack_from(data, off)
+    off += SELF.size
     nc, npl, nn, npk, nev = COUNTS.unpack_from(data, off)
     off += COUNTS.size
     s.cars = {}

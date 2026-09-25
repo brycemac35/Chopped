@@ -138,14 +138,17 @@ class App:
         self.server.start()
         if not self.selftest and not getattr(self.args, "no_upnp", False):
             self.upnp = UPnP(self.server.port).start()
-        self.client = Client("127.0.0.1", self.server.port, self.menu.name, local=True)
+        self.client = Client("127.0.0.1", self.server.port, self.menu.name, local=True,
+                             predict=not getattr(self.args, "no_predict", False))
         self.state = "connecting"
         self.connect_started = time.perf_counter()
         self.host_banner_until = time.perf_counter() + 12.0
 
     def join(self, text):
         host, port = parse_addr(text)
-        self.client = Client(host, port, self.menu.name, local=False)
+        lag = max(0.0, getattr(self.args, "fake_lag", 0.0) or 0.0) / 1000.0
+        self.client = Client(host, port, self.menu.name, local=False, fake_lag=lag / 2,
+                             predict=not getattr(self.args, "no_predict", False))
         if self.client.state == "failed":
             self.menu.set_error(self.client.error)
             self.client = None

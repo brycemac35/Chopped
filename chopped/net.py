@@ -20,7 +20,10 @@ from collections import deque
 from . import config as C
 from . import protocol as P
 from .mapgen import CityMap
-from .sim import World, InputState
+from .predict import Predictor
+from .protocol import ME_FOOT, ME_DRIVER
+from .sim import World, InputState, FOOT, DRIVER
+from .protocol import PF_MOVING, PF_SPRINT, PF_EXHAUSTED
 
 
 def _make_socket(bind_host, port):
@@ -224,7 +227,7 @@ class Server:
         for conn in list(self.clients.values()):
             if tick % conn.snap_every:
                 continue
-            pkt = P.encode_snapshot(self.world, conn.pid, conn.echo_ms, conn.ack_event)
+            pkt = P.encode_snapshot(self.world, conn.pid, conn.echo_ms, conn.ack_event, conn.input_seq)
             self.max_packet = max(self.max_packet, len(pkt))
             self._send(pkt, conn.addr)
 
@@ -246,9 +249,17 @@ class View:
 
 
 class Client:
-    def __init__(self, host, port=C.DEFAULT_PORT, name="PLAYER", local=False):
+    def __init__(self, host, port=C.DEFAULT_PORT, name="PLAYER", local=False, fake_lag=0.0,
+                 fake_jitter=0.0, predict=True):
         self.name = name
         self.local = local
+        # --fake-lag: hold every packet this long in each direction, so you can
+        # feel (and test) a 150 ms ping on one PC. Jitter keeps packet order.
+        self.fake_lag = max(0.0, fake_lag)
+        self.fake_jitter = max(0.0, fake_jitter)
+        self._lag_out = deque()
+        self._lag_in = deque()
+        self._lag_rng = random.Random(1)
         self.state = "connecting"
         self.error = ""
         self.pid = None
@@ -277,21 +288,48 @@ class Client:
         self.new_events = []
         self.ping_ms = 0
         self.delay = C.LOCAL_INTERP_DELAY if local else C.INTERP_DELAY
-        self.input_period = 1.0 / (C.SIM_HZ if local else C.INPUT_HZ)
+        self.input_period = 1.0 / C.INPUT_HZ
+        self.predict = predict
+        self.predictor = None
+        self._last_view = None
 
     # ---- networking ---------------------------------------------------------
     def _send(self, data):
+        if self.fake_lag or self.fake_jitter:
+            self._lag_out.append((self._lag_release(self._lag_out), data))
+            return
+        self._send_now(data)
+
+    def _send_now(self, data):
         try:
             self.sock.sendto(data, self.addr)
         except OSError:
             pass
+
+    def _lag_release(self, queue):
+        t = time.perf_counter() + self.fake_lag + self._lag_rng.uniform(0.0, self.fake_jitter)
+        return max(t, queue[-1][0]) if queue else t
+
+    def _receive(self, now):
+        pkts = _recv_all(self.sock)
+        if not (self.fake_lag or self.fake_jitter):
+            return pkts
+        for data, addr in pkts:
+            self._lag_in.append((self._lag_release(self._lag_in), data, addr))
+        while self._lag_out and self._lag_out[0][0] <= now:
+            self._send_now(self._lag_out.popleft()[1])
+        out = []
+        while self._lag_in and self._lag_in[0][0] <= now:
+            _, data, addr = self._lag_in.popleft()
+            out.append((data, addr))
+        return out
 
     def update(self, now=None):
         if now is None:
             now = time.perf_counter()
         if self.state in ("failed", "closed"):
             return
-        for data, addr in _recv_all(self.sock):
+        for data, addr in self._receive(now):
             if addr != self.addr:
                 continue
             h = P.parse_header(data)
@@ -308,6 +346,8 @@ class Client:
                 self.map_seed = seed
                 self.map = CityMap(seed)
                 self.state = "connected"
+                if self.predict:
+                    self.predictor = Predictor(self.map)
             elif ptype == P.P_SNAPSHOT and self.pid is not None:
                 try:
                     snap = P.decode_snapshot(data[off:])
@@ -335,13 +375,23 @@ class Client:
             self.state = "closed"
             self.error = "CONNECTION LOST (NO DATA FOR 10 S)"
             return
-        if now - self.last_input >= self.input_period:
+        # One input per sim tick, on a fixed 60 Hz clock, and the predictor
+        # steps exactly one tick per input -- the same deal the server gets.
+        if self.last_input < 0:
             self.last_input = now
+        due = 0
+        while now - self.last_input >= self.input_period and due < 8:
+            self.last_input += self.input_period
+            due += 1
             self.input_seq += 1
             i = self.inp
             self._send(P.header(P.P_INPUT) + P.INPUT.pack(
                 self.input_seq, ms_now(), self.last_event, i.buttons & 0xFF,
                 i.use_count & 0xFF, i.drop_count & 0xFF, i.exit_count & 0xFF))
+            if self.predictor is not None:
+                self.predictor.push_input(self.input_seq, i.buttons & 0xFF)
+        if now - self.last_input > 0.25:
+            self.last_input = now      # window was dragged / laptop napped: don't machine-gun inputs
 
     def _on_snapshot(self, snap, now):
         if self.latest is not None and snap.tick <= self.latest.tick:
@@ -357,6 +407,8 @@ class Client:
             self.ping_ms = (ms_now() - snap.echo_ms) & 0xFFFFFFFF
             if self.ping_ms > 60000:
                 self.ping_ms = 0
+        if self.predictor is not None:
+            self.predictor.reconcile(snap)
         for seq, kind, payload in snap.events:
             if seq > self.last_event:
                 self.new_events.append((kind, payload))
@@ -369,7 +421,7 @@ class Client:
 
     def leave(self):
         for _ in range(3):
-            self._send(P.header(P.P_LEAVE))
+            self._send_now(P.header(P.P_LEAVE))
         try:
             self.sock.close()
         except OSError:
@@ -412,8 +464,15 @@ class Client:
         v.my_car = None
         if v.me is not None and v.me[12]:
             v.my_car = v.cars.get(v.me[12])
-        # remote clients: pull our own avatar/car forward to the freshest
-        # data (+ tiny extrapolation) so controls feel less mushy
+        pr = self.predictor
+        if pr is not None:
+            if self._last_view is not None:
+                pr.advance(max(0.0, min(0.1, now - self._last_view)))
+            self._last_view = now
+        if pr is not None and v.me is not None and self._apply_prediction(v, pr):
+            return v
+        # no prediction for this state (tumbling, cuffed, riding shotgun):
+        # pull our own avatar/car forward to the freshest data instead
         if not self.local and v.me is not None:
             lat_ext = max(0.0, min(server_now - latest.time, 0.15))
             me_l = latest.players.get(self.pid)
@@ -428,6 +487,33 @@ class Client:
                 row[8] += row[10] * lat_ext
                 v.cars[row[0]] = v.my_car = row
         return v
+
+    def _apply_prediction(self, v, pr):
+        """Swap our own car/avatar in the view for the predicted one."""
+        me = v.me
+        pose = pr.render_pose()
+        if pose is None:
+            return False
+        x, y, ang = pose
+        if pr.mode == ME_DRIVER and me[2] == DRIVER and me[12] == pr.car_id and v.my_car is not None:
+            car = pr.car
+            row = list(v.my_car)
+            row[7], row[8], row[9], row[10], row[11] = x, y, car.vx, car.vy, ang
+            v.cars[row[0]] = v.my_car = row
+            me = list(me)
+            me[4], me[5] = x, y
+            v.players[self.pid] = v.me = me
+            return True
+        if pr.mode == ME_FOOT and me[2] == FOOT:
+            b = pr.body
+            me = list(me)
+            me[4], me[5], me[6], me[7], me[8] = x, y, b.vx, b.vy, ang
+            me[3] = (me[3] & ~(PF_MOVING | PF_SPRINT | PF_EXHAUSTED)) | (PF_MOVING if b.moving else 0) | \
+                (PF_SPRINT if b.sprinting else 0) | (PF_EXHAUSTED if b.exhausted else 0)
+            me[11] = b.stamina
+            v.players[self.pid] = v.me = me
+            return True
+        return False
 
     @staticmethod
     def _blend(latest, a, b, t, ext, ix, iy, ia, ivx, ivy):

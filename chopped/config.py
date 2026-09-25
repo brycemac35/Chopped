@@ -9,7 +9,7 @@ engine and exactly no maths textbooks).
 import math
 
 GAME_TITLE = "Chopped"
-VERSION = 3  # bump when the wire protocol changes so old clients get a polite "no"
+VERSION = 4  # bump when the wire protocol changes so old clients get a polite "no"
 RELEASE = (0, 4, 0)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
 
 # --------------------------------------------------------------------------
@@ -43,13 +43,19 @@ CAMERA_COUNT = 12                # street cameras at intersections
 # --------------------------------------------------------------------------
 DEFAULT_PORT = 27015             # the Source-engine port. Your router has seen things.
 SIM_HZ = 60                      # authoritative physics rate
-INPUT_HZ = 30                    # clients spam inputs this often (inputs are tiny)
+INPUT_HZ = 60                    # one input per sim tick: client-side prediction replays them
+                                 # tick-for-tick, so the server must see every one (~3 KB/s up)
 SNAPSHOT_HZ = 20                 # remote clients get world state this often
 LOCAL_SNAPSHOT_HZ = 60           # the host's own loopback client gets every tick (zero lag for the host)
 INTERP_DELAY = 0.10              # remote entities are drawn 100 ms in the past so there's
                                  # always two snapshots to lerp between even with packet loss
 LOCAL_INTERP_DELAY = 0.034       # loopback: two ticks is plenty
 TIMEOUT_S = 10.0                 # 10 s of silence = you're dead to us
+PREDICT_CORRECT_RATE = 12.0      # 1/s: how fast a prediction miss is smoothed away (~80 ms).
+                                 # Faster looks like a snap, slower looks like you're on ice.
+PREDICT_SNAP_DIST = 4.0          # misses bigger than this (respawn, arrest) teleport instead
+PREDICT_MAX_REPLAY = 90          # ticks of unacknowledged input we keep (1.5 s of ping. Please don't.)
+PREDICT_OBSTACLE_RANGE = 14.0    # other cars this close are simulated as things to bump into
 MAX_PLAYERS = 4
 MAX_PACKET = 1150                # stay under typical MTU minus VPN/PPPoE overhead
 EVENT_KEEP_S = 4.0               # unacked events retried for this long, then we give up

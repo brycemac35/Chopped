@@ -6,6 +6,7 @@ Chopped -- a co-op car-theft chop-shop game. Entry point.
     python main.py --join 1.2.3.4:27015  # join straight away
     python main.py --server              # headless dedicated host (no window)
     python main.py --selftest            # boot headless, bot plays ~5 s, exit 0 if OK
+    python main.py --join 127.0.0.1 --fake-lag 150   # feel a 150 ms ping without leaving the house
 """
 
 import argparse
@@ -52,6 +53,10 @@ def parse_args(argv=None):
     ap.add_argument("--mute", action="store_true", help="no audio")
     ap.add_argument("--no-upnp", dest="no_upnp", action="store_true", help="don't try UPnP")
     ap.add_argument("--log", metavar="FILE", help="write all output (and crash tracebacks) to FILE")
+    ap.add_argument("--fake-lag", dest="fake_lag", type=float, default=0.0, metavar="MS",
+                    help="pretend your ping is MS higher (test prediction on one PC)")
+    ap.add_argument("--no-predict", dest="no_predict", action="store_true",
+                    help="turn off client-side prediction (to compare)")
     return ap.parse_args(argv)
 
 
