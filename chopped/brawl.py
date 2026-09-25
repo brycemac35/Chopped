@@ -121,7 +121,7 @@ class Brawl:
             return False
         n.attack_cd -= dt
         n.ang = math.atan2(dy, dx)
-        if n.armed and d < C.PED_GUN_RANGE and self.map.los(n.x, n.y, q.x, q.y):
+        if n.armed and d < C.PED_GUN_RANGE and self.los(n.x, n.y, q.x, q.y):
             n.vx = n.vy = 0.0
             if n.attack_cd <= 0:
                 n.attack_cd = C.PED_GUN_COOLDOWN
@@ -134,7 +134,7 @@ class Brawl:
         if n.attack_cd <= 0 and q.state in (FOOT, TUMBLE) and q.z < 1.0:
             n.attack_cd = C.BRAWL_PUNCH_COOLDOWN
             self.sfx(S_PUNCH, q.x, q.y)
-            if q.state == FOOT and self.rng.random() < C.BRAWL_HIT_CHANCE:
+            if q.state == FOOT and q.grace_t <= 0 and self.rng.random() < C.BRAWL_HIT_CHANCE:
                 self._hurt_player(q, dx / d * 6, dy / d * 6, C.BRAWL_PUNCH_TUMBLE, BN_HUMBLED)
                 self.toast(self.rng.choice(HUMBLED_LINES) % q.name, T_BAD)
                 took = q.robbed_from.pop(n.id, 0)
@@ -309,6 +309,7 @@ class Brawl:
             who.thrown_by = p.id if throw else None
             who.bowled = 0
             if throw:
+                who.slide_t = C.THROWN_SLIDE_TIME          # ...and they skid when they land
                 self._crime(C.PUNCH_HEAT)
         else:
             who.state = FOOT
@@ -318,6 +319,7 @@ class Brawl:
                 who.z = 1.3
                 self._tumble(who, vx, vy, C.THROWN_TUMBLE)
                 who.vz = vz
+                who.slide_t = C.THROWN_SLIDE_TIME
                 self._banner(who, BN_YEETED)
                 self.toast("%s THREW %s. FRIENDSHIP: OVER." % (p.name, who.name), T_WHITE)
 
@@ -487,7 +489,7 @@ class Brawl:
             break
         for cop in self.cars.values():
             if cop.kind == COP and (cop.x - p.x) ** 2 + (cop.y - p.y) ** 2 < r2 * 2 and \
-                    self.map.los(cop.x, cop.y, p.x, p.y):
+                    self.los(cop.x, cop.y, p.x, p.y):
                 self._crime(C.DANCE_COP_HEAT)
                 if self.rng.random() < 0.2:
                     self.toast("THE POLICE FIND YOUR DANCING OFFENSIVE. +HEAT", T_COP)

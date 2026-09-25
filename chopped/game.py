@@ -343,7 +343,7 @@ class App:
                                                S.T_INFO, time.perf_counter())
                     elif ev.key in (pygame.K_LCTRL, pygame.K_RCTRL):
                         self._fire()
-                    elif pygame.K_1 <= ev.key <= pygame.K_7:
+                    elif pygame.K_1 <= ev.key <= pygame.K_9 and ev.key - pygame.K_1 < S.ARM_COUNT:
                         self._select_weapon(ev.key - pygame.K_1)
                     elif ev.key == pygame.K_q:
                         self._cycle_weapon(1)
@@ -413,7 +413,8 @@ class App:
         if k[pygame.K_SPACE]: b |= S.B_HANDBRAKE
         if k[pygame.K_h]: b |= S.B_HORN
         if k[pygame.K_t]: b |= S.B_TAUNT
-        if k[pygame.K_x] and in_car: b |= S.B_HOP             # (v0.8) hydraulics: boing
+        if k[pygame.K_x]: b |= S.B_HOP                        # (v0.8) hydraulics: boing. (v0.9) on foot: X option
+        if k[pygame.K_c] and not in_car: b |= S.B_BOX         # (v0.9) the cardboard box
         if k[pygame.K_LCTRL] or k[pygame.K_RCTRL] or (self.mouse_grabbed and pygame.mouse.get_pressed()[0]):
             b |= S.B_FIRE                      # held: the haymaker winds up while you hold it
         rel, rely = pygame.mouse.get_rel() if self.mouse_grabbed else (0, 0)

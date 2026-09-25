@@ -28,6 +28,7 @@ class CityMap:
         self.tiles = bytearray([ROAD]) * (n * n)
         self.buildings = []     # (tx, ty, tw, th, style)
         self.lots = []          # (tx, ty, tw, th)
+        self.ramps = []         # (v0.9) (x, y, heading) stunt ramps
         self.parks = []
         self.lamps = []         # (x, y) metres, decorative
         self.cameras = []       # (x, y) metres
@@ -37,6 +38,7 @@ class CityMap:
         self.static_rects = []  # solid rectangles that aren't tiles (benches), metres (x, y, w, h)
         self.precinct_outer = self.precinct_rect = self.gate = None
         self.jail_spawns, self.guard_posts = [], []
+        self.cells, self.cell_doors, self.cell_bars = [], [], []
 
         # ---- choose block types --------------------------------------------
         shop = (C.BLOCKS // 2, C.BLOCKS // 2)
@@ -68,6 +70,7 @@ class CityMap:
                     self._make_buildings(rng, ox, oy)
 
         self._make_parking(rng, shop)
+        self._make_ramps()
         self._make_cameras(rng)
         self._make_lamps()
         self._make_cop_spawns()
@@ -126,6 +129,17 @@ class CityMap:
                 if (x % 2 == 0 and y % 2 == 0) and rng.random() < 0.55:
                     self._set(ox + 1 + x, oy + 1 + y, TREE)
 
+    def _make_ramps(self):
+        """(v0.9) A stunt ramp across the middle of every car park, pointing east or west.
+        (Its own random stream, so adding ramps didn't move a single building.)"""
+        import random
+        r = random.Random(self.seed * 7 + 1)
+        T = C.TILE_M
+        self.ramps = []
+        for (tx, ty, tw, th) in self.lots[:C.RAMP_COUNT]:
+            ang = 0.0 if r.random() < 0.5 else math.pi
+            self.ramps.append(((tx + tw / 2) * T, (ty + th / 2) * T, ang))
+
     def _make_lot(self, rng, ox, oy):
         self._ring(ox, oy)
         inner = C.BLOCK_TILES - 2
@@ -161,8 +175,9 @@ class CityMap:
         # the hand dolly's parking spot, tucked in the north-east corner
         self.dolly_spot = (gx + gw - 2.5, gy + 4.5)
         # the black market: a row of crates along the west wall. Don't ask where they came from.
-        self.market = [(gx + 1.0, gy + 5.0 + k * 1.9, item)
-                       for k, item in enumerate(("pistol", "shotgun", "ammo", "spikes", "roadblock", "banana", "donuts"))]
+        self.market = [(gx + 1.0, gy + 3.2 + k * 1.75, item)
+                       for k, item in enumerate(("pistol", "shotgun", "ammo", "spikes", "roadblock", "banana", "donuts",
+                                                 "chicken", "whoopee", "box"))]
         self.sell_bench = (gx + 5.0, gy, 6.0, 1.6)
         self.tune_bench = (gx + gw - 11.0, gy, 6.0, 1.6)
         self.static_rects.append(self.sell_bench)
@@ -188,11 +203,35 @@ class CityMap:
         self.precinct_outer = (x0 * T, y0 * T, inner * T, inner * T)                          # walls and all
         self.gate = ((door + 0.5) * T, (y0 + inner - 0.5) * T, math.pi / 2)                   # spans x
         px, py, pw, ph = self.precinct_rect
-        self.jail_spawns = [(px + 4 + k * 3.5, py + 3.5) for k in range(4)]
-        self.guard_posts = [(px + 3.0, py + ph - 4.5), (px + pw - 3.0, py + ph - 4.5), (px + pw / 2, py + ph / 2)]
-        self.bail_desk = (px + pw - 5.5, py + 1.0, 4.5, 1.4)
+        # v0.9 (Bryce: "have a small jail cell you need to break out of first"): two barred
+        # cells in the north corners. Bars are thin solid rects (they don't block sight -- it's
+        # a cell, not a cupboard); each cell has a door in its south bars (a TRAP_CELL: punch
+        # it off its hinges, or pick it).
+        cs, dw, t = C.CELL_SIZE, C.CELL_DOOR_W, C.CELL_BAR_T
+        self.cells, self.cell_doors, self.cell_bars = [], [], []
+        for k, cx0 in enumerate((px, px + pw - cs)):
+            self.cells.append((cx0, py, cs, cs))
+            wy = py + cs                                      # the south bars
+            dx0 = cx0 + (cs - dw) / 2
+            bars = [(cx0, wy - t / 2, dx0 - cx0, t), (dx0 + dw, wy - t / 2, cx0 + cs - dx0 - dw, t)]
+            side = cx0 + cs if k == 0 else cx0                # the bars facing the hall
+            bars.append((side - t / 2, py, t, cs + t / 2))
+            self.cell_bars.extend(bars)
+            self.static_rects.extend(bars)
+            self.cell_doors.append((dx0 + dw / 2, wy, math.pi / 2))
+        self.jail_spawns = [(x + cs / 2 + off, py + cs / 2 - 0.5)
+                            for off in (-1.2, 1.2) for (x, _y, _w, _h) in self.cells]
+        self.guard_posts = [(px + 3.0, py + ph - 4.5), (px + pw - 3.0, py + ph - 4.5), (px + pw / 2, py + ph / 2 + 1.5)]
+        self.bail_desk = (px + pw / 2 - 2.25, py + 1.0, 4.5, 1.4)     # in the hall, between the cells
         self.static_rects.append(self.bail_desk)
         self.precinct_exit = ((door + 0.5) * T, (y0 + inner + 0.6) * T)   # the street, just outside
+
+    def cell_at(self, x, y):
+        """Index of the jail cell (x, y) is inside, or -1."""
+        for k, (cx, cy, cw, ch) in enumerate(self.cells):
+            if cx <= x <= cx + cw and cy <= y <= cy + ch:
+                return k
+        return -1
 
     def in_precinct(self, x, y):
         """Inside the police station's walls, lockup side of the gate. (The doorway is

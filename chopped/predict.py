@@ -19,7 +19,7 @@ import math
 from collections import deque
 
 from . import config as C
-from .sim import Physics, Car, Trap, TRAP_BLOCK, TRAP_GATE, drive_input
+from .sim import Physics, Car, Trap, TRAP_BLOCK, TRAP_GATE, TRAP_CELL, TRAP_DOOR, FIXTURES, drive_input
 from .parts import SLOTS, SLOT_INDEX
 from .protocol import ME_NONE, ME_FOOT, ME_DRIVER, SF_EXHAUSTED, SX_NOS
 
@@ -62,7 +62,23 @@ class Body:
 
 def trap_rect(row):
     """Same rect the server uses, from a snapshot TRAP row (id, kind, x, y, ang, life)."""
-    return Trap(row[0], row[1], row[2], row[3], row[4]).rect()
+    t = Trap(row[0], row[1], row[2], row[3], row[4])
+    if row[1] == TRAP_DOOR:
+        t.uses = C.DOOR_W           # (the shop door's width isn't on the wire: there's only one)
+    return t.rect()
+
+
+def trap_row_solid(row):
+    """Trap.solid(), from a row (life decoded to 0..1). Same answer the server gets,
+    or prediction drifts."""
+    k, life = row[1], row[5]
+    if k == TRAP_BLOCK:
+        return True
+    if k in (TRAP_GATE, TRAP_CELL):
+        return life > 0
+    if k == TRAP_DOOR:
+        return life * 255 < C.DOOR_PASSABLE * 255 - 0.5
+    return False
 
 
 def _car_from_row(row, power=100):
@@ -83,6 +99,7 @@ class Predictor(Physics):
         self.cars = {}
         self._rects = []
         self.extra_rects = []            # roadblocks from the snapshot: solid for us too
+        self.tall_rects = []             # (the unjumpable ones: doors, the gate)
         self.mode = ME_NONE
         self.car = None
         self.car_id = 0
@@ -152,8 +169,9 @@ class Predictor(Physics):
             self.err_x = self.err_y = self.err_a = 0.0
             return
         # things to bump into: roadblocks, and other cars near us, as of this snapshot
-        self.extra_rects = [trap_rect(t) for t in snap.traps.values()
-                            if t[1] == TRAP_BLOCK or (t[1] == TRAP_GATE and t[5] > 0)]   # (a shut gate)
+        self.extra_rects = [trap_rect(t) for t in snap.traps.values() if trap_row_solid(t)]
+        self.tall_rects = [trap_rect(t) for t in snap.traps.values()
+                           if t[1] in FIXTURES and trap_row_solid(t)]
         self.cars = {}
         r2 = C.PREDICT_OBSTACLE_RANGE ** 2
         for crow in snap.cars.values():

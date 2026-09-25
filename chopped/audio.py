@@ -222,6 +222,32 @@ class Audio:
         # the streaker: "wheeeee!" (a rising then falling whoop)
         self.sounds[S.S_WHEE] = self._mk(self._tone(0.8, lambda t, p: sq(500 + 700 * math.sin(p * math.pi), t)
                                                     * 0.2 * (1 - p * 0.4)), 0.6)
+        # (v0.9) the roller door: a motor grinding and a chain rattling, then a clunk
+        self.sounds[S.S_DOOR] = self._mk(self._tone(1.3, lambda t, p: (saw(58 + 6 * math.sin(t * 9), t) * 0.25
+                                                                       + rnd.uniform(-1, 1) * 0.12
+                                                                       * (1 if (t * 22) % 1 < 0.4 else 0.3))
+                                                    * min(1, p * 12) * (1 if p < 0.85 else (1 - p) * 6)), 0.6)
+        # (v0.9) a copper's fist on a roller door: BADANG BADANG BADANG
+        self.sounds[S.S_BANG] = self._mk(self._tone(0.9, lambda t, p: (math.sin(2 * math.pi * 70 * t)
+                                                                       + rnd.uniform(-1, 1) * 0.6)
+                                                    * max(0.0, 1 - ((t % 0.3) / 0.12)) ** 2), 0.9)
+        # (v0.9) the rubber chicken: SQUEEEAK (a pitch that bends up then collapses)
+        self.sounds[S.S_SQUEAK] = self._mk(self._tone(0.35, lambda t, p: sq(900 + 900 * math.sin(p * math.pi) - 500 * p, t)
+                                                      * 0.22 * (1 - p) ** 0.4), 0.7)
+        # (v0.9) the whoopee cushion: a longer, more committed version of the fart horn
+        self.sounds[S.S_PFFT] = self._mk(self._fart(1.1), 1.0)
+        # (v0.9) bawk bawk
+        self.sounds[S.S_CLUCK] = self._mk(self._tone(0.4, lambda t, p: saw(620 + 380 * ((t * 9) % 1), t) * 0.2
+                                                     * (1 if (t * 9) % 1 < 0.55 else 0) * (1 - p)), 0.5)
+        # (v0.9) the chicken meets a bumper: one last BAWK and a thud
+        self.sounds[S.S_FEATHERS] = self._mk(self._tone(0.45, lambda t, p: (saw(900 - 600 * p, t) * 0.25 * (1 if p < 0.4 else 0)
+                                                                          + math.sin(2 * math.pi * 60 * t) * 0.5
+                                                                          * (1 if p > 0.4 else 0) * (1 - p))), 0.6)
+        # (v0.9) cash bags hitting the tarmac: a register ka-ching and a flump
+        self.sounds[S.S_CASH] = self._mk(self._tone(0.9, lambda t, p: (math.sin(2 * math.pi * 2093 * t) * 0.3
+                                                                       + math.sin(2 * math.pi * 2637 * t) * 0.2)
+                                                    * max(0.0, 1 - t / 0.5) + rnd.uniform(-1, 1) * 0.3
+                                                    * max(0.0, 1 - abs(t - 0.5) / 0.1)), 0.8)
         # ---- horns (the mod shop sells worse ones), indexed by vehicles.HORN_*
         self.horns = [
             self._mk(self._tone(0.2, lambda t, p: (sq(392, t) + sq(494, t)) * 0.18), 0.9),            # stock
@@ -235,6 +261,8 @@ class Audio:
             self._mk(self._tone(0.8, lambda t, p: (saw(233, t) + saw(294, t) + saw(349, t)) * 0.18), 1.0),  # air horn
             self._mk(self._tone(1.6, lambda t, p: math.sin(2 * math.pi * [784, 659, 698, 784, 880, 784, 698, 659]
                                                            [min(7, int(p * 8))] * t) * 0.35), 0.7),     # ice cream
+            # (v0.9) the stolen cop car's siren: wee-woo wee-woo
+            self._mk(self._tone(1.0, lambda t, p: sq(740 if int(t * 4) % 2 == 0 else 587, t) * 0.25), 0.9),
         ]
         # the ice cream van's endless jingle: an original four-bar music-box tune
         tune = (523, 659, 784, 659, 698, 880, 784, 0, 587, 698, 880, 698, 659, 784, 523, 0)

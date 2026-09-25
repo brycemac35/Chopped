@@ -11,6 +11,7 @@ FOOT, DRIVER, PASSENGER, TUMBLE, CUFFED, CARRIED, DEAD = range(7)
 CIV, PERSONAL, COP, TRAFFIC = range(4)
 LOCKED, BROKEN_IN, RUNNING, DELIVERED = range(4)
 PED, CLOWN, OWNER, OFFICER, GUARD, KEYGUARD, DOG, STREAKER = range(8)
+CHICKEN, MIME = 8, 9                        # (v0.9) why did it cross the road; the man in the invisible box
 LAW = (OFFICER, GUARD, KEYGUARD, DOG)       # (v0.8) on the city's payroll: not witnesses, not wallets
 W_NONE, W_COP, W_PED, W_OWNER, W_CAMERA = range(5)
 
@@ -18,7 +19,8 @@ B_UP, B_DOWN, B_LEFT, B_RIGHT = 1, 2, 4, 8
 B_USE, B_SPRINT, B_HANDBRAKE, B_HORN = 16, 32, 64, 128
 B_FIRE, B_TAUNT = 256, 512          # (v0.7: buttons went 16-bit) fire held = haymaker wind-up; T = dance
 B_JUMP = B_HANDBRAKE                # on foot, Space jumps; in a car it's the handbrake
-B_HOP = 1024                        # (v0.8) X in a car with hydraulics: boing
+B_HOP = 1024                        # (v0.8) X in a car with hydraulics: boing. (v0.9) on foot: the prompt's X
+B_BOX = 2048                        # (v0.9) C: get in (or out of) your cardboard box
 
 # toast colours
 T_WHITE, T_MONEY, T_BAD, T_INFO, T_COP = range(5)
@@ -32,26 +34,36 @@ T_WHITE, T_MONEY, T_BAD, T_INFO, T_COP = range(5)
  S_MOD, S_SPRAY, S_TRUNK, S_WRIGGLE, S_NOS,
  # v0.8
  S_TASER, S_BARK, S_FLASH, S_CONFETTI, S_HYDRO, S_WASTED, S_GATE, S_KEYS, S_CUFF, S_WHISTLE,
- S_WHEE) = range(51)
+ S_WHEE,
+ # v0.9
+ S_DOOR, S_BANG, S_SQUEAK, S_PFFT, S_CLUCK, S_CASH, S_FEATHERS) = range(58)
 # comedy banners (Player.banner, shown big on that player's screen)
 BN_NONE, BN_YEETED, BN_HUMBLED, BN_BONKED, BN_HOMERUN, BN_STRIKE, BN_EJECT, \
-    BN_WASTED, BN_BUSTED, BN_TASED, BN_PANTSED, BN_FREE, BN_SMILE = range(13)
+    BN_WASTED, BN_BUSTED, BN_TASED, BN_PANTSED, BN_FREE, BN_SMILE, BN_BIGAIR = range(14)
 BANNER_TEXT = ("", "YEETED", "HUMBLED", "BONKED", "HOME RUN!", "STRIKE!", "EJECT! EJECT!",
-               "WASTED", "BUSTED", "TASED", "PANTSED", "JAILBREAK!", "SMILE!")
+               "WASTED", "BUSTED", "TASED", "PANTSED", "JAILBREAK!", "SMILE!", "BIG AIR!")
 
-# what's in your hands when you click: keys 1-5
-ARM_FISTS, ARM_PISTOL, ARM_SHOTGUN, ARM_SPIKES, ARM_BLOCK, ARM_BANANA, ARM_DONUT = range(7)
-ARM_NAMES = ("FISTS", "PISTOL", "SHOTGUN", "SPIKE STRIP", "ROADBLOCK", "BANANA PEEL", "BOX OF DONUTS")
+# what's in your hands when you click: keys 1-9
+ARM_FISTS, ARM_PISTOL, ARM_SHOTGUN, ARM_SPIKES, ARM_BLOCK, ARM_BANANA, ARM_DONUT, ARM_CHICKEN, ARM_WHOOPEE = range(9)
+ARM_NAMES = ("FISTS", "PISTOL", "SHOTGUN", "SPIKE STRIP", "ROADBLOCK", "BANANA PEEL", "BOX OF DONUTS",
+             "RUBBER CHICKEN", "WHOOPEE CUSHION")
 ARM_COUNT = len(ARM_NAMES)
 TRAP_SPIKES, TRAP_BLOCK, TRAP_BANANA, TRAP_DONUT, TRAP_GATE, TRAP_SMOKE = range(6)
-SOLID_TRAPS = (TRAP_BLOCK, TRAP_GATE)       # (the gate only while it's shut: see Trap.solid)
+TRAP_CELL, TRAP_DOOR, TRAP_WHOOPEE = 6, 7, 8   # (v0.9) cell doors, the shop's roller door, whoopee cushions
+SOLID_TRAPS = (TRAP_BLOCK, TRAP_GATE, TRAP_CELL, TRAP_DOOR)   # (the doors only while shut: see Trap.solid)
+FIXTURES = (TRAP_GATE, TRAP_CELL, TRAP_DOOR)  # trap-shaped bits of the map: fixed ids, never towed
+INSP_RATTLE, INSP_HONK, INSP_OWNER = 1, 2, 4   # (v0.9) inspect card: trunk loot, clown car, owner nearby
 TRACER_TASER = 7                            # EV_SHOT "weapon" code for a taser's wires
-GEAR_OF_ARM = {ARM_SPIKES: 0, ARM_BLOCK: 1, ARM_BANANA: 2, ARM_DONUT: 3}   # index into Player.gear
+GEAR_OF_ARM = {ARM_SPIKES: 0, ARM_BLOCK: 1, ARM_BANANA: 2, ARM_DONUT: 3, ARM_WHOOPEE: 4}   # index into Player.gear
+TRAP_OF_ARM = {ARM_SPIKES: TRAP_SPIKES, ARM_BLOCK: TRAP_BLOCK, ARM_BANANA: TRAP_BANANA, ARM_DONUT: TRAP_DONUT,
+               ARM_WHOOPEE: TRAP_WHOOPEE}
+GEAR_OF_TRAP = {TRAP_SPIKES: 0, TRAP_BLOCK: 1, TRAP_BANANA: 2, TRAP_DONUT: 3, TRAP_WHOOPEE: 4}
+ARSENAL_LEN = 10                            # bytes of it in the SELF block (see arsenal_owns)
 
 
 def arsenal_owns(arsenal, slot):
-    """Client-side Player.owns(), from the 8-byte arsenal in the SELF block:
-    (weapon, arms bitmask, pistol ammo, shotgun ammo, spikes, roadblocks, bananas, donuts)."""
+    """Client-side Player.owns(), from the arsenal in the SELF block: (weapon, arms bitmask,
+    pistol ammo, shotgun ammo, spikes, roadblocks, bananas, donuts, whoopee cushions, has a box)."""
     if not arsenal:
         return slot == ARM_FISTS
     if slot in GEAR_OF_ARM:
@@ -67,6 +79,10 @@ MARKET = {  # crate -> (label, price)
     "roadblock": ("ROADBLOCK", C.PRICE_ROADBLOCK),
     "banana": ("BANANA PEEL", C.PRICE_BANANA),
     "donuts": ("BOX OF DONUTS", C.PRICE_DONUTS),
+    # v0.9
+    "chicken": ("RUBBER CHICKEN", C.PRICE_CHICKEN),
+    "whoopee": ("WHOOPEE CUSHION", C.PRICE_WHOOPEE),
+    "box": ("CARDBOARD BOX (C: HIDE IN IT)", C.PRICE_BOX),
 }
 
 SLOT_LABEL = {

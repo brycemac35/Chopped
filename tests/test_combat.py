@@ -332,15 +332,15 @@ class TestProtocol(unittest.TestCase):
         w = world()
         p = w.add_player("BRYCE")
         armed(p, shotgun=True)
-        p.gear = [2, 1, 0, 0]
+        p.gear = [2, 1, 0, 0, 0]
         p.weapon = S.ARM_SHOTGUN
         p.x, p.y = street(w)
         p.ang = 0.0
         w._place_trap(p, S.TRAP_SPIKES)
         w.tracer(S.ARM_PISTOL, p.x, p.y, p.x + 10, p.y + 1)
         snap = P.decode_snapshot(P.encode_snapshot(w, p.id, 0, 0)[P.HDR.size:])
-        self.assertEqual(snap.arsenal, (S.ARM_SHOTGUN, p.arms, 24, 10, 1, 1, 0, 0))
-        self.assertEqual(len(snap.traps), 1)
+        self.assertEqual(snap.arsenal, (S.ARM_SHOTGUN, p.arms, 24, 10, 1, 1, 0, 0, 0, 0))
+        self.assertEqual(len([t for t in snap.traps.values() if t[1] not in S.FIXTURES]), 1)
         self.assertEqual(snap.players[p.id][14], S.ARM_SHOTGUN)
         shots = [e for e in snap.events if e[1] == 2]
         self.assertEqual(len(shots), 1)

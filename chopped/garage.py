@@ -19,8 +19,12 @@ import math
 from . import config as C
 from .enums import *  # noqa: F401,F403
 from .entities import TIERS, buy_price
-from .parts import (SLOTS, SLOT_CATEGORY, CATEGORY_SLOTS, PART_DEFS, PART_IDS, PART_INDEX, DOLLY, Part)
+from .parts import (SLOTS, SLOT_CATEGORY, CATEGORY_SLOTS, PART_DEFS, PART_IDS, PART_INDEX, DOLLY, Part,
+                    OPTIONAL_SLOTS)
 from . import vehicles as V
+from .lines import WHOLE_SALE_LINES, DOOR_BANG_LINES
+from .entities import Trap
+from .physics import obb_rect_contact, circle_rect_contact
 
 # ---- menu commands (InputState.menu_op) ----------------------------------------------
 (OP_NONE, OP_CLOSE, OP_INSTALL, OP_BUY, OP_REMOVE, OP_SELL, OP_TAKE, OP_PAINT, OP_LIVERY, OP_HORN,
@@ -349,3 +353,209 @@ def slot_for_category(cat):
 
 def part_def(tid):
     return PART_DEFS[tid]
+
+
+class Appraisal:
+    """(v0.9, Bryce: "i want to inspect the cars before hijacking / breaking in to get a
+    sense of their parts / value"). Look at a car for a moment and you size it up: what's
+    under the bonnet, what gearbox, the shiny bits, how knackered it is, and roughly
+    what it'd fetch in bits. Also: whether something in the boot is rattling."""
+
+    def _inspect_scan(self):
+        if self.tick % C.INSPECT_EVERY:
+            return
+        for p in self.players.values():
+            p.inspect = self._inspect_target(p) if p.state == FOOT and not p.menu and not p.jailed else 0
+
+    def _inspect_target(self, p):
+        best, bd = 0, C.INSPECT_RANGE
+        ca, sa = math.cos(p.ang), math.sin(p.ang)
+        for car in self.cars.values():
+            if car.kind in (COP, PERSONAL) or car.state == DELIVERED:
+                continue
+            dx, dy = car.x - p.x, car.y - p.y
+            if abs(dx) > bd + 3 or abs(dy) > bd + 3:
+                continue
+            d = math.hypot(dx, dy)
+            if d >= bd + car.hl * 0.5:
+                continue
+            fwd = dx * ca + dy * sa
+            if fwd <= 0.3:
+                continue
+            side = abs(-dx * sa + dy * ca)
+            if side > car.hw + 0.6 + fwd * 0.08:             # (roughly: is it under your crosshair?)
+                continue
+            if not self.los(p.x, p.y, car.x, car.y):
+                continue
+            best, bd = car.id, d
+        return best
+
+    def appraise(self, car):
+        """(value, engine part, gearbox part, ecu part, average condition 0..1, best bits
+        [(part)], flags) -- the numbers the inspect card shows."""
+        parts = [pt for pt in car.parts.values() if pt is not None]
+        value = sum(pt.value for pt in parts)
+        value = int(round(value / 10.0)) * 10                 # "about": nobody quotes you to the dollar
+        cond = sum(pt.condition for pt in parts) / len(parts) if parts else 0.0
+        shiny = sorted((pt for pt in parts if pt.category not in ("engine", "trans", "ecu")),
+                       key=lambda pt: -pt.value)
+        best, seen = [], set()
+        for pt in shiny:
+            if (pt.type_id, pt.style) in seen:
+                continue
+            seen.add((pt.type_id, pt.style))
+            best.append(pt)
+            if len(best) == 3:
+                break
+        flags = (INSP_RATTLE if car.trunk else 0) | (INSP_HONK if car.special == "clown" else 0) | \
+                (INSP_OWNER if car.special == "owner" else 0)
+        return (value, car.parts.get("Engine"), car.parts.get("Transmission"), car.parts.get("ECU"), cond,
+                best, flags)
+
+    # ------------------------------------------------------------------ selling it whole
+    def whole_price(self, car):
+        """What the fence pays for the lot, no spanners required: WHOLE_SALE_RATE of the
+        parts, the shell, and a collector's bonus for a complete sports car or 4x4."""
+        parts = [pt for pt in car.parts.values() if pt is not None]
+        complete = all(car.parts.get(s_) is not None for s_ in SLOTS if s_ not in OPTIONAL_SLOTS)
+        m = V.model(car.model)
+        bonus = 0
+        if complete:
+            bonus = C.WHOLE_SALE_SPORTY if m.sporty else C.WHOLE_SALE_4X4 if m.awd else 0
+        return int(sum(pt.value for pt in parts) * C.WHOLE_SALE_RATE) + C.SHELL_VALUE + bonus
+
+    def _sell_whole(self, p, car):
+        if self.cars.get(car.id) is not car or car.state != DELIVERED or car.kind == PERSONAL:
+            return
+        pay = self.whole_price(car)
+        self._spill_trunk(car, 2.0)                           # (the boot's contents are yours: keep them)
+        for pid in car.occupants():
+            q = self.players.get(pid)
+            if q:
+                self._leave_car(q)
+        self._earn(pay)
+        self.sfx(S_SELL, car.x, car.y)
+        self.sfx(S_CONFETTI, car.x, car.y)
+        self.toast(self.rng.choice(WHOLE_SALE_LINES) % (V.model(car.model).name, pay), T_MONEY)
+        del self.cars[car.id]
+
+
+class ShopDoor:
+    """(v0.9) The chop shop gets a roof and a roller door across its whole front.
+    Bryce: "a closable door that blocks cops. but it needs to be opened for you to
+    get in." So: shut, it's a wall -- to cop cars, officers, bullets of sight (they
+    can't see you through it), and to you. E at the door (either side) rolls it up
+    or down; honk within DOOR_REMOTE_R and the remote on your sun visor does it for
+    you. It won't come down on anything: there's a safety sensor, and it beeps."""
+
+    def _init_door(self):
+        self.shop_door = None
+        self.door_goal = 1.0
+        self.door_bang_t = 0.0
+        self.door_beep_t = 0.0
+        gx, gy, gw, gh = self.map.garage_rect
+        t = Trap(C.DOOR_ID, TRAP_DOOR, gx + gw / 2, gy + gh, math.pi / 2)
+        t.uses = C.DOOR_W                  # (Trap.rect reads a door's width from uses)
+        t.open_t = 1.0                     # starts up: open for business
+        self.shop_door = t
+
+    def door_shut(self):
+        d = self.shop_door
+        return d is not None and d.solid()
+
+    def los(self, x0, y0, x1, y1):
+        """map.los, plus the shop door: shut, nobody sees through it."""
+        if not self.map.los(x0, y0, x1, y1):
+            return False
+        d = self.shop_door
+        if d is not None and d.solid() and (y0 - d.y) * (y1 - d.y) < 0:
+            t = (d.y - y0) / (y1 - y0)
+            x = x0 + (x1 - x0) * t
+            if abs(x - d.x) <= C.DOOR_W / 2 + 0.5:
+                return False
+        return True
+
+    def _door_blocked(self):
+        """Anything under the door? Cars (their boxes), people, the dolly."""
+        d = self.shop_door
+        rx, ry, rw, rh = d.rect()
+        rect = (rx, ry - 0.3, rw, rh + 0.6)
+        for car in self.cars.values():
+            if abs(car.y - d.y) < car.hl + 1.0 and rx - car.hl < car.x < rx + rw + car.hl:
+                if obb_rect_contact(car.x, car.y, car.ang, rect, car.hl, car.hw):
+                    return True
+        bodies = [p for p in self.players.values() if p.state in (FOOT, TUMBLE, CUFFED, CARRIED)]
+        bodies.extend(self.npcs.values())
+        bodies.extend(self.dollies.values())
+        for b in bodies:
+            if abs(b.y - d.y) < 1.2 and circle_rect_contact(b.x, b.y, 0.45, rect):
+                return True
+        return False
+
+    def toggle_door(self, who=None, remote=False):
+        d = self.shop_door
+        if d is None:
+            return
+        self.door_goal = 0.0 if self.door_goal > 0.5 else 1.0
+        self.sfx(S_DOOR, d.x, d.y)
+        if who is not None and self.door_goal < 0.5:
+            self.toast("%s IS CLOSING THE SHOP DOOR%s" % (who.name, " (BEEP)" if remote else ""), T_INFO)
+
+    def _update_door(self, dt):
+        d = self.shop_door
+        if d is None:
+            return
+        self.door_bang_t -= dt
+        self.door_beep_t -= dt
+        was = d.solid()
+        if d.open_t != self.door_goal:
+            if self.door_goal < d.open_t and self._door_blocked():
+                self.door_goal = 1.0                     # the sensor: back up it goes
+                if self.door_beep_t <= 0:
+                    self.door_beep_t = 3.0
+                    self.sfx(S_DOOR, d.x, d.y)
+                    self.toast("BEEP BEEP BEEP. SOMETHING'S UNDER THE DOOR.", T_WHITE)
+            step = dt / C.DOOR_TIME
+            if self.door_goal > d.open_t:
+                d.open_t = min(self.door_goal, d.open_t + step)
+            else:
+                d.open_t = max(self.door_goal, d.open_t - step)
+        if d.solid() != was:
+            self._rebuild_trap_rects()
+        if d.solid() and self.door_bang_t <= 0:
+            # cops at the door: they bang on it. They don't have a warrant. (They don't need one.
+            # They just can't open a roller door. Nobody can find the button.)
+            rx, ry, rw, rh = d.rect()
+            for car in self.cars.values():
+                if car.kind == COP and abs(car.y - d.y) < car.hl + 1.5 and rx - 2 < car.x < rx + rw + 2:
+                    self.door_bang_t = C.DOOR_BANG_EVERY
+                    self.sfx(S_BANG, car.x, car.y)
+                    self.toast(self.rng.choice(DOOR_BANG_LINES), T_COP)
+                    break
+            else:
+                for n in self.npcs.values():
+                    if n.kind == OFFICER and abs(n.y - d.y) < 2.0 and rx < n.x < rx + rw:
+                        self.door_bang_t = C.DOOR_BANG_EVERY
+                        self.sfx(S_BANG, n.x, n.y)
+                        self.toast(self.rng.choice(DOOR_BANG_LINES), T_COP)
+                        break
+
+    def _door_interaction(self, p, ax, ay):
+        d = self.shop_door
+        if d is None or abs(ax - d.x) > C.DOOR_W / 2 or abs(ay - d.y) > C.DOOR_REACH or \
+                abs(p.y - d.y) > C.DOOR_REACH + 1.5:
+            return None
+        if d.open_t != self.door_goal:
+            return (None, "THE DOOR'S ROLLING...", 0, None)
+        if self.door_goal > 0.5:
+            return (("door",), "E: ROLL THE SHOP DOOR DOWN (COPS CAN'T GET IN, OR SEE IN)", 0,
+                    lambda: self.toggle_door(p))
+        return (("door",), "E: ROLL THE SHOP DOOR UP", 0, lambda: self.toggle_door(p))
+
+    def _door_remote(self, p, car):
+        """Honk near the shop: the garage remote on your sun visor does its thing."""
+        d = self.shop_door
+        if d is None or car.kind == COP:
+            return
+        if math.hypot(car.x - d.x, car.y - d.y) < C.DOOR_REMOTE_R and d.open_t == self.door_goal:
+            self.toggle_door(p, remote=True)

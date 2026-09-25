@@ -20,7 +20,8 @@ from . import sim as S
 from . import protocol as PR
 from . import fpart as FA
 from .art import P, PixelFont, PLAYER_COLORS, CAR_COLORS, GLYPHS, SKINS, shade
-from .parts import PART_IDS, PART_DEFS, PART_INDEX, NO_PART
+from .parts import PART_IDS, PART_DEFS, PART_INDEX, NO_PART, Part
+from . import vehicles as V
 
 W, H = C.LOW_W, C.LOW_H
 BAR_H = 32
@@ -40,8 +41,10 @@ BIG_GOLD = ((255, 236, 120), (240, 200, 70), (220, 170, 50), (190, 140, 40), (15
 BIG_BLUE = ((170, 200, 255), (130, 170, 255), (90, 130, 240), (60, 100, 210), (40, 70, 170))
 
 
-WEAPON_LABELS = ("HANDS", "PISTOL", "SHOTGUN", "SPIKES", "BLOCKS", "BANANAS", "DONUTS")
+WEAPON_LABELS = ("HANDS", "PISTOL", "SHOTGUN", "SPIKES", "BLOCKS", "BANANAS", "DONUTS", "CHICKEN", "WHOOPEE")
 
+
+INSPECT_CONDITION = ("SCRAP", "ROUGH", "USED", "TIDY", "MINT")
 
 class Pen:
     """Draws in the original 480-wide coordinates and scales to whatever the
@@ -105,6 +108,7 @@ class DoomHud:
         self._panels = {}
         self.look, self.look_t = 0, 0.0
         self.grin_until = 0.0
+        self.insp_id, self.insp_since = 0, 0.0     # (v0.9) the car you're sizing up, and since when
         self.last_cash = None
         self.day_seen = None
         self.day_banner_until = 0.0
@@ -305,6 +309,32 @@ class DoomHud:
             pen.text(self.font, "DONUTS", cx, top + 1, (180, 40, 120), align="center")
             self._fist(pen, cx - 60, vh - 12 + int(bob), skin, sleeve, -1)
             self._fist(pen, cx + 60, vh - 12 + int(bob), skin, sleeve, 1)
+            return
+        if weapon == S.ARM_CHICKEN:
+            # (v0.9) held by the neck. Click and it goes WHAP across the screen, squeaking
+            swing = max(0.0, 1.0 - since / 0.3)
+            ang = -0.6 + 2.2 * math.sin(swing * math.pi) if swing > 0 else -0.35
+            hx, hy = cx + 40, vh - 20 + int(bob)
+            L = 70
+            tx, ty = hx - math.sin(ang) * L, hy - math.cos(ang) * L
+            px, py = math.cos(ang) * 9, -math.sin(ang) * 9
+            yel = (250, 214, 60)
+            pen.poly(yel, [(hx - px * 0.4, hy - py * 0.4), (hx + px * 0.4, hy + py * 0.4),
+                           (tx + px, ty + py), (tx - px, ty - py)])
+            pen.circle(yel, (int(tx), int(ty)), 14)
+            pen.circle((236, 190, 40), (int(tx - px * 0.6), int(ty - py * 0.6)), 6)        # a sad wing
+            pen.fill((230, 60, 40), (int(hx - 4), int(hy - 12), 8, 6))                    # the comb (upside down)
+            pen.fill((240, 150, 40), (int(hx - 3), int(hy - 4), 6, 5))
+            self._fist(pen, hx, vh - 8 + int(bob), skin, sleeve, 1)
+            return
+        if weapon == S.ARM_WHOOPEE:
+            top = vh - 60 + int(bob)
+            pen.circle((240, 110, 170), (cx, top + 20), 26)
+            pen.circle((255, 150, 200), (cx - 8, top + 12), 8)
+            pen.fill((200, 80, 140), (cx + 22, top + 16, 16, 8))                          # the nozzle
+            pen.text(self.font, "PFFT", cx, top + 17, (150, 40, 100), align="center")
+            self._fist(pen, cx - 30, vh - 10 + int(bob), skin, sleeve, -1)
+            self._fist(pen, cx + 30, vh - 10 + int(bob), skin, sleeve, 1)
             return
         if weapon in (S.ARM_SPIKES, S.ARM_BLOCK):
             top = vh - 58 + int(bob)
@@ -532,7 +562,7 @@ class DoomHud:
             elif len(hands) == 1 and PART_DEFS[PART_IDS[hands[0]]][2] == 2:
                 pygame.draw.rect(low, P["gold"], (hx, by + 3, 48, 18), 1)
                 low.blit(self.icons2[hands[0]], (hx + 16, by + 4))
-            elif not hands and info.get("weapon", S.ARM_FISTS) != S.ARM_FISTS and snap.arsenal:
+            elif not hands and info.get("weapon", S.ARM_FISTS) not in (S.ARM_FISTS, S.ARM_CHICKEN) and snap.arsenal:
                 w = info["weapon"]
                 n = snap.arsenal[2] if w == S.ARM_PISTOL else snap.arsenal[3] if w == S.ARM_SHOTGUN \
                     else snap.arsenal[4 + S.GEAR_OF_ARM[w]]
@@ -619,6 +649,8 @@ class DoomHud:
                 self._shop_compass(low, view, info, now)
                 self._car_compass(low, view, info, now)
         self._law_overlay(low, snap, me, now, flash)
+        if not info.get("paused") and not info.get("menu"):
+            self._inspect_card(low, snap, now)
         self._banners(low, snap, me, now, flash)
         self._comedy_banner(low, me, now)
         if now < self.help_until and not info.get("paused") and not info.get("menu"):
@@ -630,6 +662,51 @@ class DoomHud:
             low.blit(self._panel(440, 43, 170), (W // 2 - 220, 30))
             for i, l in enumerate(lines):
                 f.draw(low, l, W // 2, 33 + i * 8, P["white"] if i < 3 else P["gold"], align="center")
+
+    def _inspect_card(self, low, snap, now):
+        """(v0.9) Look at a car and size it up: the engine, the box, the good bits, how
+        rough it is, what it'd fetch. Half a second of looking first -- you're a pro,
+        but you're not psychic."""
+        ins = getattr(snap, "inspect", None)
+        if ins is None:
+            self.insp_id = 0
+            return
+        cid, value, model, eng, trn, ecu, cond, flags, best = ins
+        if cid != self.insp_id:
+            self.insp_id, self.insp_since = cid, now
+        age = now - self.insp_since
+        f = self.font
+        x, y, w = W - 186, 72, 180
+        if age < C.INSPECT_DELAY:
+            low.blit(self._panel(w, 11, 150), (x, y))
+            dots = "." * (1 + int(age * 8) % 3)
+            f.draw(low, "SIZING IT UP" + dots, x + 4, y + 2, P["gold"])
+            return
+        lines = [("%s" % V.model(model).name, P["gold"])]
+        name = lambda tid: PART_DEFS[tid][0].upper() if tid else "NONE (!)"      # noqa: E731
+        lines.append(("ENGINE:  " + name(eng), P["white"] if eng is None or not PART_DEFS[eng][5] else P["money"]))
+        lines.append(("GEARBOX: " + name(trn), P["white"] if trn is None or not PART_DEFS[trn][5] else P["money"]))
+        if ecu is not None and PART_DEFS[ecu][5]:
+            lines.append(("ECU:     " + name(ecu), P["money"]))
+        for k, (tid, style) in enumerate(best):
+            lines.append((("NICE:    " if k == 0 else "         ") + Part(tid, 1.0, style).name.upper(),
+                          P["money"] if style or PART_DEFS[tid][5] else P["white"]))
+        stars = max(1, min(5, int(round(cond * 5))))
+        lines.append(("NICK:    " + "#" * stars + "-" * (5 - stars) + "  " + INSPECT_CONDITION[stars - 1],
+                      P["white"]))
+        lines.append(("WORTH ABOUT $%s IN PARTS" % "{:,}".format(value), P["money"]))
+        if flags & S.INSP_RATTLE:
+            lines.append(("SOMETHING RATTLES IN THE BOOT", P["gold"]))
+        if flags & S.INSP_HONK:
+            lines.append(("...IS THE BOOT HONKING?", (255, 150, 200)))
+        if flags & S.INSP_OWNER:
+            lines.append(("SOMEONE'S WATCHING IT FROM A WINDOW", P["danger"]))
+        shown = min(len(lines), 1 + int((age - C.INSPECT_DELAY) * 40))          # (types itself out)
+        h = 4 + 8 * len(lines)
+        low.blit(self._panel(w, h, 160), (x, y))
+        low.fill(P["gold"], (x, y, w, 1))
+        for i, (text, col) in enumerate(lines[:shown]):
+            f.draw(low, text[:44], x + 4, y + 3 + i * 8, col)
 
     def _law_overlay(self, low, snap, me, now, flash):
         """v0.8: WASTED, the lockup objective, the keys, and the lethal-force warning."""
@@ -649,9 +726,9 @@ class DoomHud:
             return
         oy = 62                                 # (under the toasts, over the action)
         if f2 & PR.PF2_JAILED:
-            low.blit(self._panel(360, 12, 170), (W // 2 - 180, oy - 2))
+            low.blit(self._panel(400, 12, 170), (W // 2 - 200, oy - 2))
             msg = "IN THE LOCKUP: OPEN THE GATE!" if f2 & PR.PF2_KEYS else \
-                "IN THE LOCKUP: KNOCK OUT THE BIG GUARD, TAKE HIS KEYS (OR POST BAIL AT THE DESK)"
+                "LOCKED UP: GET OUT OF THE CELL (PICK IT OR PUNCH IT), THEN THE BIG GUARD'S KEYS. X: BAIL"
             f.draw(low, msg, W // 2, oy, P["gold"], align="center")
         elif f2 & PR.PF2_JUMPSUIT:
             f.draw(low, "ESCAPED CONVICT: GET BACK TO THE SHOP AND CHANGE", W // 2, oy,
@@ -758,7 +835,7 @@ class DoomHud:
         for k in range(S.ARM_COUNT):
             owned = S.arsenal_owns(ars, k)
             col = P["gold"] if k == cur and owned else P["white"] if owned else (70, 68, 76)
-            f.draw(low, str(k + 1), BX // 2 - 30 + k * 10, by + 4, col, scale=1)
+            f.draw(low, str(k + 1), BX // 2 - 36 + k * 9, by + 4, col, scale=1)
         name = S.ARM_NAMES[cur] if S.arsenal_owns(ars, cur) else "FISTS"
         f.draw(low, name, BX // 2, by + 13, P["gold"], align="center")
         f.draw(low, "ARMS", BX // 2, by + 23, P["white"], align="center")
@@ -784,9 +861,11 @@ class DoomHud:
                 low.blit(self.icons_small6[PART_INDEX[tid]], (x0 + 6 + k * 14, by + 12))
             f.draw(low, "TRUNK", cx, by + 23, P["white"], align="center")
             return
-        ars = snap.arsenal or (0, 1, 0, 0, 0, 0, 0, 0)
-        names = ("SPIKES", "BLOCKS", "BANANA", "DONUTS")
-        rows = ["%s x%d" % (names[k], ars[4 + k]) for k in range(4) if len(ars) > 4 + k and ars[4 + k]]
+        ars = snap.arsenal or (0, 1) + (0,) * (S.ARSENAL_LEN - 2)
+        names = ("SPIKES", "BLOCKS", "BANANA", "DONUTS", "WHOOPEE")
+        rows = ["%s x%d" % (names[k], ars[4 + k]) for k in range(5) if len(ars) > 4 + k and ars[4 + k]]
+        if len(ars) > 9 and ars[9]:
+            rows.insert(0, "BOX (C)")
         for i, r in enumerate(rows[:3]):
             f.draw(low, r, cx, by + 2 + i * 7, P["gold"], align="center")
         if not rows:
@@ -890,7 +969,8 @@ class DoomHud:
                   "ENGINES ARE TOO HEAVY TO CARRY: USE THE DOLLY IN THE SHOP",
                   "COPS CAN'T RESIST A BOX OF DONUTS.  RENT IS DUE AT MIDNIGHT AND GOES UP EVERY DAY",
                   "OFFICERS CUFF YOU ON FOOT: PUNCH THEM OR MASH SPACE.  SHOOT AT COPS AND THEY SHOOT BACK",
-                  "BUSTED = THE PRECINCT LOCKUP: KNOCK OUT THE BIG GUARD AND TAKE HIS KEYS",
+                  "BUSTED = A CELL: PICK THE LOCK OR PUNCH THE DOOR, THEN KNOCK OUT THE BIG GUARD FOR HIS KEYS",
+                  "X ON FOOT: THE PROMPT'S OTHER OPTION (BAIL, SELL A CAR WHOLE, ...)",
                   "",
                   "ESC: RESUME        Q: LEAVE TO MAIN MENU"):
             f.draw(low, l, W // 2, y, P["white"], align="center")

@@ -578,8 +578,9 @@ class Physics:
         rects = self._rects
         rects.clear()
         self.map.solid_rects_near(b.x, b.y, r, rects)
-        if b.z < C.HURDLE_HEIGHT:
-            rects.extend(self.extra_rects)             # (jump high enough and you clear a roadblock)
+        # jump high enough and you clear a roadblock. Not a cell door, though (v0.9: the
+        # doors and the gate are tall_rects, which are in extra_rects too, for the cars)
+        rects.extend(self.extra_rects if b.z < C.HURDLE_HEIGHT else self.tall_rects)
         for rect in rects:
             hit = circle_rect_contact(b.x, b.y, r, rect)
             if hit:
@@ -593,8 +594,13 @@ class Physics:
 
     def _body_vs_cars(self, b, r):
         """Circle (a person) vs every car box nearby: shove them out, kill the
-        closing velocity, and report the hardest hit as (rel_speed, car_vx,
-        car_vy, nx, ny) so the caller can decide who goes ragdoll."""
+        closing velocity, and report the hardest hit as (impact, car_vx,
+        car_vy, nx, ny) so the caller can decide who goes ragdoll.
+
+        impact (v0.9) is how fast the CAR's bodywork was moving into you at
+        the point it touched you -- not how fast you were moving into it. A
+        parked car is a wall: sprint into it and you slide round it, you don't
+        fall over. A drifting tail swinging round, on the other hand, counts."""
         result = None
         if b.z > C.CAR_ROOF_Z:
             return None                                # sailing over the traffic
@@ -626,13 +632,16 @@ class Physics:
             nx, ny = nlx * c - nly * s, nlx * s + nly * c
             b.x += nx * pen
             b.y += ny * pen
-            rel = math.hypot(car.vx - b.vx, car.vy - b.vy)
-            vn = (b.vx - car.vx) * nx + (b.vy - car.vy) * ny
+            # the bodywork's own velocity where it touches you (spin included)
+            wx, wy = qx * c - qy * s, qx * s + qy * c           # contact point, relative to the car
+            pvx, pvy = car.vx - car.w * wy, car.vy + car.w * wx
+            impact = max(0.0, pvx * nx + pvy * ny)
+            vn = (b.vx - pvx) * nx + (b.vy - pvy) * ny
             if vn < 0:
                 b.vx -= vn * nx
                 b.vy -= vn * ny
-            if result is None or rel > result[0]:
-                result = (rel, car.vx, car.vy, nx, ny)
+            if result is None or impact > result[0]:
+                result = (impact, pvx, pvy, nx, ny)
         return result
 
 

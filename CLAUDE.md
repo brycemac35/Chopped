@@ -11,7 +11,21 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
 
 ## 1. Status and your tasks, in order
 
-### Where things stand (Sept 25, 2026, session 2, fifth round: v0.8)
+### Where things stand (Sept 25, 2026, session 2, sixth round: v0.9)
+- **v0.9** (Bryce: "make the drifting tighter. the hitbox for the vehicles not moving needs to not hit you while its parked ... add velocity when youre being hit so you slide ... throw people farther. make the cops in the precinct harder to kill, but make it so they cant box you in the corner and spawn trap you ... sell the vehicle whole ... inspect the cars before hijacking / breaking in ... a roof to the chop shop and a closable door that blocks cops. but it needs to be opened for you to get in. add 10 more silly features", then mid-round: "instead of just a big open hall in the precinct have a small jail cell you need to break out of first"). All done:
+  - **Drift, tighter** (`config.py` block around `TIRE_C`/`HANDBRAKE_*`/`DRIFT_ASSIST_*`/`YAW_CAP_K`; the pre-v0.9 values are in git history). Handbrake flick + countersteer peaks ~31-35 degrees (was ~40), back in ~0.5-0.7 s; a held drift settles ~45 (was 60-70).
+  - **People vs cars** (`Physics._body_vs_cars`): the impact is the car's *bodywork point velocity* toward you (spin included), not your own closing speed, so parked cars never floor you. A real hit carries you at the car's speed (`CAR_HIT_CARRY`) plus a kick, then a low-friction skid (`CAR_HIT_SLIDE_*`, `Player.slide_t` / `NPC.slide_t`). Throws: `THROW_PERSON_SPEED` 21 (flat, so bowling still works).
+  - **Cells** (`mapgen._make_precinct`: `cells`, `cell_doors`, `cell_bars`, `cell_at`; `police.py`: `World.cell_traps`, kind `TRAP_CELL`, fixed ids from `CELL_ID_BASE`). You wake up in the emptier cell. Pick the lock (quiet, `CELL_PICK_TIME`), punch the door `CELL_DOOR_HP` times (loud: sets `World.jail_alert`), a crewmate lets you out, or X for bail. **Guards** (`_guard`): grit 4 (+2 for the key guard), up in 3 s, but only the nearest attacks, the rest hold at `GUARD_RING`, a guard steps back `GUARD_BACKOFF` after landing a hit, and `Player.grace_t` (`GETUP_GRACE`, also respected by brawlers) stops chain knockdowns. Quiet escapees aren't noticed until within `GUARD_NOTICE_R`. The bail desk (invisible since v0.8!) is now drawn.
+  - **Fixtures:** the gate, the cell doors and the shop door are trap-shaped (`World.fixtures()`), sent as TRAP rows when near, and solid while shut. They go in `World.tall_rects` as well as `extra_rects`, and `_body_vs_world` uses `tall_rects` for anyone jumping (you can hurdle a roadblock, not a cell door). The predictor mirrors all of it (`predict.trap_row_solid`; TRAP row life decodes to 0..1).
+  - **Sell whole / inspect** (`garage.Appraisal`): X at a delivered car = `whole_price` (70% of parts + shell + collector bonus if complete). Inspect: `_inspect_scan` at 10 Hz sets `Player.inspect`; the SELF block's optional `SB_INSPECT` carries the card; `doomhud._inspect_card` draws it after `INSPECT_DELAY`.
+  - **X on foot** now sends `B_HOP`; `_find_interaction` may return a 5th element, the X action (`alt_tap`).
+  - **Roof + roller door** (`garage.ShopDoor`, `TRAP_DOOR`, `DOOR_*`): the door spans the whole shop front (`DOOR_W`), E toggles, honk within `DOOR_REMOTE_R` toggles, safety sensor, `World.los()` (door-aware, used everywhere `map.los` was) stops witnesses seeing through it, cops bang on it. Client: the door is a raycast "thin wall" on the tile boundary (half-open doors draw over what's behind), the roof is a mode-7 ceiling layer masked by the zbuf, and sprites outside the front edge get clipped (`FPRenderer._roof`, `roof_clip`). About 1 ms per frame near the shop.
+  - **Silly** (`sillies.py` + bits in sim/fp): rubber chicken (`ARM_CHICKEN`, no heat), whoopee cushion (`ARM_WHOOPEE`/`TRAP_WHOOPEE`, officers laugh), cardboard box (`Player.boxed`, `hidden()`, `B_BOX`/C, `PF2_BOX`/`PF2_HIDDEN`, in `speed_mult` so it predicts), steal the cop car while the officer is out (`Car.copcar`, `CX_COPCAR`, `HORN_SIREN`), chickens crossing the road (`CHICKEN`), mimes (`MIME`), stunt ramps (`mapgen.ramps`, cosmetic hang time `Car.air_t`, `CF_AIR`, `BN_BIGAIR`), money trucks (`V.ARMOURED`, `_money_hit`), pigeons and flying hats (client-only, fp.py).
+  - **Fixed in passing:** v0.6's weapon clamp (`inp.weapon <= ARM_BLOCK`) meant keys 6/7 (banana, donuts) never worked from the keyboard; the snapshot now also sheds events (oldest kept) if it's still too big after peds and pickups.
+- **Protocol VERSION 9, RELEASE 0.9.0:** arsenal is 10 bytes (`ARSENAL_LEN`: + whoopee count, + has-box); SELF optional block `SB_INSPECT`; trap kinds `TRAP_CELL`, `TRAP_DOOR`, `TRAP_WHOOPEE`; `PF2_BOX`, `PF2_HIDDEN`; `CX_COPCAR`, `CF_AIR`; `B_BOX`; NPC kinds `CHICKEN`, `MIME`; model `ARMOURED`; sounds up to `S_FEATHERS` (58); banner `BN_BIGAIR`.
+- **Tests:** 199, all OK (v0.9 added `test_v09.py` and a `TestCells` class in `test_police.py`). Game-loop selftest about 51 fps.
+
+### v0.8 (earlier this session)
 - **v0.8** (Bryce: "instead of the cops shooting you lethally right away have them try to handcuff you. then you get taken to the precinct where you have to beat your way out. and also make the objects you interact with have more angles ... if the cops do decide to lethally shoot you that you die, lose a/x % of your money depending on how many people are playing. the drifting feels too loose, please allow the driver to regain control when handbraking. add brakestands, spinning tire sounds and a tachometer ... better engine sounds ... turbo noises ... super chargers and a few more engine options. add riced out cars and 4x4 trucks. also add 10 more funny features"). All done:
   - **Police** (`police.py`, a World mixin): cop cars that catch a crook on foot let an **officer** out (NPC kind `OFFICER`, `Car.officer`); he runs you down and cuffs you (`CUFF_TIME`; mash Space or punch him to break free). **Tasers** from `TASER_HEAT`. **Lethal force only after the crew escalates** (`World.lethal_t`, set by `_escalate` when a gunshot is heard by police, or when a cop/cop car is hit). A lethal hit = `DEAD` state, **WASTED**, crew loses `DEATH_LOSS / players` of its cash.
   - **The precinct**: `mapgen._make_precinct` puts a walled lockup on a block >= `PRECINCT_MIN_BLOCKS` from the shop (new tile `PRECINCT`). Busted -> `CUFFED` for 3 s (mugshot toast from `Player.rap`) -> `_jail`: `Player.jailed`, guards (`GUARD`, `KEYGUARD`). Take the keys off the downed key guard, E at the gate (a `Trap` of kind `TRAP_GATE`, kept in `World.gate_trap`, NOT in `World.traps`; solid while shut, sent as a trap row). Or: a crewmate picks the lock, someone rams it, or bail at the desk. Escapees wear the **orange jumpsuit** (wanted on sight) until they reach the shop.
@@ -22,7 +36,7 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
   - **Silly**: K9 dogs (take your trousers), the streaker (cops chase him instead; tackle him for a reward), speed cameras (fines on your own ride), burnout smoke screens (`TRAP_SMOKE`, block witness sight), hydraulics (mod shop extra, X), pops and bangs + two-step, VTEC toast, mugshot charge sheets, one phone call, orange jumpsuit, delivery confetti.
   - Fixed in passing: every wall sign in the raycaster was mirrored (CHOP SHOP read backwards since v0.5).
 - **Protocol VERSION 8, RELEASE 0.8.0:** car rows +engine byte +drive byte; player rows +flags2 (`PF2_*`); snapshot header +alert byte (`AL_LETHAL`); NPC states `NS_TASER`, `NS_CUFFING`, `NS_RUNOFF`; trap kinds `TRAP_GATE`, `TRAP_SMOKE`; `B_HOP` button.
-- **Tests:** 163, all OK (v0.8 added `test_police.py` and `test_engines.py`). Game-loop selftest about 51 fps.
+- **Tests at v0.8:** 163.
 
 ### v0.7 (earlier this session)
 - **v0.7 is the big one.** Bryce asked for: higher resolution, "realistic drifting", a 3rd-person view when driving, "much more fighting back from the people", more cops, storage in cars, other vehicles, "more randomized car styles so it's worth placing the parts you find on your car", a GTA-style car editor, then "10 more silly features" (throwing parts, picking people up and throwing them, looking up/down, jumping, "ridiculous ideas to make the boys laugh"). All done:
@@ -67,6 +81,7 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
 ### Task 1: Play the exe on a real Windows PC
 1. Download the **Chopped-windows** artifact from the latest green **Build** run (Actions tab). If a future run fails, read the **smoke-logs** artifact.
 2. By hand on a real PC: run `Chopped.exe --host`, then `Chopped.exe --join 127.0.0.1 --name TWO --fake-lag 150`. With prediction the joiner's own car should feel instant. Compare with `--no-predict`.
+   - v0.9 things to feel out: is the drift now too tight or still too loose (`DRIFT_ASSIST_*`, `HANDBRAKE_MU`, `TIRE_C`)? Are the cells too easy to walk out of (`CELL_PICK_TIME`, `GUARD_NOTICE_R`) or the guards too tough (`GUARD_GRIT`, `GUARD_DOWN_TIME`)? Is 70% for a whole car the right trade (`WHOLE_SALE_RATE`)? Is the cardboard box overpowered (`BOX_STILL_TIME`, `BOX_SPEED_MULT`)? Can you hit the ramps at speed without clipping the car park's kerb?
    - v0.8 things to feel out: is the drift assist too strong now (`DRIFT_ASSIST_*`, `YAW_CAP_*`, `COUNTERSTEER_*`)? Do the engine notes sound right on real speakers (`enginesynth.VOICES`)? Is the lockup too hard or too easy (`JAIL_GUARDS`, `GUARD_*`)? Is `DEATH_LOSS` too harsh solo?
    - v0.7 things to feel out: does the drifting feel right with a mouse + keyboard (tuning is `TIRE_*`, `STEER_*`, `WEIGHT_TRANSFER` in config)? Is the chase cam too floaty (`CHASE_*`)? Are 5 cops at 100 heat plus 2 patrols too many? Do brave peds make walking around too dangerous (`BRAVE_CHANCE`)?
 3. Accept the Windows Firewall prompt (Private networks). SmartScreen will warn because the exe is unsigned: click "More info", then "Run anyway".
@@ -94,7 +109,7 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
 ## 2. Hard rules
 - **Networking stays stdlib UDP.** No networking libraries; this keeps PyInstaller packaging trivial. `miniupnpc` is optional and must stay an optional import.
 - **No asset files.** All sprites, textures, the pixel font, sounds and the music are generated in code (`art.py`, `fpart.py`, `audio.py`, `music.py`). Keep it that way unless Bryce says otherwise.
-- **The sim modules must not import pygame:** `sim.py`, `physics.py`, `brawl.py`, `garage.py`, `police.py`, `entities.py`, `enums.py`, `vehicles.py`, `parts.py`, `lines.py` (and the client-side pure modules `drivetrain.py`, `enginesynth.py`). They're the authoritative, testable simulation.
+- **The sim modules must not import pygame:** `sim.py`, `physics.py`, `brawl.py`, `garage.py`, `police.py`, `sillies.py`, `entities.py`, `enums.py`, `vehicles.py`, `parts.py`, `lines.py` (and the client-side pure modules `drivetrain.py`, `enginesynth.py`). They're the authoritative, testable simulation. (`tests/test_v09.py` checks this.)
 - **All tuning numbers live in `chopped/config.py`**, each with a comment explaining why.
 - **Bump `config.VERSION`** whenever the wire protocol changes. Clients with a different version get rejected politely.
 - **Keep packets under `MAX_PACKET` (1150 bytes).** `tests/test_misc.py` checks a worst-case snapshot, rush-hour traffic included.
@@ -103,11 +118,11 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
   ```
   set SDL_VIDEODRIVER=dummy & set SDL_AUDIODRIVER=dummy & python -m unittest discover -s tests -v
   ```
-  (On Linux/macOS: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests -v`.) At handoff (session 2, v0.8): **163 tests, all OK**, and the game-loop selftest ran at about 51 fps.
+  (On Linux/macOS: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests -v`.) At handoff (session 2, v0.9): **199 tests, all OK**, and the game-loop selftest ran at about 51 fps.
 
 ## 3. Architecture (details in README.md)
 - `main.py` is the command line: `--host`, `--join IP[:PORT]`, `--server` (headless), `--selftest`, `--port`, `--name`, `--mute`, `--no-upnp`, `--log FILE`, `--fake-lag MS`, `--no-predict`.
-- **Networking model (protocol VERSION 8):**
+- **Networking model (protocol VERSION 9):**
   - The host runs the simulation at 60 Hz in-process.
   - Clients send one input per 60 Hz tick. One-shot keys are sent as counters, so a lost packet can't eat a tap.
   - The server sends each client its own zlib snapshot at 20 Hz. Far-away peds, pickups and traffic are culled beyond 95 m.
@@ -178,6 +193,15 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
   - **Peds fight back:** `BRAVE_CHANCE` 0.35, `ARMED_CHANCE` 0.3, a hit knocks you down for 0.9 s and empties your hands. Laughing, queueing and carried peds aren't witnesses.
   - Traffic bail behaviour is unchanged from v0.6 (the engine stays running).
   - Big-head mode, the chase camera and pitch are client-side only.
+- **v0.9 decisions, flagged for Bryce** (all tunable in `config.py`):
+  - **Cells:** two, in the lockup's back corners. Picking the lock takes 7 s and is silent; punching the door takes 6 punches and alerts the guards. Guards only fight prisoners who are out of their cells *and* have been noticed. Bail works from the cell with X (so the solo escape hatch is still there).
+  - **Guards:** 4 knockdowns (the key guard 6), back up after 3 s, only one engages at a time, 1.5 s get-up grace for everyone (brawling peds too).
+  - **Selling whole** pays 70% of the parts + the $150 shell, +$400 for a complete sports car / muscle car / rice rocket, +$250 for a complete 4x4. The trunk's contents are spilled for you to keep, not sold.
+  - **Inspect** shows the parts value rounded to $10, and hints at trunk loot, clown cars and angry owners. It works on traffic too.
+  - **The shop door** covers the whole 28 m front (it's drawn as seven bays), starts open, and resets open on SHOP SEIZED. It blocks sight for witnesses both ways. Delivering still needs the car inside the yellow line, so you have to open it to deliver.
+  - **Parked cars never knock you over** on foot. Car hits carry you at the car's speed and skid you for 2.5 s.
+  - **Rubber chicken:** no heat, no rap sheet. **Stealing a cop car:** +30 heat and a "STEALING A POLICE CAR" charge. **Money truck:** +25 heat when the doors burst. **Big air** pays $40/s even if you crash on landing.
+  - **Ramps are cosmetic:** the car's physics stay on the ground (so prediction needs nothing new), it's drawn in the air.
 - **v0.8 decisions, flagged for Bryce** (all tunable in `config.py`):
   - **"lose a/x % of your money"** was read as: the crew loses `DEATH_LOSS` (50%) divided by the number of players (50% solo, 25% for two, 12.5% for four). If he meant each player's full share (100% / players), set `DEATH_LOSS = 1.0`.
   - **When cops go lethal:** only after the crew fires a gun within `COP_HEAR_RANGE` (55 m) of any cop or officer, or hits a cop/cop car with a bullet; it lasts `LETHAL_TIME` (45 s) and refreshes on every shot. The v0.7 "cops shoot at 75 heat" rule is gone (tasers from 50 heat instead).

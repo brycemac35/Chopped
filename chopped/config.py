@@ -9,8 +9,8 @@ engine and exactly no maths textbooks).
 import math
 
 GAME_TITLE = "Chopped"
-VERSION = 8  # bump when the wire protocol changes so old clients get a polite "no"
-RELEASE = (0, 8, 0)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
+VERSION = 9  # bump when the wire protocol changes so old clients get a polite "no"
+RELEASE = (0, 9, 0)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
 
 # --------------------------------------------------------------------------
 # Rendering scale
@@ -133,12 +133,12 @@ PARKED_BRAKE = 12.0              # driverless cars have the handbrake on AND the
 TIRE_GRIP = 1.8                  # arcade tyres: ~1.5 g of cornering. Real road tyres do ~0.9, and
                                  # real city blocks aren't 48 m apart with a chop shop in the middle.
 TIRE_B = 9.0                     # grip curve stiffness: peak grip at ~9 degrees of slip...
-TIRE_C = 1.55                    # ...then it sags to ~70% as you go sideways. That sag is the drift.
+TIRE_C = 1.4                    # ...then it sags to ~70% as you go sideways. That sag is the drift.
 TIRE_LONG = 1.7                  # tyres push/brake harder than they corner (arcade ellipse, not a circle)
 TIRE_VMIN = 2.5                  # m/s: slip angles below this speed are "just parking", not physics
 WHEELSPIN_AT = 0.8               # throttle using more than this share of rear grip starts to spin it up...
-WHEELSPIN_LOSS = 1.8             # ...and lateral grip drops this fast past that point (power oversteer)
-HANDBRAKE_MU = 0.55              # locked rear tyres slide at this share of grip: yank it, the tail comes out
+WHEELSPIN_LOSS = 1.4             # ...and lateral grip drops this fast past that point (power oversteer)
+HANDBRAKE_MU = 0.62              # locked rear tyres slide at this share of grip: yank it, the tail comes out
 HANDBRAKE_DRIVE = 0.35           # (RWD) how much engine still gets through a locked rear. Clutch kick!
 WEIGHT_TRANSFER = 0.5            # 1 = real. Half: you feel the nose dip and the tail squat, but a
                                  # turbo launch doesn't lift the front off the road (arcade tyres
@@ -167,17 +167,17 @@ BANANA_SPIN_TIME = 1.6           # s the rear tyres are on banana
 BANANA_GRIP = 0.12               # what's left of the rear grip while they are
 # v0.8, Bryce: "the drifting feels too loose, please allow the driver to regain control when
 # handbraking". The tyres are the same; these help your hands (see Physics._drift_assist).
-DRIFT_ASSIST_START = 0.30        # rad (~17 degrees) of slide before the assist wakes up: small slides are yours
-DRIFT_ASSIST_YAW = 5.0           # rad/s^2 per rad past that, turning the nose toward where you're going
-DRIFT_ASSIST_DAMP = 6.0          # 1/s: how fast rotation that makes the slide WORSE is bled off
-DRIFT_ASSIST_INTO = 0.45         # share of the help you still get while steering INTO the slide
+DRIFT_ASSIST_START = 0.24        # rad (~17 degrees) of slide before the assist wakes up: small slides are yours
+DRIFT_ASSIST_YAW = 7.0           # rad/s^2 per rad past that, turning the nose toward where you're going
+DRIFT_ASSIST_DAMP = 8.0          # 1/s: how fast rotation that makes the slide WORSE is bled off
+DRIFT_ASSIST_INTO = 0.55         # share of the help you still get while steering INTO the slide
 DRIFT_ASSIST_MIN_SPEED = 4.0     # m/s: below this it's parking, not drifting
 COUNTERSTEER_FROM = 0.12         # rad (~7 degrees) of slide before countersteer is "catching a slide"...
 COUNTERSTEER_MARGIN = 0.08       # ...and then the wheels go this far past the direction of travel, no more
-YAW_CAP_K = 1.4                  # yaw-rate cap, as a multiple of what the tyres hold in a steady turn...
+YAW_CAP_K = 1.25                  # yaw-rate cap, as a multiple of what the tyres hold in a steady turn...
 YAW_CAP_INTO = 1.6               # ...times this while you're steering with the rotation...
 YAW_CAP_RATE = 8.0               # ...and excess rotation is bled off this fast (1/s)
-HANDBRAKE_MAX_YAW = 2.4          # rad/s: a handbrake yank swings the tail, it doesn't make a spinning top
+HANDBRAKE_MAX_YAW = 2.0          # rad/s: a handbrake yank swings the tail, it doesn't make a spinning top
 AWD_FRONT_SHARE = 0.4            # 4x4s send this much of the push to the front wheels
 BURNOUT_MAX_SPEED = 4.0          # m/s: above this, W+S together is just braking
 BURNOUT_CREEP = 0.35             # m/s: a brake stand still crawls forward. That's the fun part.
@@ -272,8 +272,10 @@ THROW_WEAR = 0.08                # condition lost per bonk: throwing parts isn't
 GRAB_RANGE = 1.6                 # m from your aim point to pick someone up (G)
 CARRY_STRUGGLE = 7.0             # s before a carried pedestrian wriggles free
 WRIGGLE_PRESSES = 5              # Space presses for a carried crewmate to break free
-THROW_PERSON_SPEED = 13.0        # m/s. Olympic hammer throwers weep.
-THROW_PERSON_LIFT = 4.5
+THROW_PERSON_SPEED = 21.0        # m/s (v0.9, "throw people farther": was 13). Hammer throwers weep.
+THROWN_SLIDE_TIME = 0.8          # s a thrown person skids on landing (the bowling needs the roll-out)
+THROW_PERSON_LIFT = 4.5          # ...and up, but only a little: a flat throw stays under 2 m (bowling
+                                 # height) the whole way. ~13 m of flight, then a skid: ~25 m all in
 THROWN_TUMBLE = 3.0              # s a thrown person spends rethinking things
 BOWL_R = 1.0                     # m: a flying person knocks down anyone this close
 STRIKE_COUNT = 3                 # people knocked over by one flying person = STRIKE!
@@ -311,7 +313,13 @@ CRASH_EJECT_DV = 11.0            # everybody out, the fun way
 CRASH_WHEEL_DV = 18.7            # wheels have left the chat
 CRASH_COOLDOWN = 0.35            # sustained scraping shouldn't count as 20 crashes per second
 TUMBLE_MIN, TUMBLE_MAX = 1.2, 4.0
-BODY_HIT_SPEED = 5.0             # cars faster than this relative to you = you go ragdoll
+BODY_HIT_SPEED = 5.0             # bodywork moving INTO you faster than this = you go ragdoll (v0.9: a
+                                 # parked car is a wall; your own sprint into it doesn't count)
+CAR_HIT_CARRY = 1.0              # (v0.9) you leave with all of the car's speed...
+CAR_HIT_KICK = 2.5               # ...plus a shove away from the bumper...
+CAR_HIT_KICK_PER = 0.25          # ...that grows with the impact
+CAR_HIT_SLIDE_DECAY = 0.8        # 1/s: then you SLIDE (tarmac is not a mattress. Neither is it grippy.)
+CAR_HIT_SLIDE_TIME = 2.5         # s of low-friction skid before normal tumble friction takes over
 COP_IGNITE_REL_SPEED = 25.0      # T-bone a cop harder than this and it catches fire
 COP_BURN_TIME = 3.0
 EXPLOSION_RADIUS = 7.0
@@ -375,10 +383,21 @@ OFFICER_GUN_ACCURACY = 0.33
 DEATH_LOSS = 0.5
 DEATH_TIME = 4.0                 # s of WASTED before you wake up at the shop
 # the precinct (v0.8): busted = locked up. Punch your way out, or get broken out.
+CELL_SIZE = 6.0                  # m: the cells are 6 x 6 m, in the lockup's north corners
+CELL_DOOR_W = 2.0                # the cell door: 2 m of bars in the middle of the south side...
+CELL_BAR_T = 0.3                 # ...and every bar wall is this thick
+CELL_DOOR_HP = 6                 # punches to bend it off its hinges (LOUD: the guards come running)
+CELL_PICK_TIME = 7.0             # s to pick the lock with a paperclip (quiet: nobody notices)
+CELL_OPEN_TIME = 1.5             # s for a crewmate in the hall to let you out
+CELL_ID_BASE = 65400             # the cell doors' fixed entity ids (new_id never goes above 65000)
+GUARD_NOTICE_R = 7.0             # m: a quiet escapee this close to a guard gets noticed
 JAIL_GUARDS = 3                  # guards in the lockup (one of them has the keys)
-GUARD_DOWN_TIME = 4.0            # s a punched guard stays down
+GUARD_DOWN_TIME = 3.0            # s a punched guard stays down (v0.9: they get up quicker...)
 GUARD_KO_TIME = 25.0             # s once they've had enough (after GUARD_GRIT knockdowns)
-GUARD_GRIT = 2
+GUARD_GRIT = 4                   # ...and take twice the beating (v0.9, "harder to kill"; the key guard +2)
+GUARD_RING = 4.5                 # m: only ONE guard fights you at a time; the rest wait this far off
+GUARD_BACKOFF = 1.4              # s a guard steps back after landing a punch (no pinning you in a corner)
+GETUP_GRACE = 1.5                # s after you get up before anyone may knock you down again
 GUARD_RESET_TIME = 30.0          # s with nobody locked up before the guards get back on their feet
 GATE_OPEN_TIME = 8.0             # s the gate stays open after the keys turn
 GATE_SMASH_TIME = 15.0           # s a rammed gate stays (in pieces, so: open)
@@ -455,6 +474,33 @@ PUNCH_RANGE = 1.9                # metres from you, in front of you
 PUNCH_CONE = 0.8                 # radians either side of where you look
 PUNCH_COOLDOWN = 0.4
 PUNCH_KNOCKDOWN = 3.0            # a punched pedestrian stays down this long: long enough to rob
+# ---- (v0.9) the silly department, round three ---------------------------------------------
+CHICKEN_COOLDOWN = 0.45          # the rubber chicken: a touch slower than a jab (it's floppy)...
+CHICKEN_KNOCK = 10.0             # ...but it shoves twice as hard (it's the surprise more than the chicken)
+CHICKEN_KNOCKDOWN = 2.0          # s on the floor, reconsidering everything
+WHOOPEE_R = 0.55                 # m: step here and PFFFFT
+WHOOPEE_USES = 3                 # it's a quality cushion
+WHOOPEE_LAUGH_R = 14.0           # m: everyone within earshot loses it...
+WHOOPEE_LAUGH_TIME = 3.5         # ...for this long. Officers too (they're only human): free escape
+BOX_SPEED_MULT = 0.35            # shuffling along inside a cardboard box
+BOX_STILL_TIME = 0.6             # s stood still before you're convincingly just a box. Move and you're not
+COPCAR_STEAL_TIME = 2.0          # s of E at a cop car whose officer's out chasing somebody
+COPCAR_STEAL_HEAT = 30.0         # it's a police car. They notice that
+CHICKEN_EVERY = (20.0, 45.0)     # s between chickens crossing the road near the crew
+CHICKEN_SPEED = 2.4              # a determined waddle
+CHICKEN_MAX = 3
+MIME_COUNT = 2                   # mimes in town. Not witnesses (what would they say?)
+MIME_SPEED = 1.1
+RAMP_COUNT = 4                   # stunt ramps, in the car parks
+RAMP_LEN = 3.2                   # m long (up the slope)...
+RAMP_W = 3.4                     # ...and wide enough for a van with its eyes shut
+RAMP_MIN_SPEED = 14.0            # m/s up the ramp for BIG AIR (about 31 mph)
+RAMP_AIR_PER_MS = 0.045          # s of hang time per m/s (30 m/s = 1.35 s: long enough to scream)
+RAMP_BONUS_PER_S = 40            # $ per second airborne. The crowd loves it. The suspension doesn't
+MONEY_TRUCK_CHANCE = 0.06        # share of new traffic that's an armoured money truck
+MONEY_TRUCK_HITS = 5             # bullets (a hard ram counts double) before the back doors pop
+MONEY_TRUCK_BAGS = (3, 5)        # bags of cash that fall out the back
+MONEY_TRUCK_HEAT = 25.0          # robbing an armoured car is Noticed
 PUNCH_PLAYER_TUMBLE = 1.0        # punching your mate just knocks them over. Co-op!
 PUNCH_HEAT = 5.0                 # they scream. People hear.
 ROB_TIME = 0.8                   # rifling through a wallet, hold E
@@ -487,6 +533,9 @@ PRICE_SPIKES = 120
 PRICE_ROADBLOCK = 200
 PRICE_BANANA = 40                # a banana peel. Cars spin out, people fall over. Classic.
 PRICE_DONUTS = 30                # a box of donuts: throw it and every cop nearby takes a break
+PRICE_CHICKEN = 25               # (v0.9) a rubber chicken. Squeaks. Floors people. Not legally a weapon
+PRICE_WHOOPEE = 15               # (v0.9) a whoopee cushion: lay it down, wait for someone to step on it
+PRICE_BOX = 40                   # (v0.9) a cardboard box. Stand still in it and you're furniture
 PISTOL_AMMO = 24
 SHOTGUN_AMMO = 10
 MAX_AMMO = 99
@@ -526,6 +575,29 @@ DEBT_GRACE = 120.0               # two minutes in the red and the landlord chang
 GAMEOVER_BANNER = 6.0
 SHELL_VALUE = 150
 CRUSH_DOLLY_FRACTION = 0.5
+# (v0.9) selling a delivered car whole, X at the car (Bryce: "add the ability to sell the vehicle
+# whole"). 70% of what the parts would fetch one at a time, plus the shell: you trade ~30% of the
+# money for not spending two minutes with a spanner and a dolly. A complete sports car or 4x4
+# fetches a collector's bonus on top -- that's the "is it worth stripping?" decision.
+WHOLE_SALE_RATE = 0.7
+WHOLE_SALE_SPORTY = 400
+WHOLE_SALE_4X4 = 250
+# (v0.9) inspecting a car you're looking at (Bryce: "i want to inspect the cars before hijacking /
+# breaking in to get a sense of their parts / value"): within this range, crosshair on it
+INSPECT_RANGE = 12.0             # m: across the street, not across town
+INSPECT_EVERY = 6                # ticks between looks (10 Hz is plenty for "what am I looking at")
+# (v0.9) the chop shop's roof and roller door (Bryce: "add a roof to the chop shop and a closable
+# door that blocks cops. but it needs to be opened for you to get in")
+ROOF_H = 6.0                     # m: the roof sits on the shop's 6 m walls
+DOOR_W = (BLOCK_TILES - 2) * TILE_M   # the whole front of the shop: seven bays' worth of roller door
+DOOR_T = 0.4                     # m thick (it's a door, not a wall: it doesn't need to be much)
+DOOR_TIME = 1.4                  # s to roll all the way up or down. Slow enough to be dramatic in a chase
+DOOR_PASSABLE = 0.96             # fraction up before it stops being solid (i.e. only when it's UP)
+DOOR_ID = 65510                  # its fixed entity id (new_id never goes above 65000)
+DOOR_REMOTE_R = 30.0             # m: honk within this of the door to open/close it (the remote on your visor)
+DOOR_REACH = 2.2                 # m: how close your aim has to be to the door to press its button
+DOOR_BANG_EVERY = 4.0            # s between "POLICE! OPEN UP!" toasts (they will bang on it all day)
+INSPECT_DELAY = 0.45             # s of looking before the card comes up (a glance at a car isn't a survey)
 SELL_TIME = 0.5                  # (v0.5: halved)
 INSTALL_TIME = 1.5               # (v0.5: halved)
 PICKUP_TIME = 0.3

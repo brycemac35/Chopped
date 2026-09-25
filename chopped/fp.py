@@ -30,6 +30,8 @@ GNOME_IDX = PART_IDS.index("gnome")
 
 T = C.TILE_M
 FLOOR_PPM = 4
+ROOF_PPM = 8                  # (v0.9) the shop roof's texture: sharper than the street, it's right above you
+ROOF_KEY = (255, 0, 255)      # "no roof here" in the roof layer
 TWO_PI = 2 * math.pi
 
 # particle kinds (same idea as render.py, but in 3D)
@@ -83,6 +85,20 @@ class FPRenderer:
         for bx, by, bw, bh in (cmap.sell_bench, cmap.tune_bench):
             self.floor_map.fill(P["concrete"], (int(bx * FLOOR_PPM) - 2, int(by * FLOOR_PPM) - 2,
                                                 int(bw * FLOOR_PPM) + 6, int(bh * FLOOR_PPM) + 6))
+        if getattr(cmap, "bail_desk", None) is not None:      # (and the precinct desk: it's 3D too)
+            bx, by, bw, bh = cmap.bail_desk
+            self.floor_map.fill(FA.PRECINCT_LINO, (int(bx * FLOOR_PPM) - 2, int(by * FLOOR_PPM) - 2,
+                                                  int(bw * FLOOR_PPM) + 6, int(bh * FLOOR_PPM) + 12))
+        # (v0.9) the shop has a roof now: its floor is in the shade
+        gx, gy, gw, gh = cmap.garage_rect
+        shadow = pygame.Rect(int(gx * FLOOR_PPM), int(gy * FLOOR_PPM), int(gw * FLOOR_PPM), int(gh * FLOOR_PPM))
+        self.floor_map.fill((200, 200, 212), shadow, special_flags=pygame.BLEND_RGB_MULT)
+        self.roof_tex = FA.roof_texture(gw, gh, ROOF_PPM).convert()
+        self.roof_tex.set_colorkey(ROOF_KEY)
+        self.roof_layer = pygame.Surface((vw, vh)).convert()
+        self.roof_layer.set_colorkey(ROOF_KEY)
+        self.roof_clip = None         # per column: (depth where the roof ends, screen row it ends on)
+        self.door_open = 1.0          # the shop's roller door: 0 down .. 1 up (from its TRAP row)
         self.sky_h = int(vh * 0.95)   # tall enough to look up into
         self.skies = {k: FA.make_sky(k, 4 * vw, self.sky_h) for k in FA.SKY_KEYS}
         self.hires = None             # the car the chase camera is following: drawn in more detail
@@ -105,6 +121,11 @@ class FPRenderer:
         self._fog_key = None
         self.person_keys = {}
         self.pops = set()             # cars that backfired since the last frame
+        # (v0.9) cosmetic sillies: hats knocked off, pigeons, cars in the air
+        self.hat_off = set()          # npc ids whose hat is in the road now
+        self.flying_hats = []         # [x, y, z, vx, vy, vz, spin, style, life]
+        self.air_t0 = {}              # car id -> (time it left the ramp, hang time)
+        self._init_pigeons()
 
     # ------------------------------------------------------------------ setup
     def _build_walls(self):
@@ -147,6 +168,17 @@ class FPRenderer:
                     sign = x - (mid - 1) if (y == oy and mid - 1 <= x <= mid + 1) else -1
                     self.wall_of[y * n + x] = def_id(("brick", sign))
         self.edge_def = def_id(("concrete",))
+        # (v0.9) the roller door: not a tile, a line between the shop's last covered row and the
+        # apron. The ray march checks for it when it steps across that line (see _walls)
+        self.door_rows = (oy + b - 2, oy + b - 1)
+        self.door_cols = (ox + 1, ox + b - 2)
+        first = (b - 2 - 3) // 2                       # HONK TO OPEN, across the middle three bays...
+        self.door_defs = []
+        for k in range(b - 2):
+            sign = 1 if first <= k < first + 3 else 0
+            self.door_defs.append(def_id(("door", k, sign, first)))
+            if sign:                                   # ...on the street side only
+                self.inner_plain[def_id(("door", k, 1, first))] = def_id(("door", k, 0, first))
 
     def _wall_tex(self, did, night):
         key = (did, night)
@@ -162,6 +194,14 @@ class FPRenderer:
                     sign.fill((30, 60, 150))
                     self.font.draw(sign, "POLICE", FA.TEX // 2, 2, P["white"], None, align="center")
                     surf.blit(sign, (0, 14))
+            elif d[0] == "door":
+                surf = FA.roller_door(d[1], night)
+                first = d[3]
+                if d[2]:
+                    sign = pygame.Surface((FA.TEX * 3, 9), pygame.SRCALPHA)
+                    self.font.draw(sign, "HONK TO OPEN", FA.TEX * 3 // 2, 1, (250, 232, 80), (0, 0, 0),
+                                   align="center")
+                    surf.blit(sign, (-(d[1] - first) * FA.TEX, 18))
             elif d[0] == "brick":
                 surf = FA.brick_wall(48, night, sign=d[1] >= 0)
                 if d[1] >= 0:
@@ -179,7 +219,7 @@ class FPRenderer:
             return d[2] * FA.FLOOR_M
         if d[0] == "precinct":
             return 8.0
-        return 6.0
+        return C.ROOF_H                     # the shop's walls (and its door) hold up its roof
 
     def _build_static_sprites(self):
         cm = self.map
@@ -208,6 +248,22 @@ class FPRenderer:
         for rect, is_sell in ((cm.sell_bench, True), (cm.tune_bench, False)):
             bx, by, bw, bh = rect
             self.benches.append((bx + bw / 2, by + bh / 2, is_sell, bw, bh))
+        # (v0.9) the precinct: cell bars in short straight runs, and the front desk
+        self.bar_segs = []
+        for (bx, by, bw, bh) in getattr(cm, "cell_bars", ()):
+            along_x = bw > bh
+            length = bw if along_x else bh
+            n = max(1, int(math.ceil(length / 2.0)))
+            seg = length / n
+            for k in range(n):
+                if along_x:
+                    self.bar_segs.append((bx + (k + 0.5) * seg, by + bh / 2, math.pi / 2, round(seg, 2)))
+                else:
+                    self.bar_segs.append((bx + bw / 2, by + (k + 0.5) * seg, 0.0, round(seg, 2)))
+        self.desk = None
+        if getattr(cm, "bail_desk", None) is not None:
+            bx, by, bw, bh = cm.bail_desk
+            self.desk = (bx + bw / 2, by + bh / 2, bw, bh)
 
     # ------------------------------------------------------------------ sprites
     def _car_sprite(self, row, az, steps=None, ppm=12):
@@ -216,7 +272,11 @@ class FPRenderer:
          model, livery, extras, extras2) = row[:19]
         idx = int(round(az / (TWO_PI / steps))) % steps
         lights = 0
-        if kind == S.COP and not extras2 & PR.CX_PATROL:
+        if extras2 & PR.CX_COPCAR:
+            kind = S.COP                                 # (v0.9) nicked, but it still looks the part...
+            if flags & PR.CF_HORN:
+                lights |= self._phase                    # ...and the siren's the horn now
+        elif kind == S.COP and not extras2 & PR.CX_PATROL:
             lights |= self._phase
         if flags & PR.CF_ALARM and self._phase:
             lights |= 2
@@ -243,8 +303,13 @@ class FPRenderer:
                 k = ((250, 250, 250), (250, 240, 235), (255, 120, 40), "clown", None)
             elif kind == S.OWNER:
                 k = ((236, 150, 190), r.choice(SKINS), r.choice(HAIRS), "owner", None)
+            elif kind == S.MIME:
+                k = ((240, 240, 240), (246, 246, 246), (20, 20, 24), None, "mime")
             else:
-                k = (r.choice(SHIRTS), r.choice(SKINS), r.choice(HAIRS), None, self.OUTFIT_OF.get(kind))
+                outfit = self.OUTFIT_OF.get(kind)
+                if kind == S.PED and r.random() < 0.35:
+                    outfit = "hat%d" % r.randrange(FA.CIV_HATS)      # (v0.9) and it'll come off
+                k = (r.choice(SHIRTS), r.choice(SKINS), r.choice(HAIRS), None, outfit)
             self.person_keys[(eid, kind)] = k
         return k
 
@@ -349,6 +414,15 @@ class FPRenderer:
             self.burst(SPARK, x, y, 1.2, 6, 3, 0.2)
         elif sid in (S.S_PISTOL, S.S_SHOTGUN) and d < 1.0:
             self.shake = max(self.shake, 2.5 if sid == S.S_SHOTGUN else 1.0)    # your own shot
+        elif sid == S.S_FEATHERS:
+            self.burst(CONFETTI, x, y, 0.5, 26, 5, 2.4, (246, 244, 236))    # (v0.9) feathers. So many feathers
+            self.burst(CONFETTI, x, y, 0.5, 4, 4, 1.5, (220, 40, 40))
+        elif sid == S.S_CASH:
+            self.burst(CONFETTI, x, y, 1.4, 30, 6, 2.0, P["money"])
+        elif sid == S.S_PFFT:
+            self.burst(DUST, x, y, 0.2, 8, 1.5, 0.9)
+        if sid in (S.S_PISTOL, S.S_SHOTGUN, S.S_BOOM, S.S_HONK, S.S_CRASH_BIG, S.S_PFFT):
+            self._scare_pigeons(x, y, 30.0)
 
     def on_shot(self, weapon, x0, y0, x1, y1):
         """A bullet's path, from the server. A streak, sparks where it landed."""
@@ -388,7 +462,11 @@ class FPRenderer:
         surf = self.view
         self._sky(surf, yaw, tod)
         self._floor(surf, cx, cy, yaw, eye, dark)
+        for t in getattr(view, "traps", {}).values():
+            if t[1] == S.TRAP_DOOR:
+                self.door_open = t[5]
         self._walls(surf, cx, cy, yaw, eye, dark, night)
+        self._roof(surf, cx, cy, yaw, eye)
         self._sprites(surf, view, cx, cy, yaw, eye, me_pid, now, dt, dark, night, bank, hide_car)
         self._tracers(surf, cx, cy, yaw, eye, dt)
         self._particles(surf, cx, cy, yaw, eye, dt)
@@ -472,6 +550,11 @@ class FPRenderer:
         base_level = int(dark * 5)
         mx0, my0 = int(cx // T), int(cy // T)
         fx0, fy0 = cx / T - mx0, cy / T - my0
+        up = self.door_open
+        door_on = up < 0.98                                  # (all the way up: nothing to hit)
+        dra, drb = self.door_rows
+        dc0, dc1 = self.door_cols
+        door_defs = self.door_defs
         for x, k in enumerate(self.ray_k):
             dx, dy = ca + rx * k, sa + ry * k
             mx, my = mx0, my0
@@ -487,6 +570,7 @@ class FPRenderer:
                 sy, sdy = 1, (1.0 - fy0) * ddy
             did = 0
             side = 0
+            door_at = None
             for _ in range(160):
                 if sdx < sdy:
                     sdx += ddx
@@ -496,6 +580,14 @@ class FPRenderer:
                     sdy += ddy
                     my += sy
                     side = 1
+                    if door_on and dc0 <= mx <= dc1 and ((sy > 0 and my == drb) or (sy < 0 and my == dra)):
+                        # the shop's roller door, across the front
+                        if up <= 0.01:
+                            did = door_defs[mx - dc0]      # (all the way down: it's a wall)
+                            break
+                        # half up: remember it, keep marching to whatever's behind it, and draw
+                        # the door over that afterwards (so the gap under it isn't sky)
+                        door_at = (door_defs[mx - dc0], (sdy - ddy) * T)
                 if 0 <= mx < n and 0 <= my < n:
                     did = wall_of[my * n + mx]
                     if did:
@@ -505,6 +597,8 @@ class FPRenderer:
                     break
             if not did:
                 zbuf[x] = 1e9
+                if door_at is not None:
+                    self._door_slice(surf, x, dx, dy, door_at, cx, cy, eye, base_level, night)
                 continue
             dist = ((sdx - ddx) if side == 0 else (sdy - ddy)) * T
             if dist < 0.05:
@@ -521,6 +615,7 @@ class FPRenderer:
             H = self.wall_height(did)
             level = base_level + int(dist / 11.0) + side
             col = wt.cols[level if level < FA.SHADES else FA.SHADES - 1][u]
+            th = wt.h
             top = hor - (H - eye) * D / dist
             bot = hor + eye * D / dist
             h = bot - top
@@ -531,15 +626,124 @@ class FPRenderer:
             else:
                 # up close: only scale the part of the texture that's on screen
                 y0, y1 = max(0.0, top), min(float(vh), bot)
-                t0 = (y0 - top) / h * wt.h
-                t1 = (y1 - top) / h * wt.h
-                ti0 = int(t0)
-                ti1 = max(ti0 + 1, min(wt.h, int(math.ceil(t1))))
+                if y1 <= y0:
+                    continue
+                t0 = (y0 - top) / h * th
+                t1 = (y1 - top) / h * th
+                ti0 = min(th - 1, int(t0))
+                ti1 = max(ti0 + 1, min(th, int(math.ceil(t1))))
                 piece = col.subsurface((0, ti0, 1, ti1 - ti0))
                 # stretch so texel edges land where they should
-                py0 = top + ti0 / wt.h * h
-                ph = (ti1 - ti0) / wt.h * h
+                py0 = top + ti0 / th * h
+                ph = (ti1 - ti0) / th * h
                 blit(scale(piece, (1, max(1, int(ph)))), (x, int(py0)))
+            if door_at is not None:
+                self._door_slice(surf, x, dx, dy, door_at, cx, cy, eye, base_level, night)
+
+    def _door_slice(self, surf, x, dx, dy, door_at, cx, cy, eye, base_level, night):
+        """A half-open roller door, drawn over whatever the ray found behind it."""
+        did, dist = door_at
+        dist = max(0.05, dist)
+        self.zbuf[x] = min(self.zbuf[x], dist)
+        u = int(((cx + dist * dx) % T) / T * FA.TEX)
+        if dy > 0:
+            u = FA.TEX - 1 - u                 # (the same flip rule as the walls: side 1)
+        if did in self.inner_plain and not dy < 0:
+            did = self.inner_plain[did]
+        wt = self._wall_tex(did, night)
+        H = self.wall_height(did)
+        level = min(FA.SHADES - 1, base_level + int(dist / 11.0) + 1)
+        col = wt.cols[level][u]
+        th = wt.h
+        cut = min(th - 1, int(self.door_open * th))
+        col = col.subsurface((0, cut, 1, th - cut))
+        hor, vh, D = self.hor, self.vh, self.D
+        top = hor - (H - eye) * D / dist
+        bot = hor - (self.door_open * H - eye) * D / dist
+        y0, y1 = max(0, int(top)), min(vh, int(bot))
+        if y1 - y0 < 1:
+            return
+        if top >= 0 and bot <= vh:
+            surf.blit(pygame.transform.scale(col, (1, y1 - y0)), (x, y0))
+        else:
+            h = bot - top
+            t0 = int((y0 - top) / h * (th - cut))
+            t1 = max(t0 + 1, min(th - cut, int(math.ceil((y1 - top) / h * (th - cut)))))
+            piece = col.subsurface((0, t0, 1, t1 - t0))
+            surf.blit(pygame.transform.scale(piece, (1, y1 - y0)), (x, y0))
+
+    def _roof(self, surf, cx, cy, yaw, eye):
+        """(v0.9) The shop's roof: a mode-7 ceiling, the floor trick upside down. Drawn
+        after the walls, but only where it's nearer than them (a tall building seen out
+        of the front of the shop is behind the roof's edge, not in front of it). From
+        outside you only see it through the front, and only if the door's up."""
+        self.roof_clip = None
+        gx, gy, gw, gh = self.map.garage_rect
+        inside = gx <= cx <= gx + gw and gy <= cy <= gy + gh
+        if not inside:
+            if cy < gy + gh or self.door_open < 0.3 or abs(cx - (gx + gw / 2)) > 60 or cy > gy + gh + 45:
+                return
+        rh = C.ROOF_H - eye
+        if rh <= 0.2:
+            return
+        hor, vw, D, th = self.hor, self.vw, self.D, self.tanh
+        ca, sa = math.cos(yaw), math.sin(yaw)
+        far = max(math.hypot(cx - x, cy - y) for x in (gx, gx + gw) for y in (gy, gy + gh))
+        r_lo = 0
+        r_hi = min(hor, int(hor - rh * D / far))
+        if r_hi <= r_lo:
+            return
+        rot = pygame.transform.rotate(self.roof_tex, math.degrees(yaw) + 90.0)
+        RW, RHt = rot.get_size()
+        # where the camera lands in the rotated texture (forward = up the image, right = right)
+        vx, vy = (gx + gw / 2 - cx) * ROOF_PPM, (gy + gh / 2 - cy) * ROOF_PPM
+        ox = RW / 2.0 - (-vx * sa + vy * ca)
+        oy = RHt / 2.0 + (vx * ca + vy * sa)
+        layer = self.roof_layer
+        layer.fill(ROOF_KEY, (0, r_lo, vw, r_hi - r_lo))
+        scale = pygame.transform.scale
+        drawn = False
+        for r in range(r_lo, r_hi):
+            d = rh * D / (hor - r + 0.5)
+            y = int(oy - d * ROOF_PPM)
+            if y < 0 or y >= RHt:
+                continue
+            hw = d * th * ROOF_PPM
+            x0 = ox - hw
+            w = 2 * hw
+            a, b = max(0, int(x0)), min(RW, int(x0 + w) + 1)
+            if b <= a:
+                continue
+            sx0 = int((a - x0) / w * vw)
+            sx1 = int((b - x0) / w * vw)
+            if sx1 <= sx0:
+                continue
+            layer.blit(scale(rot.subsurface((a, y, b - a, 1)), (sx1 - sx0, 1)), (sx0, r))
+            drawn = True
+        if not drawn:
+            return
+        # the walls that are nearer than the roof keep their pixels
+        zbuf = self.zbuf
+        for x in range(vw):
+            z = zbuf[x]
+            if z < 1e8:
+                rz = int(hor - rh * D / z)
+                if rz < r_hi:
+                    rz = max(r_lo, rz)
+                    layer.fill(ROOF_KEY, (x, rz, 1, r_hi - rz))
+        surf.blit(layer, (0, r_lo), pygame.Rect(0, r_lo, vw, r_hi - r_lo))
+        if inside:
+            # and the sprites out past the front edge (lamp posts, trees) go behind it
+            ends, rows = [], []
+            rx, ry = -sa, ca
+            for k in self.ray_k:
+                dx, dy = ca + rx * k, sa + ry * k
+                tx = ((gx + gw - cx) / dx) if dx > 1e-9 else ((gx - cx) / dx) if dx < -1e-9 else 1e9
+                ty = ((gy + gh - cy) / dy) if dy > 1e-9 else ((gy - cy) / dy) if dy < -1e-9 else 1e9
+                t = max(0.05, min(tx, ty))
+                ends.append(t)
+                rows.append(int(hor - rh * D / t))
+            self.roof_clip = (ends, rows)
 
     def _sprites(self, surf, view, cx, cy, yaw, eye, me_pid, now, dt, dark, night, bank, hide_car):
         ca, sa = math.cos(yaw), math.sin(yaw)
@@ -572,6 +776,20 @@ class FPRenderer:
             az = math.atan2(by - cy, bx - cx)
             add(bx, by, lambda a=az, s=is_sell, w=bw, h=bh: self._model_sprite(
                 ("bench", s), lambda: FA.bench_boxes(s, w, h), a, 8, 10))
+        for (x, y, ang) in self.map.ramps:
+            if abs(x - cx) < maxd and abs(y - cy) < maxd:
+                az = math.atan2(y - cy, x - cx) - ang
+                add(x, y, lambda a=az: self._model_sprite("ramp", FA.ramp_boxes, a, None, 12))
+        self._pigeons(view, cx, cy, now, dt, add)
+        self._hats(dt, cx, cy, add)
+        for (x, y, along, seg) in self.bar_segs:
+            if abs(x - cx) < maxd and abs(y - cy) < maxd:
+                az = math.atan2(y - cy, x - cx) - along
+                add(x, y, lambda a=az, L=seg: self._model_sprite(("bars", L), lambda: FA.bars_boxes(L), a, None, 16))
+        if self.desk is not None and abs(self.desk[0] - cx) < maxd and abs(self.desk[1] - cy) < maxd:
+            dx_, dy_, dw_, dh_ = self.desk
+            az = math.atan2(dy_ - cy, dx_ - cx)
+            add(dx_, dy_, lambda a=az: self._model_sprite("desk", lambda: FA.desk_boxes(dw_, dh_), a, None, 16))
         for (x, y, item) in self.crates:
             az = math.atan2(y - cy, x - cx) - math.pi       # the crates face into the shop
             add(x, y, lambda a=az, it=item: self._model_sprite(("crate", it), lambda: FA.crate_boxes(it), a, None, 16),
@@ -579,6 +797,19 @@ class FPRenderer:
         for t in getattr(view, "traps", {}).values():
             if t[1] == S.TRAP_SMOKE:
                 continue                                        # (smoke is particles: see smoke_clouds)
+            if t[1] == S.TRAP_CELL:
+                L = C.CELL_DOOR_W
+                if t[5] > 0:                                    # shut (and maybe dented): bars and a padlock
+                    bent = round(1.0 - t[5], 1)
+                    az = math.atan2(t[3] - cy, t[2] - cx) - math.pi / 2
+                    add(t[2], t[3], lambda a=az, bt=bent: self._model_sprite(
+                        ("celldoor", bt), lambda: FA.bars_boxes(L, True, True, bt), a, None, 16))
+                else:                                           # open: swung back on its hinge, into the hall
+                    x, y = t[2] - L / 2, t[3] + L / 2
+                    az = math.atan2(y - cy, x - cx)
+                    add(x, y, lambda a=az: self._model_sprite(
+                        ("celldoor", "open"), lambda: FA.bars_boxes(L, True, False), a, None, 16))
+                continue
             if t[1] == S.TRAP_GATE:
                 if t[5] > 0:                                    # shut: a row of bars across the doorway
                     for k in range(2):
@@ -590,6 +821,10 @@ class FPRenderer:
                 continue
             if t[5] < 0.1 and int(now * 6) % 2:
                 continue                                        # about to be towed: blink
+            if t[1] == S.TRAP_WHOOPEE:
+                az = math.atan2(t[3] - cy, t[2] - cx)
+                add(t[2], t[3], lambda a=az: self._model_sprite("whoopee", FA.whoopee_boxes, a, None, 24))
+                continue
             if t[1] in (S.TRAP_BANANA, S.TRAP_DONUT):
                 az = math.atan2(t[3] - cy, t[2] - cx)
                 name = "banana" if t[1] == S.TRAP_BANANA else "donutbox"
@@ -631,6 +866,10 @@ class FPRenderer:
             hop = 0.0
             if len(row) > 20 and row[20] & PR.DR_HOP:
                 hop = abs(math.sin(now * 9.0 + row[0])) * 0.9      # boing. boing. boing.
+            if row[4] & PR.CF_AIR:
+                hop += self._air_height(row, now)                   # (v0.9) BIG AIR
+            elif row[0] in self.air_t0:
+                del self.air_t0[row[0]]
             if row[0] == self.hires:
                 # the chase cam's car: more angles, more pixels (it's right there, being drifted)
                 add(row[7], row[8], lambda r=row, a=az: self._car_sprite(r, a, C.CHASE_CAR_ANGLES, 20),
@@ -650,7 +889,19 @@ class FPRenderer:
                 add(n[3], n[4], lambda f=fr, tr=(st == PR.NS_RUNOFF), dn=down, a=az: self._dog_sprite(f, tr, dn, a),
                     z=z)
                 continue
+            if n[1] == S.CHICKEN:
+                pk = st == PR.NS_WALK and (int(now * 3 + n[0]) % 5 == 0)
+                add(n[3], n[4], lambda f=fr, p_=pk, a=az, dn=down: self._model_sprite(
+                    ("chicken", f, p_, dn), lambda: FA.chicken_boxes(f, p_) if not dn else FA.lying(
+                        FA.chicken_boxes(0, False)), a, None, 32), z=z)
+                continue
             shirt, skin, hair, extra, outfit = self._person_look(n[0], n[1])
+            if outfit and outfit.startswith("hat"):
+                if n[0] in self.hat_off:
+                    outfit = None
+                elif down and st != PR.NS_CARRIED:
+                    self._hat_flies(n[0], n[3], n[4], int(outfit[3]))     # (v0.9) off it comes
+                    outfit = None
             gun = 0
             if st == PR.NS_HANDSUP:
                 extra = "handsup"
@@ -690,6 +941,13 @@ class FPRenderer:
                 if self.rng.random() < 0.4:
                     self.emit(SPARK, p[4] + self.rng.uniform(-0.4, 0.4), p[5] + self.rng.uniform(-0.4, 0.4),
                               0.3, 0, 0, 1.5, 0.15)
+            if f2 & PR.PF2_BOX and p[2] == S.FOOT:
+                # (v0.9) it's just a box. A box with a name tag, if it's your mate. (And feet, if it moves.)
+                mv = bool(flags & PR.PF_MOVING)
+                add(p[4], p[5], lambda f=fr, m_=mv, a=az: self._model_sprite(
+                    ("cbox", f if m_ else 0, m_), lambda: FA.cardboard_box_boxes(f, m_), a, None, 16), z=z,
+                    tag=None if f2 & PR.PF2_HIDDEN else ("name", p))
+                continue
             add(p[4], p[5], lambda s=shirt, k=SKINS[p[0] % 4], h=HAIRS[p[0] % 6], f=fr, e=extra,
                 dn=down, a=az, g=gun, o=outfit: self._person_sprite(s, k, h, f, e, dn, a, g, o), z=z, tag=("name", p))
             if flags & PR.PF_CHUTE:
@@ -763,8 +1021,17 @@ class FPRenderer:
             if f < 0.97:
                 v = int(255 * f)
                 scaled.fill((v, v, min(255, int(v * 1.06))), special_flags=pygame.BLEND_RGB_MULT)
+            clip = self.roof_clip
             for a, b in runs:
-                surf.blit(scaled, (a, top), pygame.Rect(a - left, 0, b - a, sh))
+                cut = 0
+                if clip is not None:
+                    mid = (a + b) // 2
+                    if depth > clip[0][mid]:
+                        cut = clip[1][mid] - top          # (v0.9) behind the roof's edge up there
+                        if cut >= sh:
+                            continue
+                        cut = max(0, cut)
+                surf.blit(scaled, (a, top + cut), pygame.Rect(a - left, cut, b - a, sh - cut))
             if tag is not None:
                 if tag[0] == "name" and depth < 40 and runs:
                     p = tag[1]
@@ -788,6 +1055,102 @@ class FPRenderer:
                     iw = max(1, int(ic.get_width() * kk))
                     icon = pygame.transform.scale(ic, (iw, iw))
                     surf.blit(icon, (int(sx - iw / 2), int(ground - 0.9 * D / depth) - iw))
+
+    # ------------------------------------------------------------------ (v0.9) cosmetic sillies
+    def _air_height(self, row, now):
+        """Off a stunt ramp: a parabola, hang time from the speed it took off at."""
+        t0 = self.air_t0.get(row[0])
+        if t0 is None:
+            T = max(0.3, math.hypot(row[9], row[10]) * C.RAMP_AIR_PER_MS)
+            t0 = self.air_t0[row[0]] = (now, T)
+        t = (now - t0[0]) / t0[1]
+        if not 0.0 <= t <= 1.0:
+            return 0.0
+        return 9.8 * t0[1] * t0[1] / 2.0 * t * (1.0 - t)
+
+    def _hat_flies(self, nid, x, y, style):
+        if len(self.hat_off) > 400:
+            self.hat_off.clear()
+        self.hat_off.add(nid)
+        r = self.rng
+        a = r.uniform(0, TWO_PI)
+        sp = r.uniform(1.5, 3.5)
+        self.flying_hats.append([x, y, 1.7, math.cos(a) * sp, math.sin(a) * sp, r.uniform(3.5, 5.5),
+                                 r.uniform(0, TWO_PI), style, 14.0])
+
+    def _hats(self, dt, cx, cy, add):
+        keep = []
+        for h in self.flying_hats:
+            h[8] -= dt
+            if h[8] <= 0:
+                continue
+            if h[2] > 0 or h[5] > 0:
+                h[0] += h[3] * dt
+                h[1] += h[4] * dt
+                h[5] -= 9.8 * dt
+                h[2] = max(0.0, h[2] + h[5] * dt)
+                h[6] += dt * 9.0
+                if h[2] <= 0:
+                    h[5] = 0.0
+            keep.append(h)
+            az = math.atan2(h[1] - cy, h[0] - cx) - h[6]
+            add(h[0], h[1], lambda a=az, s=h[7]: self._model_sprite(("civhat", s), lambda: FA.civ_hat_boxes(s),
+                                                                    a, None, 20), z=h[2] + 0.04)
+        self.flying_hats = keep[-30:]
+
+    def _init_pigeons(self):
+        """A few flocks on the pavement by the lamp posts. Deterministic, client-only."""
+        r = random.Random(self.map.seed * 31 + 5)
+        self.pigeons = []
+        self.pigeon_img = {(f, fl): FA.pigeon_img(f, fl) for f in (0, 1) for fl in (False, True)}
+        lamps = list(self.map.lamps)
+        r.shuffle(lamps)
+        for (lx, ly) in lamps[:18]:
+            flock = []
+            for _ in range(r.randint(3, 7)):
+                flock.append([lx + r.uniform(-1.8, 1.8), ly + r.uniform(-1.8, 1.8), 0.0, 0.0, 0.0, 0.0,
+                              r.uniform(0, 5)])
+            # [x, y, z, vx, vy, vz, phase]; plus the flock's home and when it's safe to come back
+            self.pigeons.append({"home": [(p[0], p[1]) for p in flock], "birds": flock, "gone_t": 0.0})
+
+    def _scare_pigeons(self, x, y, r):
+        for fl in self.pigeons:
+            hx, hy = fl["home"][0]
+            if fl["gone_t"] <= 0 and (hx - x) ** 2 + (hy - y) ** 2 < r * r:
+                fl["gone_t"] = 20.0
+                for b_ in fl["birds"]:
+                    a = self.rng.uniform(0, TWO_PI)
+                    b_[3], b_[4], b_[5] = math.cos(a) * 4.0, math.sin(a) * 4.0, self.rng.uniform(3.0, 5.0)
+
+    def _pigeons(self, view, cx, cy, now, dt, add):
+        """Pigeons: peck peck peck until anything comes near (a person, a car, a bang), then
+        the whole flock goes up at once. They come back 20 seconds later. They always come back."""
+        movers = [(p[4], p[5]) for p in view.players.values() if p[2] in (S.FOOT, S.TUMBLE)]
+        movers += [(c[7], c[8]) for c in view.cars.values() if abs(c[9]) + abs(c[10]) > 2.0]
+        movers.append((cx, cy))
+        for fl in self.pigeons:
+            hx, hy = fl["home"][0]
+            if abs(hx - cx) > 60 or abs(hy - cy) > 60:
+                continue
+            birds = fl["birds"]
+            if fl["gone_t"] > 0:
+                fl["gone_t"] -= dt
+                if fl["gone_t"] <= 0:
+                    for b_, (x, y) in zip(birds, fl["home"]):
+                        b_[:6] = [x, y, 0.0, 0.0, 0.0, 0.0]
+            elif any((mx - hx) ** 2 + (my - hy) ** 2 < 25.0 for mx, my in movers):
+                self._scare_pigeons(hx, hy, 0.5)
+            for b_ in birds:
+                if b_[5] != 0.0 or b_[2] > 0:
+                    b_[0] += b_[3] * dt
+                    b_[1] += b_[4] * dt
+                    b_[2] += b_[5] * dt
+                    if b_[2] > 25.0:
+                        continue                                   # (gone: over the rooftops)
+                flying = b_[2] > 0.05
+                f = int(now * (14 if flying else 2) + b_[6]) % 2
+                img = self.pigeon_img[(f, flying)]
+                add(b_[0], b_[1], lambda i=img: (i, 24), z=b_[2])
 
     @staticmethod
     def _car_marker(row):

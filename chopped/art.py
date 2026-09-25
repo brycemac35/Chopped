@@ -509,7 +509,53 @@ def render_map(cmap):
         surf.fill(P["ink"], (px - 1, py - 1, 3, 3))
         surf.fill(P["light"], (px, py, 1, 1))
     _render_garage(surf, cmap)
+    _render_precinct(surf, cmap)
+    # (v0.9) stunt ramps: striped wedges in the car parks
+    for (x, y, ang) in getattr(cmap, "ramps", ()):
+        along_x = abs(math.cos(ang)) > 0.5
+        w, h = (C.RAMP_LEN, C.RAMP_W) if along_x else (C.RAMP_W, C.RAMP_LEN)
+        rx, ry = int((x - w / 2) * C.PPM), int((y - h / 2) * C.PPM)
+        rw, rh = int(w * C.PPM), int(h * C.PPM)
+        surf.fill((0, 0, 0), (rx + 2, ry + 2, rw, rh))
+        surf.fill((150, 110, 60), (rx, ry, rw, rh))
+        for k in range(0, rw if along_x else rh, 4):
+            if along_x:
+                surf.fill((240, 200, 40), (rx + k, ry, 2, rh))
+            else:
+                surf.fill((240, 200, 40), (rx, ry + k, rw, 2))
     return surf
+
+
+def _render_precinct(surf, cmap):
+    """(v0.9) The lockup from above: two cells with a bunk and a steel toilet each,
+    the bars, and the front desk (which, until v0.9, was solid but invisible. The
+    desk sergeant's been complaining about people walking into it.)"""
+    if not getattr(cmap, "cells", None):
+        return
+    S = C.PPM
+    font = PixelFont()
+    for (cx, cy, cw, ch) in cmap.cells:
+        x, y, w, h = int(cx * S), int(cy * S), int(cw * S), int(ch * S)
+        surf.fill(shade(PRECINCT_FLOOR, 0.7), (x, y, w, h))
+        surf.fill((110, 90, 70), (x + 3, y + 3, int(2.0 * S), int(0.9 * S)))       # the bunk
+        surf.fill((180, 180, 170), (x + 4, y + 4, int(0.5 * S), int(0.6 * S)))     # (the pillow)
+        surf.fill((190, 196, 205), (x + w - int(1.0 * S), y + 3, int(0.6 * S), int(0.6 * S)))   # steel loo
+    for (bx, by, bw, bh) in cmap.cell_bars:
+        x, y, w, h = int(bx * S), int(by * S), max(1, int(bw * S)), max(1, int(bh * S))
+        surf.fill((50, 52, 60), (x, y, w, h))
+        if w > h:
+            for k in range(0, w, 3):
+                surf.fill((140, 144, 156), (x + k, y, 1, h))
+        else:
+            for k in range(0, h, 3):
+                surf.fill((140, 144, 156), (x, y + k, w, 1))
+    if cmap.bail_desk is not None:
+        x, y, w, h = [int(v * S) for v in cmap.bail_desk]
+        surf.fill((0, 0, 0), (x + 2, y + 2, w, h))
+        surf.fill((96, 70, 44), (x, y, w, h))
+        surf.fill((70, 50, 30), (x, y + h - 2, w, 2))
+        surf.fill(P["metal"], (x + 2, y + 1, 6, 4))
+        font.draw(surf, "BAIL", x + w // 2, y + h + 3, P["gold"], (0, 0, 0), align="center")
 
 
 def _render_garage(surf, cmap):

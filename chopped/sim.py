@@ -17,7 +17,8 @@ from .parts import (SLOTS, SLOT_CATEGORY, WHEEL_SLOTS, PANEL_SLOTS, STRIP_TIME, 
                     kei_loadout, cop_loadout, personal_loadout, model_loadout, roll_trunk)
 from . import vehicles as V
 from .brawl import Brawl
-from .garage import Garage
+from .garage import Garage, Appraisal, ShopDoor
+from .sillies import Sillies
 from .police import Police
 from .enums import *  # noqa: F401,F403
 from .lines import *  # noqa: F401,F403
@@ -28,7 +29,7 @@ DIRS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 _REEXPORTS = (kei_loadout,)   # tests (and old habits) reach for S.kei_loadout
 
 
-class World(Physics, Brawl, Garage, Police):
+class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
     def __init__(self, map_seed=None, rng_seed=None):
         if map_seed is None:
             map_seed = random.randrange(1, 2 ** 31)
@@ -46,6 +47,7 @@ class World(Physics, Brawl, Garage, Police):
         self.traps = {}
         self.stash = []             # the parts locker in the shop (mod shop feeds from it)
         self.extra_rects = []       # roadblocks, as solid rects (rebuilt when traps change)
+        self.tall_rects = []        # (v0.9) the ones you can't jump: shut doors and gates
         self.give_loadout = False   # --selftest: everyone joins armed, so the bot exercises the guns
         self.events = []            # (seq, time, kind, payload)
         self.event_seq = 0
@@ -88,7 +90,9 @@ class World(Physics, Brawl, Garage, Police):
         self.gnome_t = 0.0
         for _ in range(C.GNOME_COUNT):
             self._spawn_gnome()
+        self._init_door()
         self._init_police()
+        self._init_sillies()
 
     # ------------------------------------------------------------------ ids/events
     def new_id(self):
@@ -380,9 +384,11 @@ class World(Physics, Brawl, Garage, Police):
         self._horns(dt)
         self._physics_cars(dt)
         self._update_traps(dt)
+        self._update_door(dt)
         self._sync_occupants()
         for p in self.players.values():
             self._move_player(p, dt)
+        self._inspect_scan()
         self._update_carries(dt)
         self._update_dollies(dt)
         self._update_npcs(dt)
@@ -392,6 +398,7 @@ class World(Physics, Brawl, Garage, Police):
         self._heat(dt)
         self._cops_lifecycle(dt)
         self._police(dt)
+        self._sillies(dt)
         self._traffic(dt)
         self._traffic_fleet(dt)
         self._patrol_fleet(dt)
@@ -458,6 +465,7 @@ class World(Physics, Brawl, Garage, Police):
             self._spawn_personal(personal_loadout())
         self.pickups.clear()
         self.traps.clear()
+        self._init_door()                 # (the door goes back up: the landlord's got the remote now)
         self._init_police()               # (a fresh gate, and the police calm down)
         if self.stash:
             self.toast("THE LANDLORD SOLD YOUR PARTS LOCKER ON MARKETPLACE.", T_BAD)
@@ -515,6 +523,18 @@ class World(Physics, Brawl, Garage, Police):
                 p.banner = BN_NONE
         jump_tap = bool(b & B_JUMP) and not p.prev_jump
         p.prev_jump = bool(b & B_JUMP)
+        alt_tap = bool(b & B_HOP) and not p.prev_alt      # (v0.9) X on foot: the prompt's second option
+        p.prev_alt = bool(b & B_HOP)
+        box_tap = bool(b & B_BOX) and not p.prev_box
+        p.prev_box = bool(b & B_BOX)
+        if p.boxed and p.state != FOOT:
+            p.boxed = False                                # (knocked out of it, cuffed, in a car...)
+        if box_tap and p.state == FOOT:
+            self._toggle_box(p)
+        if p.state == FOOT and not p.moving and math.hypot(p.vx, p.vy) < 0.3:
+            p.still_t += dt
+        else:
+            p.still_t = 0.0
 
         if p.state == CARRIED:
             p.prompt = "YOU'RE BEING CARRIED. MASH SPACE TO WRIGGLE FREE (%d/%d)" % (p.wriggle, C.WRIGGLE_PRESSES)
@@ -548,6 +568,9 @@ class World(Physics, Brawl, Garage, Police):
                 self._leave_car(p, place=True)
                 return
             car.horn = car.horn or bool(b & B_HORN)
+            if b & B_HORN and not p.prev_horn and p.state == DRIVER:
+                self._door_remote(p, car)      # (v0.9) honk at the shop: the door opens (or shuts)
+            p.prev_horn = bool(b & B_HORN)
             p.seat_t += dt
             if p.state == DRIVER:
                 drive_input(car, b)
@@ -572,7 +595,9 @@ class World(Physics, Brawl, Garage, Police):
                 p.prompt = "MOD SHOP"
                 return
         p.ang = inp.yaw               # you face wherever your mouse points
-        p.weapon = inp.weapon if (0 <= inp.weapon <= ARM_BLOCK and p.owns(inp.weapon)) else ARM_FISTS
+        # (v0.9: this said <= ARM_BLOCK, a leftover from v0.6 -- so keys 6 and 7, the banana and the
+        # donuts, quietly gave you your fists. Everything up to key 9 now.)
+        p.weapon = inp.weapon if (0 <= inp.weapon < ARM_COUNT and p.owns(inp.weapon)) else ARM_FISTS
         if p.weapon in (ARM_PISTOL, ARM_SHOTGUN) and not p.hands and p.dolly is None:
             self._menace(p)
         if b & B_TAUNT:
@@ -608,8 +633,12 @@ class World(Physics, Brawl, Garage, Police):
             p.hold = 0.0
             return
 
-        key, label, duration, action = self._find_interaction(p)
+        found = self._find_interaction(p)
+        key, label, duration, action = found[:4]
         p.prompt = label
+        if alt_tap and len(found) > 4 and found[4] is not None:
+            found[4]()                # X: the other thing (bail, sell it whole, ...)
+            return
         held = bool(b & B_USE)
         if not held:
             p.need_release = False
@@ -664,10 +693,12 @@ class World(Physics, Brawl, Garage, Police):
         if p.dolly is not None:
             return self._dolly_interaction(p, p.dolly)
         # someone on the floor, or with their hands up: help yourself
-        gate = self._gate_interaction(p, ax, ay)
+        gate = self._gate_interaction(p, ax, ay) or self._door_interaction(p, ax, ay)
         if gate is not None:
             return gate
         mark = self._robbable_near(ax, ay)
+        if mark is not None and mark.kind == CHICKEN:
+            return (None, "IT'S A CHICKEN. IT HAS NO POCKETS." + ("   G: PICK UP" if not p.hands else ""), 0, None)
         if mark is not None and mark.kind == KEYGUARD:
             return (("keys", mark.id), "HOLD E: TAKE HIS KEYS", C.ROB_TIME, lambda: self._take_keys(p, mark))
         if mark is not None:
@@ -704,7 +735,7 @@ class World(Physics, Brawl, Garage, Police):
         # cars: the one whose bodywork is closest to where you're looking
         best, bd = None, 99.0
         for car in self.cars.values():
-            if car.kind == COP:
+            if car.kind == COP and not self._copcar_stealable(car):
                 continue
             if abs(car.x - ax) > 6 or abs(car.y - ay) > 6:
                 continue
@@ -722,6 +753,9 @@ class World(Physics, Brawl, Garage, Police):
             tr = self._trunk_interaction(p, car)
             if tr is not None:
                 return tr
+        if car.kind == COP:
+            return (("copcar", car.id), "HOLD E: STEAL THE COP CAR WHILE HE'S BUSY (+%d HEAT)" % C.COPCAR_STEAL_HEAT,
+                    C.COPCAR_STEAL_TIME, lambda: self._steal_cop_car(p, car))
         if car.kind == TRAFFIC:
             if car.speed() > C.CARJACK_MAX_SPEED:
                 return (None, "IT'S MOVING. STOP IT FIRST: STAND IN THE ROAD, SPIKES, A ROADBLOCK...", 0, None)
@@ -744,8 +778,11 @@ class World(Physics, Brawl, Garage, Police):
             if car.passenger is None:
                 return (("shot", car.id), "E: RIDE SHOTGUN", 0, lambda: self._enter_car(p, car, PASSENGER))
             return (None, "CAR IS FULL", 0, None)
-        # delivered: strip or crush
-        return self._strip_interaction(p, car)
+        # delivered: strip or crush -- or (v0.9) X: sell the whole thing to a man called Dave
+        res = self._strip_interaction(p, car)
+        whole = self.whole_price(car)
+        label = res[1] + "   " if res[1] else ""
+        return (res[0], label + "X: SELL IT WHOLE $%d" % whole, res[2], res[3], lambda: self._sell_whole(p, car))
 
     @staticmethod
     def _aim(p):
@@ -1004,13 +1041,17 @@ class World(Physics, Brawl, Garage, Police):
         for n in self.npcs.values():
             if n.kind not in (CLOWN, STREAKER) and n.kind not in LAW and n.tumble_t <= 0 and \
                     self._in_front(p, n.x, n.y, C.SURRENDER_RANGE, C.SURRENDER_CONE) is not None \
-                    and self.map.los(p.x, p.y, n.x, n.y):
+                    and self.los(p.x, p.y, n.x, n.y):
                 if n.surrender_t <= 0 and n.complain_cd <= 0:
                     n.complain_cd = 5.0
                     self.toast(self.rng.choice(SURRENDER_LINES), T_WHITE)
                 n.surrender_t = 0.6
 
     def _attack(self, p):
+        if p.boxed:
+            p.fire_cd = 0.5
+            self.toast("YOU'RE IN A BOX. BOXES CAN'T PUNCH. (C: GET OUT)", T_INFO)
+            return
         if p.hands or p.dolly is not None:
             p.fire_cd = 0.3
             self.toast("HANDS FULL - DROP IT (G) TO FIGHT", T_INFO)
@@ -1019,6 +1060,9 @@ class World(Physics, Brawl, Garage, Police):
         if w == ARM_FISTS:
             p.fire_cd = C.PUNCH_COOLDOWN
             self._punch(p)
+        elif w == ARM_CHICKEN:
+            p.fire_cd = C.CHICKEN_COOLDOWN
+            self._punch(p, chicken=True)
         elif w in (ARM_PISTOL, ARM_SHOTGUN):
             if p.ammo[w] <= 0:
                 p.fire_cd = 0.3
@@ -1029,10 +1073,9 @@ class World(Physics, Brawl, Garage, Police):
             self._shoot(p, w)
         else:
             p.fire_cd = 0.5
-            self._place_trap(p, {ARM_SPIKES: TRAP_SPIKES, ARM_BLOCK: TRAP_BLOCK, ARM_BANANA: TRAP_BANANA,
-                                 ARM_DONUT: TRAP_DONUT}[w])
+            self._place_trap(p, TRAP_OF_ARM[w])
 
-    def _punch(self, p):
+    def _punch(self, p, chicken=False):
         best, bd = None, None
         for n in self.npcs.values():
             d = self._in_front(p, n.x, n.y, C.PUNCH_RANGE, C.PUNCH_CONE)
@@ -1044,23 +1087,37 @@ class World(Physics, Brawl, Garage, Police):
                 if d is not None and (bd is None or d < bd):
                     best, bd = q, d
         if best is None:
-            return                     # a mighty swing at thin air
+            if chicken:
+                self.sfx(S_SQUEAK, p.x, p.y)      # a mighty squeak at thin air
+            self._punch_cell_door(p)   # a mighty swing at thin air. Or at a cell door: CLANG
+            return
         fx, fy = math.cos(p.ang), math.sin(p.ang)
-        self.sfx(S_PUNCH, best.x, best.y)
+        shove = C.CHICKEN_KNOCK if chicken else 5.0
+        self.sfx(S_SQUEAK if chicken else S_PUNCH, best.x, best.y)
         if isinstance(best, Player):
             if best.state == FOOT:
-                self._hurt_player(best, fx * 5, fy * 5, C.PUNCH_PLAYER_TUMBLE)
-                self.toast("%s DECKED %s. FRIENDSHIP: TESTED." % (p.name, best.name), T_WHITE)
+                self._hurt_player(best, fx * shove, fy * shove, C.PUNCH_PLAYER_TUMBLE, BN_BONKED if chicken else BN_NONE)
+                self.toast(("%s SLAPPED %s WITH A RUBBER CHICKEN." if chicken else
+                            "%s DECKED %s. FRIENDSHIP: TESTED.") % (p.name, best.name), T_WHITE)
             return
         if best.carried_by is not None:
             return
-        self._knock_down_npc(best, fx * 5, fy * 5, C.PUNCH_KNOCKDOWN, p)
-        if not p.jailed and best.kind not in LAW and best.kind != STREAKER:
-            self._crime(C.PUNCH_HEAT)
+        self._knock_down_npc(best, fx * shove, fy * shove, C.CHICKEN_KNOCKDOWN if chicken else C.PUNCH_KNOCKDOWN, p)
+        silly = best.kind in (STREAKER, CHICKEN, MIME)
+        if not p.jailed and best.kind not in LAW and not silly and not chicken:
+            self._crime(C.PUNCH_HEAT)            # (assault with a rubber chicken isn't on the statute books)
             self._charge(p, "assault")
         if best.complain_cd <= 0 and best.kind not in LAW and best.kind != STREAKER:
             best.complain_cd = 3.0
-            self.toast(self.rng.choice(CLOWN_LINES if best.kind == CLOWN else PUNCH_LINES), T_WHITE)
+            if chicken:
+                lines = CHICKEN_SLAP_LINES
+            elif best.kind == MIME:
+                lines = MIME_PUNCH_LINES
+            elif best.kind == CHICKEN:
+                lines = CHICKEN_PUNCH_LINES
+            else:
+                lines = CLOWN_LINES if best.kind == CLOWN else PUNCH_LINES
+            self.toast(self.rng.choice(lines), T_WHITE)
 
     def _shoot(self, p, w):
         shotgun = w == ARM_SHOTGUN
@@ -1150,6 +1207,8 @@ class World(Physics, Brawl, Garage, Police):
                     self.toast("THE COP CAR'S ON FIRE! GET CLEAR!", T_COP)
             elif car.kind == TRAFFIC:
                 car.shaken_t = max(car.shaken_t, C.TRAFFIC_SHAKEN_TIME)
+            if car.model == V.ARMOURED and lx < -car.hl * 0.4:
+                self._money_hit(car)                  # (v0.9) KLANG. Keep going: the back doors will give
             return
         if isinstance(target, Player):
             if target.state == FOOT:
@@ -1182,6 +1241,13 @@ class World(Physics, Brawl, Garage, Police):
 
     def _rob(self, p, n):
         if n.id not in self.npcs or n.wallet <= 0:
+            return
+        if n.kind == MIME:
+            n.wallet = 0
+            n.wallet_t = C.WALLET_REFILL
+            n.surrender_t = 0.0
+            self.sfx(S_ROB, n.x, n.y)
+            self.toast(MIME_ROB_LINE, T_INFO)      # (it's the thought that counts)
             return
         cash, n.wallet = n.wallet, 0
         n.wallet_t = C.WALLET_REFILL
@@ -1230,7 +1296,7 @@ class World(Physics, Brawl, Garage, Police):
 
     # ------------------------------------------------------------------ black market
     def _market_interaction(self, p, ax, ay):
-        best, bd = None, 1.8            # crates are 1.9 m apart: nearest wins, no mis-buys
+        best, bd = None, 1.7            # crates are 1.75 m apart (v0.9: ten of them): nearest wins
         for (x, y, item) in self.map.market:
             d = math.hypot(x - ax, y - ay)
             if d < bd:
@@ -1244,7 +1310,11 @@ class World(Physics, Brawl, Garage, Police):
             return (None, "BLACK MARKET: YOU'VE GOT A SHOTGUN. AMMO'S NEXT DOOR.", 0, None)
         if best == "ammo" and not (p.arms & ((1 << ARM_PISTOL) | (1 << ARM_SHOTGUN))):
             return (None, "BLACK MARKET: AMMO. BUY A GUN FIRST, GENIUS.", 0, None)
-        gear = {"spikes": 0, "roadblock": 1, "banana": 2, "donuts": 3}.get(best)
+        if best == "chicken" and p.arms & (1 << ARM_CHICKEN):
+            return (None, "BLACK MARKET: ONE RUBBER CHICKEN PER CUSTOMER. HOUSE RULES.", 0, None)
+        if best == "box" and p.has_box:
+            return (None, "BLACK MARKET: YOU'VE ALREADY GOT A BOX. PRESS C TO GET IN IT.", 0, None)
+        gear = {"spikes": 0, "roadblock": 1, "banana": 2, "donuts": 3, "whoopee": 4}.get(best)
         if gear is not None and p.gear[gear] >= C.MAX_TRAPS_EACH:
             return (None, "BLACK MARKET: YOU CAN'T CARRY MORE OF THOSE", 0, None)
         if self.cash < price:
@@ -1279,15 +1349,67 @@ class World(Physics, Brawl, Garage, Police):
         elif item == "banana":
             p.gear[2] += 1
             tip = "PRESS 6, CLICK TO DROP IT. WATCH YOUR STEP."
+        elif item == "chicken":
+            p.arms |= 1 << ARM_CHICKEN
+            tip = "PRESS 8. SQUEAK. (NO HEAT: IT'S NOT A WEAPON, OFFICER.)"
+        elif item == "whoopee":
+            p.gear[4] += 1
+            tip = "PRESS 9, CLICK TO LAY IT DOWN. EVERYONE WHO HEARS IT LAUGHS. COPS TOO."
+        elif item == "box":
+            p.has_box = True
+            tip = "PRESS C TO HIDE IN IT. STAND STILL AND NOBODY SEES YOU. MOVE AND... WELL."
         else:
             p.gear[3] += 1
             tip = "PRESS 7, CLICK TO THROW. COPS CAN'T RESIST."
         self.sfx(S_BUY, p.x, p.y)
         self.toast("BOUGHT %s: -$%d. %s" % (MARKET[item][0].split(" (")[0], price, tip), T_INFO)
 
+    def _toggle_box(self, p):
+        """(v0.9) C: into the cardboard box, or out of it. Stand still in it and nobody
+        -- peds, cameras, cops, officers -- can see you. Move, and you're a box with legs."""
+        if not p.has_box:
+            return
+        if p.boxed:
+            p.boxed = False
+            self.toast("%s CLIMBED OUT OF A CARDBOARD BOX. NOBODY WAS FOOLED. (EVERYONE WAS FOOLED.)" % p.name,
+                       T_INFO)
+            return
+        if p.hands or p.dolly is not None or p.carrying is not None:
+            self.toast("PUT THAT DOWN FIRST. IT'S A BOX, NOT A REMOVALS VAN.", T_INFO)
+            return
+        p.boxed = True
+        p.still_t = 0.0
+        self.sfx(S_TRUNK, p.x, p.y)
+        self.toast(self.rng.choice(BOX_LINES), T_INFO)
+
+    def _copcar_stealable(self, car):
+        return car.kind == COP and car.officer is not None and car.fire_t <= 0 and car.speed() < 1.5
+
+    def _steal_cop_car(self, p, car):
+        """(v0.9) The officer got out to chase somebody and left it running. Rude not to."""
+        if not self._copcar_stealable(car):
+            return
+        n = self.npcs.get(car.officer)
+        if n is not None:
+            n.car_id = None
+            self.toast(self.rng.choice(COPCAR_LINES) % p.name, T_COP)
+        car.kind = CIV
+        car.copcar = True
+        car.officer = None
+        car.patrol = False
+        car.state = RUNNING
+        car.stolen = True
+        car.horn_type = V.HORN_SIREN               # the good horn
+        car.throttle = car.steer = 0.0
+        car.handbrake = False
+        self._crime(C.COPCAR_STEAL_HEAT)
+        self._charge(p, "copcar")
+        self.sfx(S_HOTWIRE, car.x, car.y)
+        self._enter_car(p, car, DRIVER)
+
     # ------------------------------------------------------------------ traps
     def _place_trap(self, p, kind):
-        slot = kind                   # TRAP_* and Player.gear share an order
+        slot = GEAR_OF_TRAP[kind]
         if p.gear[slot] <= 0:
             return
         if sum(1 for t in self.traps.values() if t.kind != TRAP_SMOKE) >= C.MAX_TRAPS:
@@ -1295,7 +1417,8 @@ class World(Physics, Brawl, Garage, Police):
             return
         # square to the street, and centred on the road it's dropped on
         ang = round(p.ang / (math.pi / 2)) * (math.pi / 2)
-        dist = {TRAP_BANANA: C.BANANA_PLACE_DIST, TRAP_DONUT: C.DONUT_THROW_DIST}.get(kind, C.TRAP_PLACE_DIST)
+        dist = {TRAP_BANANA: C.BANANA_PLACE_DIST, TRAP_DONUT: C.DONUT_THROW_DIST,
+                TRAP_WHOOPEE: C.BANANA_PLACE_DIST}.get(kind, C.TRAP_PLACE_DIST)
         x = p.x + math.cos(p.ang) * dist
         y = p.y + math.sin(p.ang) * dist
         if kind == TRAP_DONUT:
@@ -1316,6 +1439,8 @@ class World(Physics, Brawl, Garage, Police):
         t = Trap(self.new_id(), kind, x, y, ang)
         self.traps[t.id] = t
         p.gear[slot] -= 1
+        if kind == TRAP_WHOOPEE:
+            t.uses = C.WHOOPEE_USES
         if kind in (TRAP_BANANA, TRAP_DONUT):
             self._charge(p, "litter" if kind == TRAP_BANANA else "bribe")
         self._rebuild_trap_rects()
@@ -1324,16 +1449,30 @@ class World(Physics, Brawl, Garage, Police):
             self.toast("SPIKE STRIP DOWN. TYRES BEWARE.", T_INFO)
         elif kind == TRAP_BLOCK:
             self.toast("ROADBLOCK UP. NOBODY'S GETTING THROUGH HERE.", T_INFO)
+        elif kind == TRAP_WHOOPEE:
+            self.toast("WHOOPEE CUSHION DOWN. ACT NATURAL.", T_INFO)
         elif kind == TRAP_DONUT:
             t.uses = C.DONUT_COPS
             self.sfx(S_WHOOSH, p.x, p.y)
             self.toast("A BOX OF DONUTS LANDS IN THE STREET. SOMEWHERE, A SIREN SLOWS DOWN.", T_INFO)
 
+    def fixtures(self):
+        """The trap-shaped bits of the map (the precinct gate, the cell doors, the
+        shop's roller door): solid when shut, sent as TRAP rows, never towed."""
+        out = []
+        g = getattr(self, "gate_trap", None)
+        if g is not None:
+            out.append(g)
+        out.extend(getattr(self, "cell_traps", ()))
+        d = getattr(self, "shop_door", None)
+        if d is not None:
+            out.append(d)
+        return out
+
     def _rebuild_trap_rects(self):
         self.extra_rects = [t.rect() for t in self.traps.values() if t.solid()]
-        g = getattr(self, "gate_trap", None)
-        if g is not None and g.solid():
-            self.extra_rects.append(g.rect())
+        self.tall_rects = [t.rect() for t in self.fixtures() if t.solid()]
+        self.extra_rects.extend(self.tall_rects)
 
     def _update_traps(self, dt):
         if not self.traps:
@@ -1373,6 +1512,9 @@ class World(Physics, Brawl, Garage, Police):
             elif t.kind == TRAP_DONUT:
                 if t.uses <= 0:
                     dead.append(t.id)
+            elif t.kind == TRAP_WHOOPEE:
+                if self._whoopee(t):
+                    dead.append(t.id)
             else:
                 # anything that ploughs into a roadblock hard enough turns it into kindling
                 for car in self.cars.values():
@@ -1388,6 +1530,45 @@ class World(Physics, Brawl, Garage, Police):
                 self.traps.pop(tid, None)
             if solid:
                 self._rebuild_trap_rects()
+
+    def _whoopee(self, t):
+        """(v0.9) A whoopee cushion. Returns True when it's worn out. Anyone who treads
+        on it: PFFFFT. Everyone who hears it: helpless. Coppers included."""
+        r = C.WHOOPEE_R + 0.3
+        who = None
+        for p in self.players.values():
+            if p.state == FOOT and p.z < 0.3 and (p.x - t.x) ** 2 + (p.y - t.y) ** 2 < r * r:
+                who = p
+                break
+        if who is None:
+            for n in self.npcs.values():
+                if n.tumble_t <= 0 and n.carried_by is None and n.kind != CHICKEN and \
+                        (n.x - t.x) ** 2 + (n.y - t.y) ** 2 < r * r:
+                    who = n
+                    break
+        if who is None:
+            t.hit.clear()                                  # (off it: it can go again)
+            return False
+        if who.id in t.hit:
+            return False                                   # (still stood on it: one parp per visit)
+        t.hit.add(who.id)
+        t.uses -= 1
+        self.sfx(S_PFFT, t.x, t.y)
+        r2 = C.WHOOPEE_LAUGH_R ** 2
+        laughed = 0
+        for n in self.npcs.values():
+            if n is who or n.kind in (DOG, CHICKEN) or n.tumble_t > 0 or n.carried_by is not None:
+                continue
+            if (n.x - t.x) ** 2 + (n.y - t.y) ** 2 < r2:
+                n.laugh_t = C.WHOOPEE_LAUGH_TIME
+                n.hostile_t = 0.0 if n.kind not in (GUARD, KEYGUARD) else n.hostile_t
+                laughed += 1
+        name = who.name if isinstance(who, Player) else ("AN OFFICER" if who.kind == OFFICER else
+                                                          "A GUARD" if who.kind in (GUARD, KEYGUARD) else
+                                                          "THE MIME (SILENTLY)" if who.kind == MIME else "SOMEBODY")
+        self.toast(self.rng.choice(WHOOPEE_LINES) % name + (" (%d PEOPLE LOST IT)" % laughed if laughed > 1 else ""),
+                   T_WHITE)
+        return t.uses <= 0
 
     def _banana(self, t):
         """A banana peel on the road. Returns True once somebody's found it."""
@@ -1485,14 +1666,14 @@ class World(Physics, Brawl, Garage, Police):
                                                                                         nude.y - cop.y)
             if cop.patrol:
                 seen = target is not None and self.heat > 0 and bd < C.WITNESS_RANGE_COP and \
-                    self.map.los(cop.x, cop.y, target[0], target[1])
+                    self.los(cop.x, cop.y, target[0], target[1])
                 if not seen:
                     self._traffic_ai(cop, dt)      # just doing laps. Totally not looking for you.
                     return
                 cop.patrol = False
                 self.toast("A PATROL CAR SPOTTED YOU! LIGHTS ON!", T_COP)
             if target is not None and not target[4] and isinstance(target[5], Player) and bd < C.COP_GUN_RANGE \
-                    and self.lethal_t > 0 and cop.gun_cd <= 0 and self.map.los(cop.x, cop.y, target[0], target[1]):
+                    and self.lethal_t > 0 and cop.gun_cd <= 0 and self.los(cop.x, cop.y, target[0], target[1]):
                 cop.gun_cd = C.COP_GUN_COOLDOWN
                 self._cop_shoot(cop, target[5], bd)
         if target is None:
@@ -1509,7 +1690,7 @@ class World(Physics, Brawl, Garage, Police):
             cop.throttle, cop.handbrake = -1.0, False
             return
         d = math.hypot(tx - cop.x, ty - cop.y)
-        if d < 32 and self.map.los(cop.x, cop.y, tx, ty):
+        if d < 32 and self.los(cop.x, cop.y, tx, ty):
             lead = min(d / 30.0, 0.6)
             ax, ay = tx + tvx * lead, ty + tvy * lead
         else:
@@ -1658,6 +1839,8 @@ class World(Physics, Brawl, Garage, Police):
     def _crash(self, car, dv, nx, ny):
         m = math.hypot(nx, ny) or 1.0
         nx, ny = nx / m, ny / m
+        if car.model == V.ARMOURED and nx * math.cos(car.ang) + ny * math.sin(car.ang) > 0.5:
+            self._money_hit(car, 2)                   # (v0.9) rammed from behind: the back doors buckle
         self.sfx(S_CRASH_BIG if dv >= C.CRASH_EJECT_DV else S_CRASH, car.x, car.y)
         for part in car.parts.values():
             if part is not None:
@@ -1737,7 +1920,10 @@ class World(Physics, Brawl, Garage, Police):
             p.spin += p.spin_rate * dt
             p.spin_rate *= math.exp(-1.5 * dt)
             airborne = p.z > 0 or p.vz > 0
-            dec = math.exp((-0.3 if airborne else -2.5) * dt)   # no friction in the air
+            if p.slide_t > 0:
+                p.slide_t -= dt
+            # no friction in the air; hit by a car, you skid along the tarmac for a while (v0.9)
+            dec = math.exp((-0.3 if airborne else -C.CAR_HIT_SLIDE_DECAY if p.slide_t > 0 else -2.5) * dt)
             p.vx *= dec
             p.vy *= dec
             if airborne:
@@ -1745,6 +1931,7 @@ class World(Physics, Brawl, Garage, Police):
             if p.tumble_t <= 0 and p.z <= 0:
                 p.state = FOOT
                 p.spin = 0.0
+                p.grace_t = C.GETUP_GRACE      # (v0.9) nobody decks you again while you find your feet
             p.moving = False
         elif p.state in (CUFFED, DEAD):
             p.vx = p.vy = 0.0
@@ -1761,8 +1948,10 @@ class World(Physics, Brawl, Garage, Police):
                 rel, cvx, cvy, nx, ny = hit
                 if rel > C.BODY_HIT_SPEED:
                     self._drop_carry(p, throw=False)
-                    self._tumble(p, cvx * 0.8 + nx * 3, cvy * 0.8 + ny * 3,
+                    kick = C.CAR_HIT_KICK + rel * C.CAR_HIT_KICK_PER
+                    self._tumble(p, cvx * C.CAR_HIT_CARRY + nx * kick, cvy * C.CAR_HIT_CARRY + ny * kick,
                                  lerp(1.2, 2.8, clamp(rel / 30.0, 0, 1)))
+                    p.slide_t = C.CAR_HIT_SLIDE_TIME
                     self.sfx(S_YELP, p.x, p.y)
                     if rel > C.YEET_SPEED:
                         p.vz = min(9.0, rel * 0.3)            # up and over the bonnet
@@ -1808,13 +1997,22 @@ class World(Physics, Brawl, Garage, Police):
             if n.tumble_t > 0 or airborne:
                 n.tumble_t = max(0.05, n.tumble_t - dt) if airborne else n.tumble_t - dt
                 n.spin += dt * 12
-                dec = math.exp((-0.3 if airborne else -2.5) * dt)
+                if n.slide_t > 0:
+                    n.slide_t -= dt
+                dec = math.exp((-0.3 if airborne else -C.CAR_HIT_SLIDE_DECAY if n.slide_t > 0 else -2.5) * dt)
                 n.vx *= dec
                 n.vy *= dec
+            elif n.laugh_t > 0 and n.kind in (OFFICER, GUARD, KEYGUARD):
+                n.laugh_t -= dt           # (v0.9) the whoopee cushion: even the law has to laugh
+                n.vx = n.vy = 0.0
             elif n.kind == OFFICER:
                 if not self._officer(n, dt):
                     dead.append(n.id)
                     continue
+            elif n.kind == CHICKEN:
+                self._chicken(n, dt)
+            elif n.kind == MIME:
+                self._mime(n, dt)
             elif n.kind in (GUARD, KEYGUARD):
                 self._guard(n, dt)
             elif n.kind == DOG:
@@ -1897,10 +2095,18 @@ class World(Physics, Brawl, Garage, Police):
                 n.y += n.vy * dt
                 self._body_vs_world(n, 0.35)
             hit = self._body_vs_cars(n, 0.35)
+            if n.kind == CHICKEN and hit is not None and hit[0] > 3.0:
+                self._chicken_splat(n)     # feathers. Everywhere.
+                dead.append(n.id)
+                continue
             if hit is not None and hit[0] > C.BODY_HIT_SPEED and n.tumble_t <= 0.3:
                 rel, cvx, cvy, nx, ny = hit
                 n.tumble_t = C.PED_TUMBLE
-                n.vx, n.vy = cvx * 0.8 + nx * 3, cvy * 0.8 + ny * 3
+                kick = C.CAR_HIT_KICK + rel * C.CAR_HIT_KICK_PER
+                n.vx, n.vy = cvx * C.CAR_HIT_CARRY + nx * kick, cvy * C.CAR_HIT_CARRY + ny * kick
+                n.slide_t = C.CAR_HIT_SLIDE_TIME
+                if rel > C.YEET_SPEED:
+                    n.vz, n.z = min(9.0, rel * 0.3), 0.05       # (pedestrians get yeeted too)
                 if n.complain_cd <= 0:
                     n.complain_cd = 4.0
                     if n.kind == CLOWN:
@@ -2027,7 +2233,8 @@ class World(Physics, Brawl, Garage, Police):
                 t.append((car.x, car.y, car.vx, car.vy, True, car))
         for p in self.players.values():
             wanted = self.heat > 0 or (p.jumpsuit and C.JUMPSUIT_WITNESS)   # (orange: wanted on sight)
-            if wanted and p.state in (FOOT, TUMBLE) and not p.jailed and not self.map.in_garage(p.x, p.y):
+            if wanted and p.state in (FOOT, TUMBLE) and not p.jailed and not self.map.in_garage(p.x, p.y) \
+                    and not p.hidden():                                   # (v0.9) it's just a box
                 t.append((p.x, p.y, p.vx, p.vy, False, p))
         return t
 
@@ -2055,7 +2262,7 @@ class World(Physics, Brawl, Garage, Police):
         worse than one nosy neighbour (the design doc is merciful)."""
         if not self.targets:
             return W_NONE, 0.0
-        los = self.map.los
+        los = self.los
         if any(t.kind == TRAP_SMOKE for t in self.traps.values()):
             base_los = los
             los = lambda a, b, c, d: base_los(a, b, c, d) and not self._smoky(a, b, c, d)   # noqa: E731
@@ -2070,7 +2277,7 @@ class World(Physics, Brawl, Garage, Police):
         r2o = C.WITNESS_RANGE_OWNER ** 2
         r2p = C.WITNESS_RANGE_PED ** 2
         for n in self.npcs.values():
-            if n.tumble_t > 0 or n.kind in (CLOWN, STREAKER) or n.kind in LAW or n.lure is not None or \
+            if n.tumble_t > 0 or n.kind in (CLOWN, STREAKER, CHICKEN, MIME) or n.kind in LAW or n.lure is not None or \
                     n.laugh_t > 0 or n.carried_by is not None:
                 continue              # (queueing for ice cream / laughing at your dance / over your shoulder)
             r2 = r2o if n.kind == OWNER else r2p
@@ -2244,9 +2451,13 @@ class World(Physics, Brawl, Garage, Police):
                 car = Car(self.new_id(), COP, x, y, math.atan2(d[1], d[0]), cop_loadout(self.rng))
             else:
                 mid = V.pick_model(self.rng, traffic=True)
+                if self.rng.random() < C.MONEY_TRUCK_CHANCE:
+                    mid = V.ARMOURED                      # (v0.9) somebody's takings, on wheels
                 car = Car(self.new_id(), TRAFFIC, x, y, math.atan2(d[1], d[0]), model_loadout(self.rng, mid),
                           color=self.rng.randrange(1, len(V.PAINT_NAMES)), model=mid)
                 self._dress(car)
+                if mid == V.ARMOURED:
+                    self._money_truck(car)
             car.pull = self.rng.choice((-1.0, 1.0))
             car.vx, car.vy = d[0] * C.TRAFFIC_SPEED * 0.8, d[1] * C.TRAFFIC_SPEED * 0.8
             car.tdir, car.node = d, (i, j)

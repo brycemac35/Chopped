@@ -140,6 +140,65 @@ def concrete_wall(height_px, night):
     return s
 
 
+def roller_door(panel, night):
+    """(v0.9) One 4 m bay of the chop shop's roller door: galvanised slats, guide rails
+    each side, a kick bar and a handle at the bottom, and somebody's tag."""
+    h = 48
+    s = pygame.Surface((TEX, h))
+    base = (150, 152, 160) if not night else (88, 90, 100)
+    s.fill(base)
+    for y in range(0, h, 3):
+        s.fill(shade(base, 0.78), (0, y, TEX, 1))
+        s.fill(shade(base, 1.08), (0, y + 1, TEX, 1))
+    rail = shade(base, 0.45)
+    s.fill(rail, (0, 0, 2, h))
+    s.fill(rail, (TEX - 2, 0, 2, h))
+    s.fill((56, 56, 62), (0, h - 3, TEX, 3))                             # the kick bar
+    s.fill(P["line_y"], (2, h - 6, TEX - 4, 2))                          # hazard stripe
+    for x in range(2, TEX - 2, 6):
+        s.fill(P["ink"], (x, h - 6, 3, 2))
+    s.fill((40, 40, 46), (TEX // 2 - 3, h - 9, 6, 2))                    # the handle
+    rng = random.Random(panel * 17 + 3)
+    if panel in (0, 5, 6) or rng.random() < 0.3:
+        col = GRAFFITI[rng.randrange(len(GRAFFITI))]
+        x, y = rng.randrange(4, 18), rng.randrange(8, 26)
+        for _ in range(26):                                             # a tag. It says "DAVE". Probably.
+            s.fill(col if not night else shade(col, 0.6), (x, y, 2, 2))
+            x = max(3, min(TEX - 5, x + rng.choice((-2, 0, 2, 2))))
+            y = max(4, min(h - 12, y + rng.choice((-2, -1, 1, 2))))
+    return s
+
+
+def roof_texture(w_m, h_m, ppm):
+    """(v0.9) The underside of the shop's roof, seen from below: corrugated steel,
+    I-beams every 4 m, fluorescent tubes (two of them flickering, obviously), and a
+    skylight nobody has cleaned since 1994. Colour (255, 0, 255) = no roof."""
+    w, h = int(w_m * ppm), int(h_m * ppm)
+    s = pygame.Surface((w, h))
+    base = (82, 84, 94)
+    s.fill(base)
+    for x in range(0, w, 2):
+        s.fill(shade(base, 0.8), (x, 0, 1, h))                           # the corrugations
+    beam = (40, 40, 48)
+    step = int(4 * ppm)
+    for y in range(0, h + 1, step):
+        s.fill(beam, (0, y - 2, w, 4))
+        s.fill(shade(beam, 1.5), (0, y - 2, w, 1))
+    for x in range(0, w + 1, step * 2):
+        s.fill(beam, (x - 1, 0, 3, h))
+    rng = random.Random(1994)
+    for y in range(step // 2, h, step):
+        for x in range(step // 2, w - step // 2, step * 2):
+            lw, lh = int(1.4 * ppm), max(2, int(0.25 * ppm))
+            s.fill((150, 160, 170), (x - lw // 2 - 1, y - lh // 2 - 1, lw + 2, lh + 2))
+            s.fill((235, 245, 255) if rng.random() > 0.15 else (120, 130, 140), (x - lw // 2, y - lh // 2, lw, lh))
+    sx, sy = int(w * 0.62), int(h * 0.3)
+    s.fill((60, 62, 70), (sx - 1, sy - 1, int(2.5 * ppm) + 2, int(2.5 * ppm) + 2))
+    s.fill((150, 170, 170), (sx, sy, int(2.5 * ppm), int(2.5 * ppm)))    # the skylight (grubby)
+    _noise(s, rng, ((90, 100, 96), (120, 130, 120)), int(ppm * ppm * 2))
+    return s
+
+
 class WallTex:
     """A wall texture pre-shaded at SHADES darkness levels, sliced into
     1-pixel columns so the raycaster just picks one and scales it."""
@@ -310,7 +369,8 @@ _BODY = {V.KEI: (0.3, 1.0, 0.31, 0.63), V.SEDAN: (0.3, 0.95, 0.33, 0.62), V.COUP
          V.MUSCLE: (0.3, 0.9, 0.35, 0.62), V.PICKUP: (0.4, 1.1, 0.4, 0.62), V.VAN: (0.36, 1.05, 0.38, 0.66),
          V.ICECREAM: (0.36, 1.05, 0.38, 0.66), V.SCOOTER: (0.12, 0.25, 0.12, 0.62),
          V.RICE: (0.18, 0.76, 0.3, 0.64),          # slammed. Scrapes on painted lines.
-         V.TRUCK4: (0.78, 1.55, 0.56, 0.6)}        # lifted. You need a step ladder.
+         V.TRUCK4: (0.78, 1.55, 0.56, 0.6),        # lifted. You need a step ladder.
+         V.ARMOURED: (0.42, 1.12, 0.44, 0.64)}     # (v0.9) the money truck: a bank vault on wheels
 STICKER_COLS = [(255, 255, 255), (240, 60, 60), (40, 200, 240), (250, 220, 60), (30, 30, 36), (255, 110, 200)]
 
 
@@ -336,6 +396,8 @@ def car_boxes(kind, color, mask, styles, damage, lights, model=V.KEI, livery=0, 
     sec = CAR_COLORS[second % len(CAR_COLORS)]
     if model == V.SCOOTER:
         return _scooter_boxes(body, mask, st, lights)
+    if model == V.ARMOURED:
+        body = (122, 126, 134)                         # armour plate grey, whatever colour it rolled
     hl, hw = m.length / 2.0, m.width / 2.0
     z0, zw, wr, axle = _BODY[model]
     zr = zw + m.roof
@@ -346,7 +408,7 @@ def car_boxes(kind, color, mask, styles, damage, lights, model=V.KEI, livery=0, 
     door = P["white"] if kind == COP else body
     hole = P["ink"]
     b = []
-    boxy = model in (V.VAN, V.ICECREAM)
+    boxy = model in (V.VAN, V.ICECREAM, V.ARMOURED)
     glow = (extras >> 4) & 15
     if glow:
         # neon underglow: a thin slab of light just under the sills. Tasteful. (It is not tasteful.)
@@ -536,6 +598,12 @@ def car_boxes(kind, color, mask, styles, damage, lights, model=V.KEI, livery=0, 
         b.append((gx - 0.07, gx + 0.08, -0.07, 0.07, gz + 0.2, gz + 0.3, SKINS[0]))
         b.append((gx - 0.08, gx + 0.08, -0.08, 0.08, gz + 0.3, gz + 0.38, GNOME_RED))
         b.append((gx - 0.04, gx + 0.04, -0.04, 0.04, gz + 0.38, gz + 0.5, GNOME_RED))
+    if model == V.ARMOURED:
+        # a gold band and a big dollar sign each side, so it's obvious what's in the back. Subtle.
+        for y0, y1 in ((-hw - 0.02, -hw), (hw, hw + 0.02)):
+            b.append((-hl + 0.3, cf - 0.2, y0, y1, zw * 0.72, zw * 0.8, P["gold"]))
+            b.append((-hl * 0.35 - 0.12, -hl * 0.35 + 0.12, y0, y1, zw + 0.2, zw + 0.8, P["gold"]))
+        b.append((-hl - 0.05, -hl, -0.04, 0.04, z0 + 0.2, top_z - 0.1, (60, 62, 70)))   # the back doors' seam
     # ---- cop bits -----------------------------------------------------------------------
     if kind == COP:
         l_on = lights & 1
@@ -682,12 +750,16 @@ def person_boxes(shirt, skin, hair, frame, extra=None, pants=(52, 56, 78), gun=0
     hat = None
     if extra == "clown":
         shoe, pants = (230, 40, 40), (80, 200, 255)
+    civhat = int(outfit[3]) if outfit and outfit.startswith("hat") else None
     if outfit in OUTFITS:
         shirt, pants, hat = OUTFITS[outfit]
         if outfit != "jumpsuit":
             shoe = (16, 16, 20)
     elif outfit == "streaker":
         shirt = pants = shoe = skin
+    elif outfit == "mime":
+        # (v0.9) white face, white gloves, stripes, black trousers, beret. Silent. Judging you.
+        shirt, pants, shoe, skin, hair = (240, 240, 240), (20, 20, 24), (16, 16, 20), (246, 246, 246), (20, 20, 24)
     for side, s in ((-1, 1), (1, -1)):
         lx = s * swing
         y0, y1 = (side * 0.2, -0.03) if side < 0 else (0.03, side * 0.2)
@@ -710,6 +782,10 @@ def person_boxes(shirt, skin, hair, frame, extra=None, pants=(52, 56, 78), gun=0
     if outfit in ("officer", "guard", "keyguard"):
         b.append((-0.14, 0.14, -0.25, 0.25, 0.8, 0.86, (20, 20, 24)))                    # duty belt
         b.append((0.13, 0.14, -0.14, -0.06, 1.22, 1.3, (230, 196, 70)))                   # badge
+    if outfit == "mime":
+        for z in (0.88, 1.02, 1.16, 1.3):
+            b.append((-0.135, 0.135, -0.245, 0.245, z, z + 0.06, (24, 24, 28)))          # the stripes
+        b.append((0.13, 0.14, -0.06, 0.06, 1.46, 1.49, (200, 30, 40)))                    # the sad little mouth
     if outfit == "streaker":
         b.append((0.12, 0.2, -0.16, 0.16, 0.66, 0.88, P["ink"]))                         # [CENSORED]
         b.append((-0.2, -0.12, -0.16, 0.16, 0.66, 0.88, P["ink"]))
@@ -763,10 +839,124 @@ def person_boxes(shirt, skin, hair, frame, extra=None, pants=(52, 56, 78), gun=0
     if extra == "clown":
         b.append((0.15, 0.2, -0.03, 0.03, 1.5, 1.56, (255, 40, 40)))                      # honk
         b.append((-0.2, 0.1, -0.24, 0.24, 1.6, 1.84, (255, 110, 40)))                     # wig
+    elif outfit == "mime":
+        b.append((-0.2, 0.12, -0.18, 0.18, 1.72, 1.8, (20, 20, 24)))                      # the beret
+        b.append((-0.03, 0.03, -0.03, 0.03, 1.8, 1.86, (20, 20, 24)))
     else:
         b.append((-0.16, 0.08, -0.15, 0.15, 1.66, 1.78, hair))
         b.append((-0.16, -0.12, -0.15, 0.15, 1.46, 1.7, hair))
+        if civhat is not None:
+            b.extend((x0, x1, y0, y1, z0 + 1.72, z1 + 1.72, c) for x0, x1, y0, y1, z0, z1, c in civ_hat_boxes(civhat))
     return b
+
+
+CIV_HATS = 5
+
+
+def civ_hat_boxes(style):
+    """(v0.9) Pedestrians' hats, sitting at z = 0 (the head top is added by the caller).
+    They come off when you knock someone down. Flat cap, bowler, cowboy, top hat, bobble."""
+    if style == 0:
+        c = (110, 96, 80)
+        return [(-0.17, 0.15, -0.16, 0.16, -0.04, 0.05, c), (0.12, 0.28, -0.14, 0.14, -0.04, 0.0, shade(c, 0.8))]
+    if style == 1:
+        c = (30, 28, 30)
+        return [(-0.22, 0.22, -0.22, 0.22, -0.04, 0.0, c), (-0.14, 0.14, -0.14, 0.14, 0.0, 0.16, c)]
+    if style == 2:
+        c = (150, 100, 55)
+        return [(-0.34, 0.34, -0.3, 0.3, -0.03, 0.01, c), (-0.14, 0.14, -0.13, 0.13, 0.0, 0.18, c),
+                (-0.15, 0.15, -0.14, 0.14, 0.02, 0.05, (60, 40, 26))]
+    if style == 3:
+        c = (22, 22, 26)
+        return [(-0.22, 0.22, -0.22, 0.22, -0.04, 0.0, c), (-0.13, 0.13, -0.13, 0.13, 0.0, 0.36, c),
+                (-0.135, 0.135, -0.135, 0.135, 0.05, 0.1, (150, 30, 40))]
+    c = (200, 40, 60)
+    return [(-0.16, 0.16, -0.16, 0.16, -0.04, 0.12, c), (-0.16, 0.16, -0.16, 0.16, 0.0, 0.03, (240, 240, 240)),
+            (-0.06, 0.06, -0.06, 0.06, 0.12, 0.22, (240, 240, 240))]
+
+
+def chicken_boxes(frame=0, peck=False):
+    """(v0.9) A chicken, facing +x. It is crossing the road. It will not say why."""
+    white, red, yel = (246, 244, 236), (220, 40, 40), (240, 190, 40)
+    step = 0.04 if frame else -0.04
+    head_dz = -0.14 if peck else 0.0
+    hx = 0.14 if not peck else 0.2
+    return [(step - 0.015, step + 0.015, -0.06, -0.03, 0.0, 0.14, yel),
+            (-step - 0.015, -step + 0.015, 0.03, 0.06, 0.0, 0.14, yel),
+            (-0.16, 0.1, -0.1, 0.1, 0.12, 0.3, white),                                   # body
+            (-0.22, -0.14, -0.05, 0.05, 0.22, 0.36, white),                              # tail
+            (hx - 0.06, hx + 0.04, -0.05, 0.05, 0.28 + head_dz, 0.4 + head_dz, white),   # head
+            (hx - 0.04, hx + 0.0, -0.015, 0.015, 0.4 + head_dz, 0.45 + head_dz, red),    # comb
+            (hx + 0.04, hx + 0.08, -0.02, 0.02, 0.33 + head_dz, 0.36 + head_dz, yel),    # beak
+            (hx + 0.03, hx + 0.05, -0.01, 0.01, 0.28 + head_dz, 0.32 + head_dz, red)]    # wattle
+
+
+def rubber_chicken_boxes():
+    """(v0.9) The rubber chicken: plucked, yellow, floppy, along +x. Squeaks."""
+    yel, red = (250, 214, 60), (230, 60, 40)
+    return [(-0.3, 0.1, -0.05, 0.05, 0.0, 0.08, yel),              # body (limp)
+            (0.1, 0.3, -0.03, 0.03, 0.02, 0.06, yel),              # neck
+            (0.3, 0.38, -0.04, 0.04, 0.0, 0.08, yel),              # head
+            (0.32, 0.36, -0.01, 0.01, 0.08, 0.12, red),            # comb
+            (0.38, 0.44, -0.015, 0.015, 0.02, 0.05, (240, 150, 40)),
+            (-0.4, -0.3, -0.06, -0.02, 0.0, 0.03, yel), (-0.4, -0.3, 0.02, 0.06, 0.0, 0.03, yel)]
+
+
+def whoopee_boxes():
+    """(v0.9) A whoopee cushion, flat on the ground, nozzle out. Pfffft pending."""
+    pink = (240, 110, 170)
+    return [(-0.26, 0.26, -0.22, 0.22, 0.0, 0.06, pink), (-0.2, 0.2, -0.26, 0.26, 0.0, 0.06, pink),
+            (0.26, 0.36, -0.04, 0.04, 0.0, 0.03, shade(pink, 0.8))]
+
+
+def cardboard_box_boxes(frame=0, moving=False):
+    """(v0.9) A cardboard box, 1 m a side. Parcel tape. A 'THIS WAY UP' arrow. And if it's
+    moving, little feet underneath (the illusion is not perfect)."""
+    card, tape, dark = (190, 150, 100), (220, 200, 150), (150, 115, 75)
+    lift = 0.14 if moving else 0.0
+    b = [(-0.5, 0.5, -0.5, 0.5, lift, lift + 1.0, {"*": card, "+z": shade(card, 1.1)}),
+         (-0.5, 0.5, -0.07, 0.07, lift + 1.0, lift + 1.01, tape),                         # the tape
+         (-0.3, 0.3, -0.5, -0.49, lift + 0.4, lift + 0.6, dark),                           # the arrow, sort of
+         (0.49, 0.5, -0.2, 0.2, lift + 0.5, lift + 0.56, dark)]                            # the eye slit
+    if moving:
+        s = 0.08 if frame else -0.08
+        b.append((s - 0.08, s + 0.1, -0.24, -0.08, 0.0, 0.14, (30, 26, 30)))
+        b.append((-s - 0.08, -s + 0.1, 0.08, 0.24, 0.0, 0.14, (30, 26, 30)))
+    return b
+
+
+def ramp_boxes():
+    """(v0.9) A plywood stunt ramp rising along +x, in hazard stripes. Somebody's dad built it."""
+    hl, hw = 1.6, 1.7
+    b = []
+    steps = 8
+    for k in range(steps):
+        x0 = -hl + k * 2 * hl / steps
+        x1 = x0 + 2 * hl / steps
+        z1 = 0.08 + 0.9 * (k + 1) / steps
+        col = (240, 200, 40) if k % 2 == 0 else (30, 30, 34)
+        b.append((x0, x1, -hw, hw, 0.0, z1, {"*": (150, 110, 60), "+z": col}))
+    return b
+
+
+def pigeon_img(frame, flying):
+    """(v0.9) A pigeon, as a billboard: grey, round, stupid. frame flaps the wings."""
+    s = pygame.Surface((8, 7), pygame.SRCALPHA)
+    body, dark, neck = (140, 140, 150), (90, 90, 100), (90, 150, 130)
+    s.fill(body, (1, 3, 6, 3))
+    s.fill(dark, (5, 1, 2, 2))
+    s.fill(neck, (5, 3, 2, 1))
+    s.fill((230, 170, 60), (7, 2, 1, 1))
+    if flying:
+        if frame:
+            s.fill(dark, (0, 0, 3, 3))
+            s.fill(dark, (4, 0, 2, 2))
+        else:
+            s.fill(dark, (0, 5, 3, 2))
+    else:
+        s.fill((200, 120, 110), (2, 6, 1, 1))
+        s.fill((200, 120, 110), (4, 6, 1, 1))
+    return s
 
 
 DOG_BROWN, DOG_DARK = (150, 100, 55), (60, 40, 26)
@@ -876,6 +1066,43 @@ def gate_boxes(length):
     return b
 
 
+PRECINCT_LINO = (150, 160, 176)     # (art.PRECINCT_FLOOR: the desk's footprint gets painted over with it)
+
+
+def bars_boxes(length, door=False, locked=True, bent=0.0):
+    """(v0.9) A run of cell bars along model y (the cells' walls), or a cell door:
+    same bars, a frame, and a big padlock. A punched door leans (bent = 0..1)."""
+    hl = length / 2
+    steel, dark = (120, 124, 136), (54, 56, 66)
+    h = 2.6
+    lean = 0.35 * bent
+    b = [(-0.07, 0.07, -hl, hl, h - 0.14, h, dark), (-0.07, 0.07, -hl, hl, 0.0, 0.1, dark),
+         (-0.05, 0.05, -hl, hl, 1.25, 1.33, steel)]
+    n = max(2, int(length / 0.26))
+    for k in range(n):
+        y = -hl + (k + 0.5) * length / n
+        b.append((-0.035 + lean, 0.035 + lean, y - 0.035, y + 0.035, 0.1, h - 0.14, steel))
+    if door:
+        b.append((-0.08, 0.08, -hl, -hl + 0.1, 0.0, h, dark))
+        b.append((-0.08, 0.08, hl - 0.1, hl, 0.0, h, dark))
+        if locked:
+            b.append((-0.14, 0.14, hl - 0.4, hl - 0.16, 1.05, 1.35, (200, 170, 60)))   # the padlock
+    return b
+
+
+def desk_boxes(w, d):
+    """(v0.9) The precinct front desk: a wooden counter, a computer from 1998,
+    a bell nobody answers, and a BAIL sign. Along model x = w, y = d."""
+    wood, dark = (110, 80, 50), (70, 50, 30)
+    hw, hd = w / 2, d / 2
+    return [(-hw, hw, -hd, hd, 0.0, 1.05, {"*": wood, "+z": (130, 96, 60)}),
+            (-hw, hw, -hd - 0.04, -hd, 0.0, 1.05, dark),
+            (-0.6, 0.0, -0.2, 0.25, 1.05, 1.45, (200, 196, 180)),               # the beige monitor
+            (-0.5, -0.1, -0.24, -0.2, 1.12, 1.4, (40, 60, 90)),
+            (0.8, 0.95, -0.1, 0.05, 1.05, 1.12, (220, 200, 90)),                # ding
+            (-0.9, 0.9, -0.04, 0.04, 1.55, 1.95, {"*": (30, 60, 150), "+y": (40, 70, 170)})]
+
+
 def banana_boxes():
     """A banana peel: four floppy yellow bits and a brown stalk. Deadly."""
     yel, dark = (255, 232, 60), (215, 180, 40)
@@ -899,7 +1126,8 @@ def donut_box_boxes():
 
 CRATE_BANDS = {"pistol": (60, 60, 70), "shotgun": GUN_WOOD, "ammo": (200, 170, 60),
                "spikes": (230, 190, 40), "roadblock": BARRIER_ORANGE, "banana": (250, 220, 70),
-               "donuts": (236, 130, 190)}
+               "donuts": (236, 130, 190), "chicken": (250, 220, 60), "whoopee": (240, 110, 170),
+               "box": (190, 150, 100)}
 
 
 def crate_boxes(item):
@@ -926,6 +1154,14 @@ def crate_boxes(item):
         for y in (-0.25, -0.08, 0.09, 0.26):
             b.append((-0.3, 0.3, y - 0.06, y + 0.06, 0.75, 0.8, (26, 24, 30)))
             b.append((-0.25, 0.25, y - 0.02, y + 0.02, 0.8, 0.86, P["chrome"]))
+    elif item == "chicken":
+        b.extend((x0 * 1.1, x1 * 1.1, y0 * 1.1, y1 * 1.1, z0 + 0.75, z1 + 0.75, c)
+                 for x0, x1, y0, y1, z0, z1, c in rubber_chicken_boxes())
+    elif item == "whoopee":
+        b.extend((x0, x1, y0, y1, z0 + 0.75, z1 + 0.75, c) for x0, x1, y0, y1, z0, z1, c in whoopee_boxes())
+    elif item == "box":
+        b.extend((x0 * 0.4, x1 * 0.4, y0 * 0.4, y1 * 0.4, z0 * 0.4 + 0.75, z1 * 0.4 + 0.75, c)
+                 for x0, x1, y0, y1, z0, z1, c in cardboard_box_boxes(0, False))
     else:
         b.append((-0.3, 0.3, -0.35, 0.35, 0.75, 0.84, BARRIER_ORANGE))
         b.append((-0.3, 0.3, -0.12, 0.12, 0.75, 0.845, BARRIER_WHITE))

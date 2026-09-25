@@ -227,6 +227,27 @@ class Renderer:
                 sx, sy = self.to_screen(t[2], t[3])
                 pygame.draw.circle(low, (150, 150, 158), (sx, sy), max(2, int(C.SMOKE_SCREEN_R * PPM * (0.6 + 0.4 * t[5]))))
                 continue
+            if t[1] == S.TRAP_CELL:
+                if t[5] > 0:
+                    tr = S.Trap(t[0], t[1], t[2], t[3], t[4]).rect()
+                    x0, y0 = self.to_screen(tr[0], tr[1])
+                    w = max(1, int(tr[2] * PPM))
+                    low.fill((50, 52, 60), (x0, y0, w, 2))
+                    for k in range(0, w, 3):
+                        low.fill((150, 154, 166), (x0 + k, y0, 1, 2))
+                    low.fill(P["gold"], (x0 + w - 3, y0 - 1, 2, 3))          # the padlock
+                continue
+            if t[1] == S.TRAP_DOOR:
+                # the shop's roller door: a shutter line across the front, gone when it's up
+                if t[5] < 0.98:
+                    x0, y0 = self.to_screen(t[2] - C.DOOR_W / 2, t[3] - C.DOOR_T / 2)
+                    w = max(1, int(C.DOOR_W * PPM))
+                    shut = t[5] < C.DOOR_PASSABLE
+                    col = (170, 172, 180) if shut else (110, 112, 120)
+                    low.fill(col, (x0, y0, w, max(2, int(C.DOOR_T * PPM))))
+                    for k in range(0, w, 8):
+                        low.fill((90, 92, 100), (x0 + k, y0, 1, max(2, int(C.DOOR_T * PPM))))
+                continue
             if t[1] == S.TRAP_GATE:
                 if t[5] > 0:
                     tr = S.Trap(t[0], t[1], t[2], t[3], t[4]).rect()
@@ -237,9 +258,10 @@ class Renderer:
                 continue
             if t[5] < 0.1 and blink:
                 continue
-            if t[1] in (S.TRAP_BANANA, S.TRAP_DONUT):
+            if t[1] in (S.TRAP_BANANA, S.TRAP_DONUT, S.TRAP_WHOOPEE):
                 sx, sy = self.to_screen(t[2], t[3])
-                low.fill((250, 220, 70) if t[1] == S.TRAP_BANANA else (236, 130, 190), (sx - 1, sy - 1, 3, 3))
+                low.fill({S.TRAP_BANANA: (250, 220, 70), S.TRAP_DONUT: (236, 130, 190)}.get(t[1], (240, 110, 170)),
+                         (sx - 1, sy - 1, 3, 3))
                 continue
             tr = S.Trap(t[0], t[1], t[2], t[3], t[4]).rect()
             x0, y0 = self.to_screen(tr[0], tr[1])
@@ -312,6 +334,8 @@ class Renderer:
             elif kind == S.STREAKER:
                 sk = r.choice(art.SKINS)
                 k = (sk, sk, r.choice(art.HAIRS), None)
+            elif kind == S.MIME:
+                k = ((240, 240, 240), (246, 246, 246), (20, 20, 24), None)
             else:
                 k = (r.choice(art.SHIRTS), r.choice(art.SKINS), r.choice(art.HAIRS), None)
             self.person_keys[(eid, kind)] = k
@@ -328,6 +352,10 @@ class Renderer:
                 c, sn = math.cos(n[5]), math.sin(n[5])
                 low.fill((150, 100, 55), (sx - 2, sy - 2, 4, 4))
                 low.fill((60, 40, 26), (int(sx + c * 3) - 1, int(sy + sn * 3) - 1, 2, 2))
+                continue
+            if n[1] == S.CHICKEN:
+                low.fill((246, 244, 236), (sx - 1, sy - 1, 3, 3))          # (v0.9) a chicken, from above
+                low.fill((220, 40, 40), (sx, sy - 2, 1, 1))
                 continue
             shirt, skin, hair, extra = self._person_key(n[0], n[1])
             fr = frame if n[2] in (0, 4, 5) else panic if n[2] == 2 else 0
@@ -401,6 +429,11 @@ class Renderer:
             shirt = art.PLAYER_COLORS[color % 4]
             extra = "cuffed" if state == S.CUFFED else None
             fr = frame if (flags & PR.PF_MOVING) else 0
+            if len(p) > 17 and p[17] & PR.PF2_BOX and state == S.FOOT:
+                low.fill((150, 115, 75), (sx - 4, sy - 4, 9, 9))           # (v0.9) a box. Definitely a box
+                low.fill((190, 150, 100), (sx - 3, sy - 3, 7, 7))
+                low.fill((220, 200, 150), (sx - 3, sy, 7, 1))
+                continue
             z = p[15] if len(p) > 15 else 0.0
             if z > 0.1:
                 low.fill((20, 18, 26), (sx - 2, sy + 2, 5, 2))

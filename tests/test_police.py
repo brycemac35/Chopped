@@ -275,15 +275,26 @@ class TestPrecinct(unittest.TestCase):
         self.assertFalse(p.jumpsuit)
 
     def test_the_guards_come_for_you(self):
+        """(v0.9) ...once you're out of your cell and they've noticed."""
         w = world()
         p = w.add_player("BRYCE")
         lock_up(w, p)
+        k = w.map.cell_at(p.x, p.y)
+        self.assertGreaterEqual(k, 0, "you wake up in a cell")
+        step(w, 8.0)
+        self.assertEqual(p.state, S.FOOT, "nobody can reach you in there")
+        self.assertEqual(w.map.cell_at(p.x, p.y), k, "and you can't leave")
+        # out into the hall, right up to a guard: noticed, then flattened
+        w._open_cell(w.cell_traps[k], True)
+        g = next(n for n in w.npcs.values() if n.kind == S.GUARD)
+        p.x, p.y = g.x + 1.5, g.y
         hurt = False
         for _ in range(int(8 / DT)):
             w.step(DT)
             if p.state == S.TUMBLE:
                 hurt = True
                 break
+        self.assertTrue(w.jail_alert)
         self.assertTrue(hurt, "stand about in the lockup and a guard flattens you")
 
     def test_bail(self):
@@ -347,6 +358,129 @@ class TestPrecinct(unittest.TestCase):
         self.assertIn("GNOME THEFT", text)
         self.assertIn("2X UNLICENSED DANCING", text)
         self.assertEqual(p.banner, S.BN_BUSTED)
+
+
+class TestCells(unittest.TestCase):
+    """v0.9: "instead of just a big open hall in the precinct have a small jail cell
+    you need to break out of first", and guards that are "harder to kill, but ...
+    can't box you in the corner and spawn trap you"."""
+
+    def test_the_cells_are_real(self):
+        for seed in (1, 99, 4242, 12345, 777):
+            m = CityMap(seed)
+            self.assertEqual(len(m.cells), 2)
+            self.assertEqual(len(m.cell_doors), 2)
+            for k, (x, y, _a) in enumerate(m.cell_doors):
+                self.assertTrue(m.in_precinct(x, y - 0.5))
+            for x, y in m.jail_spawns:
+                self.assertGreaterEqual(m.cell_at(x, y), 0, "you start in a cell")
+
+    def test_the_door_is_solid_and_you_cant_jump_it(self):
+        w = world()
+        p = w.add_player("BRYCE")
+        lock_up(w, p)
+        d = w.cell_traps[w.map.cell_at(p.x, p.y)]
+        self.assertIn(d.rect(), w.tall_rects)
+        p.x, p.y, p.z = d.x, d.y + 0.2, 2.5          # (mid-leap, straight through the bars)
+        p.vx = p.vy = 0.0
+        w._body_vs_world(p, C.PLAYER_RADIUS)
+        self.assertGreater(abs(p.y - d.y), 0.2, "the bars go all the way up")
+
+    def test_punch_it_open_loudly(self):
+        w = world()
+        p = w.add_player("BRYCE")
+        lock_up(w, p)
+        d = w.cell_traps[w.map.cell_at(p.x, p.y)]
+        p.x, p.y = d.x, d.y - 1.0
+        for _ in range(C.CELL_DOOR_HP):
+            face(p, d.x, d.y)
+            self.assertTrue(w._punch_cell_door(p))
+        self.assertEqual(d.uses, 0)
+        self.assertNotIn(d.rect(), w.extra_rects)
+        self.assertTrue(w.jail_alert, "the guards heard every one of those")
+
+    def test_pick_it_quietly(self):
+        w = world()
+        p = w.add_player("BRYCE")
+        lock_up(w, p)
+        d = w.cell_traps[w.map.cell_at(p.x, p.y)]
+        p.x, p.y = d.x, d.y - 1.0
+        face(p, d.x, d.y)
+        inp(p, buttons=S.B_USE)
+        step(w, C.CELL_PICK_TIME + 0.3)
+        self.assertEqual(d.uses, 0, "click")
+        self.assertFalse(w.jail_alert, "nobody noticed")
+
+    def test_bail_from_the_cell_with_x(self):
+        w = world()
+        p = w.add_player("BRYCE")
+        lock_up(w, p)
+        w.cash = 2000
+        self.assertIn("X: BAIL", p.prompt)
+        inp(p, buttons=S.B_HOP)
+        w.step(DT)
+        self.assertFalse(p.jailed)
+        self.assertEqual(w.cell_traps[w.map.cell_at(p.x, p.y)].uses, 0, "and they open the door for you")
+
+    def test_a_crewmate_lets_you_out(self):
+        w = world()
+        a = w.add_player("ALICE")
+        b = w.add_player("BOB")
+        lock_up(w, a)
+        d = w.cell_traps[w.map.cell_at(a.x, a.y)]
+        b.x, b.y = d.x, d.y + 1.3
+        face(b, d.x, d.y)
+        inp(b, buttons=S.B_USE)
+        step(w, C.CELL_OPEN_TIME + 0.3)
+        self.assertEqual(d.uses, 0)
+
+    def test_two_prisoners_two_cells(self):
+        w = world()
+        a = w.add_player("ALICE")
+        b = w.add_player("BOB")
+        lock_up(w, a)
+        lock_up(w, b)
+        self.assertNotEqual(w.map.cell_at(a.x, a.y), w.map.cell_at(b.x, b.y), "one each: room to pace")
+
+    def test_the_guards_are_harder_to_kill(self):
+        w = world()
+        p = w.add_player("BRYCE")
+        lock_up(w, p)
+        g = next(n for n in w.npcs.values() if n.kind == S.GUARD)
+        kg = next(n for n in w.npcs.values() if n.kind == S.KEYGUARD)
+        self.assertGreaterEqual(g.grit, 4)
+        self.assertGreater(kg.grit, g.grit)
+
+    def test_one_at_a_time_and_no_pinning(self):
+        """Out in the hall, the guards take turns, back off after a hit, and never
+        hit you again while you're getting up."""
+        w = world()
+        p = w.add_player("BRYCE")
+        lock_up(w, p)
+        w._open_cell(w.cell_traps[w.map.cell_at(p.x, p.y)], False)
+        px, py, pw, ph = w.map.precinct_rect
+        p.x, p.y = px + pw / 2, py + ph / 2 - 1.0
+        w.jail_alert = True
+        close_max = 0
+        knocks, got_up = 0, None
+        was = p.state
+        for i in range(int(12 / DT)):
+            p.vx = p.vy = 0.0
+            w.step(DT)
+            guards = [n for n in w.npcs.values() if n.kind in (S.GUARD, S.KEYGUARD) and n.tumble_t <= 0]
+            if i > int(2.5 / DT):
+                close = sum(1 for n in guards if math.hypot(n.x - p.x, n.y - p.y) < C.GUARD_RING - 1.0)
+                close_max = max(close_max, close)
+            if was == S.TUMBLE and p.state == S.FOOT:
+                got_up = w.tick
+            if was == S.FOOT and p.state == S.TUMBLE:
+                knocks += 1
+                if got_up is not None:
+                    self.assertGreaterEqual((w.tick - got_up) * DT, C.GETUP_GRACE - DT,
+                                            "you get a moment to find your feet")
+            was = p.state
+        self.assertGreaterEqual(knocks, 1, "they do fight")
+        self.assertLessEqual(close_max, 1, "one guard at a time; the rest wait their turn")
 
 
 class TestSillyPolice(unittest.TestCase):

@@ -52,6 +52,13 @@ class Police:
         if self.map.gate is not None:
             gx, gy, ga = self.map.gate
             self.gate_trap = Trap(C.GATE_ID, TRAP_GATE, gx, gy, ga)
+        # (v0.9) the cell doors: same idea. uses = how many more punches it can take
+        self.cell_traps = []
+        for k, (x, y, a) in enumerate(self.map.cell_doors):
+            t = Trap(C.CELL_ID_BASE + k, TRAP_CELL, x, y, a)
+            t.uses = C.CELL_DOOR_HP
+            self.cell_traps.append(t)
+        self.jail_alert = False         # the guards know someone's loose in the hall
         self._rebuild_trap_rects()
 
     def gate(self):
@@ -73,6 +80,8 @@ class Police:
         self._update_gate(dt)
         self._jail_tick(dt)
         for p in self.players.values():
+            if p.grace_t > 0:
+                p.grace_t -= dt
             if p.tased_t > 0:
                 p.tased_t -= dt
             if p.pants_t > 0:
@@ -109,7 +118,7 @@ class Police:
         out = []
         for p in self.players.values():
             if p.state not in (FOOT, TUMBLE) or p.jailed or self.map.in_garage(p.x, p.y) or \
-                    self.map.in_precinct(p.x, p.y):
+                    self.map.in_precinct(p.x, p.y) or p.hidden():
                 continue
             if self.heat > 0 or (p.jumpsuit and C.JUMPSUIT_WITNESS):
                 out.append(p)
@@ -127,7 +136,7 @@ class Police:
             best, bd = None, C.OFFICER_DEPLOY_RANGE
             for p in cands:
                 d = math.hypot(p.x - cop.x, p.y - cop.y)
-                if d < bd and self.map.los(cop.x, cop.y, p.x, p.y):
+                if d < bd and self.los(cop.x, cop.y, p.x, p.y):
                     best, bd = p, d
             if best is None:
                 continue
@@ -198,7 +207,7 @@ class Police:
         tasers = self.heat >= C.TASER_HEAT
         if d > C.CUFF_RANGE and (lethal or tasers) and n.attack_cd <= 0 and q.state == FOOT and \
                 d < (C.OFFICER_GUN_RANGE if lethal else C.TASER_RANGE) and (lethal or d > C.TASER_MIN) and \
-                self.map.los(n.x, n.y, q.x, q.y):
+                self.los(n.x, n.y, q.x, q.y):
             n.vx = n.vy = 0.0
             if lethal:
                 n.mode = 2
@@ -340,17 +349,72 @@ class Police:
         p.jailed = True
         p.keys = False
         p.jumpsuit = False
-        x, y = self.map.jail_spawns[(p.id - 1) % len(self.map.jail_spawns)]
-        p.x, p.y = x, y
+        p.x, p.y = self._cell_spawn(p)
         p.vx = p.vy = 0.0
         p.ang = math.pi / 2
         g = self.gate()
         if g is not None and g.open_t > 0:
             g.open_t = 0.0
-            self._rebuild_trap_rects()
+        self._rebuild_trap_rects()
         self._staff_precinct()
-        self.toast("%s IS IN THE LOCKUP. THE BIG GUARD HAS THE KEYS." % p.name, T_COP)
+        self.toast("%s IS IN A CELL. PICK THE LOCK (QUIET) OR PUNCH THE DOOR (LOUD)." % p.name, T_COP)
         self.toast(self.rng.choice(PHONE_CALL_LINES) % p.name, T_INFO)
+
+    def _cell_spawn(self, p):
+        """Into whichever cell has fewer of your crew in it. An empty cell gets its
+        door fixed first (the council's very quick about that, weirdly)."""
+        m = self.map
+        if not m.cells:
+            return m.jail_spawns[(p.id - 1) % len(m.jail_spawns)]
+        count = [0] * len(m.cells)
+        for q in self.players.values():
+            if q is not p and q.jailed:
+                k = m.cell_at(q.x, q.y)
+                if k >= 0:
+                    count[k] += 1
+        k = min(range(len(m.cells)), key=lambda i: count[i])
+        if count[k] == 0 and k < len(self.cell_traps):
+            self.cell_traps[k].uses = C.CELL_DOOR_HP
+        spots = [s for s in m.jail_spawns if m.cell_at(*s) == k]
+        return spots[count[k] % len(spots)] if spots else m.jail_spawns[0]
+
+    def _cell_door_near(self, x, y, reach):
+        best, bd = None, reach
+        for t in self.cell_traps:
+            d = math.hypot(t.x - x, t.y - y)
+            if d < bd:
+                best, bd = t, d
+        return best
+
+    def _punch_cell_door(self, p):
+        """A swing at thin air might be a swing at the cell door. CLANG."""
+        ax, ay = p.x + math.cos(p.ang) * 1.0, p.y + math.sin(p.ang) * 1.0
+        t = self._cell_door_near(ax, ay, 1.6)
+        if t is None or t.uses <= 0:
+            return False
+        if p.weapon == ARM_CHICKEN and p.owns(ARM_CHICKEN):
+            self.toast("SQUEAK. THE CELL DOOR IS UNIMPRESSED.", T_WHITE)
+            return True
+        t.uses -= 1
+        self.sfx(S_GATE, t.x, t.y)
+        if p.jailed:
+            self.jail_alert = True                   # that's LOUD
+        if t.uses <= 0:
+            self._rebuild_trap_rects()
+            self.toast("THE CELL DOOR COMES OFF ITS HINGES! THE GUARDS HEARD THAT.", T_MONEY)
+        else:
+            self.toast("CLANG! (%d MORE)" % t.uses, T_WHITE)
+        return True
+
+    def _open_cell(self, t, quiet=True, who=None):
+        if t.uses <= 0:
+            return
+        t.uses = 0
+        self._rebuild_trap_rects()
+        self.sfx(S_KEYS if quiet else S_GATE, t.x, t.y)
+        if who is not None:
+            self.toast("CLICK. A CELL DOOR SWINGS OPEN. (%s)" % ("NOBODY NOTICED. YET." if quiet else "LOUDLY"),
+                       T_MONEY)
 
     def _staff_precinct(self):
         if any(n.kind in (GUARD, KEYGUARD) for n in self.npcs.values()):
@@ -358,7 +422,7 @@ class Police:
         for k, (x, y) in enumerate(self.map.guard_posts[:C.JAIL_GUARDS]):
             n = NPC(self.new_id(), KEYGUARD if k == 0 else GUARD, x, y)
             n.home = (x, y)
-            n.grit = C.GUARD_GRIT + (1 if k == 0 else 0)     # the one with the keys is the big one
+            n.grit = C.GUARD_GRIT + (2 if k == 0 else 0)     # the one with the keys is the big one
             n.wallet = self.rng.randint(5, 30)
             n.ang = -math.pi / 2
             self.npcs[n.id] = n
@@ -378,18 +442,42 @@ class Police:
         if any(p.jailed for p in self.players.values()):
             self.guard_idle_t = 0.0
         else:
+            self.jail_alert = False
             self.guard_idle_t += dt
             if self.guard_idle_t > C.GUARD_RESET_TIME:
                 for nid in [n.id for n in self.npcs.values() if n.kind in (GUARD, KEYGUARD)]:
                     del self.npcs[nid]
+                if any(t.uses < C.CELL_DOOR_HP for t in self.cell_traps):
+                    for t in self.cell_traps:
+                        t.uses = C.CELL_DOOR_HP              # (the welder's been round)
+                    self._rebuild_trap_rects()
+
+    def _loose_prisoners(self):
+        """Prisoners out of their cells, still inside the lockup."""
+        m = self.map
+        return [p for p in self.players.values() if p.jailed and p.state in (FOOT, TUMBLE) and
+                m.in_precinct(p.x, p.y) and m.cell_at(p.x, p.y) < 0]
 
     def _guard(self, n, dt):
-        """A lockup guard: stands at his post, and flattens anyone in orange who
-        comes near. The one with the keys is the one you want."""
+        """A lockup guard. v0.9 (Bryce: "harder to kill, but make it so they can't box
+        you in the corner and spawn trap you"): they take twice the beating, but they
+        fight like the henchmen in a kung-fu film -- ONE at a time, the rest waiting
+        their turn a few metres off; whoever lands a punch steps back; and nobody
+        hits you again while you're getting up. Nobody can reach you in a cell, and
+        a quiet escapee isn't noticed until they walk up to somebody."""
         n.attack_cd -= dt
-        q, bd = None, 30.0
-        for p in self.players.values():
-            if p.jailed and p.state in (FOOT, TUMBLE) and self.map.in_precinct(p.x, p.y):
+        loose = self._loose_prisoners()
+        guards = [g for g in self.npcs.values() if g.kind in (GUARD, KEYGUARD)]
+        if loose and not self.jail_alert:
+            for p in loose:
+                if any(math.hypot(g.x - p.x, g.y - p.y) < C.GUARD_NOTICE_R and g.tumble_t <= 0 for g in guards):
+                    self.jail_alert = True
+                    self.toast("GUARD: HEY! HOW DID YOU GET OUT?!", T_COP)
+                    break
+        q = None
+        if self.jail_alert:
+            bd = 40.0
+            for p in loose:
                 d = math.hypot(p.x - n.x, p.y - n.y)
                 if d < bd:
                     q, bd = p, d
@@ -407,16 +495,27 @@ class Police:
         dx, dy = q.x - n.x, q.y - n.y
         d = math.hypot(dx, dy) or 1.0
         n.ang = math.atan2(dy, dx)
+        standing = [g for g in guards if g.tumble_t <= 0 and g.carried_by is None and g.z <= 0]
+        active = min(standing, key=lambda g: (g.x - q.x) ** 2 + (g.y - q.y) ** 2) if standing else n
+        if active is not n or n.flee_t > 0:
+            # waiting their turn (or stepping back after a hit): hold the ring, don't crowd
+            n.flee_t = max(0.0, n.flee_t - dt)
+            if d < C.GUARD_RING:
+                n.vx, n.vy = -dx / d * C.WALK_SPEED * 0.7, -dy / d * C.WALK_SPEED * 0.7
+            else:
+                n.vx = n.vy = 0.0
+            return
         if d > C.BRAWL_REACH:
             spd = C.GUARD_SPEED * (0.85 if n.kind == KEYGUARD else 1.0)
             n.vx, n.vy = dx / d * spd, dy / d * spd
             return
         n.vx = n.vy = 0.0
-        if n.attack_cd <= 0 and q.state == FOOT and q.z < 1.0:
+        if n.attack_cd <= 0 and q.state == FOOT and q.z < 1.0 and q.grace_t <= 0:
             n.attack_cd = C.GUARD_PUNCH_COOLDOWN
             self.sfx(S_PUNCH, q.x, q.y)
             if self.rng.random() < C.BRAWL_HIT_CHANCE:
                 self._hurt_player(q, dx / d * 6, dy / d * 6, C.BRAWL_PUNCH_TUMBLE, BN_HUMBLED)
+                n.flee_t = C.GUARD_BACKOFF             # land one, step back: no pinning you to the wall
                 if n.complain_cd <= 0:
                     n.complain_cd = 5.0
                     self.toast(self.rng.choice(GUARD_LINES), T_COP)
@@ -462,8 +561,27 @@ class Police:
                 break
 
     def _gate_interaction(self, p, ax, ay):
-        """The lockup gate and the bail desk (from _find_interaction)."""
+        """The cell doors, the lockup gate and the bail desk (from _find_interaction)."""
         m = self.map
+        cell = m.cell_at(p.x, p.y) if m.cells else -1
+        if cell >= 0 and cell < len(self.cell_traps):
+            # in a cell: your options are the lock, your fists, or your crew's money
+            cd = self.cell_traps[cell]
+            bail = self._bail(p)
+            pay = (lambda: self._post_bail(p)) if p.jailed and self.cash >= bail else None
+            xbail = ("   X: BAIL $%d" % bail) if pay else ("   (BAIL $%d: CAN'T AFFORD IT)" % bail if p.jailed else "")
+            if cd.uses <= 0:
+                return (None, "THE CELL DOOR'S OPEN. SNEAK OUT." + xbail, 0, None, pay)
+            if math.hypot(p.x - cd.x, p.y - cd.y) < 2.6:
+                return (("cellpick", cd.id), "HOLD E: PICK THE LOCK (QUIET)   PUNCH IT: LOUD" + xbail,
+                        C.CELL_PICK_TIME, lambda: self._open_cell(cd, True, p), pay)
+            return (None, "IN A CELL. GO TO THE DOOR: PICK THE LOCK OR PUNCH IT OPEN." + xbail, 0, None, pay)
+        cd = self._cell_door_near(ax, ay, 2.0)
+        if cd is not None:
+            if cd.uses <= 0:
+                return (None, "THE CELL'S OPEN.", 0, None)
+            return (("cellopen", cd.id), "HOLD E: LET THEM OUT", C.CELL_OPEN_TIME,
+                    lambda: self._open_cell(cd, True, p))
         t = self.gate()
         if t is not None and math.hypot(ax - t.x, ay - t.y) < 2.4:
             if t.open_t > 0:
@@ -498,9 +616,12 @@ class Police:
         p.jailed = False
         p.keys = False
         self.sfx(S_BUY, p.x, p.y)
+        k = self.map.cell_at(p.x, p.y)
+        if 0 <= k < len(self.cell_traps):
+            self._open_cell(self.cell_traps[k], True)
         t = self.gate()
         if t is not None:
-            self._open_gate(t, 5.0)
+            self._open_gate(t, 8.0)
         self.toast("%s POSTED BAIL: -$%d. WALK OUT, HEAD HELD LOW." % (p.name, bail), T_INFO)
 
     # ------------------------------------------------------------------ hitting the law
@@ -512,6 +633,7 @@ class Police:
             n.z = max(n.z, 0.05)
         who = attacker if isinstance(attacker, Player) else self.players.get(attacker)
         if n.kind in (GUARD, KEYGUARD):
+            self.jail_alert = True              # (you've made your intentions clear)
             n.grit -= 1
             n.tumble_t = max(n.tumble_t, C.GUARD_KO_TIME if n.grit <= 0 else C.GUARD_DOWN_TIME)
         elif n.kind == OFFICER:

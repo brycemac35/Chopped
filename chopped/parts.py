@@ -252,6 +252,7 @@ ENGINE_TABLES = {
     V.RICE: [("eng_vtec_1_8", 40), ("eng_tuned_2_0t", 22), ("eng_sc_1_6", 16), ("eng_rotary_13b", 12),
              ("eng_stock_1_6", 10)],
     V.TRUCK4: [("eng_diesel_4_5", 50), ("eng_v8_5_7", 32), ("eng_sc_6_2", 18)],
+    V.ARMOURED: [("eng_diesel_4_5", 60), ("eng_v8_5_7", 40)],
 }
 COP_ENGINES = [("eng_v6_3_0", 50), ("eng_v8_5_7", 30), ("eng_tuned_2_0t", 20)]
 # Rice: every panel is aftermarket, every aftermarket panel is "tuned". Performance optional.

@@ -65,7 +65,7 @@ class Car:
                  "overtake_t", "hits", "model", "hl", "hw", "bound", "delta", "trunk", "livery", "horn_type",
                  "glow", "nos", "nos_fuel", "boosting", "ejector", "gnome", "grip", "top_mult", "spin_t",
                  "donut_t", "patrol", "beat", "gun_cd", "burnout", "wheelspin", "hydraulics", "hop_t",
-                 "smoke_t", "officer")
+                 "smoke_t", "officer", "copcar", "cash_hits", "burst", "air_t")
 
     def __init__(self, cid, kind, x, y, ang, parts, color=0, model=None):
         self.id = cid
@@ -139,6 +139,10 @@ class Car:
         self.shaken_t = 0.0
         self.overtake_t = 0.0
         self.hits = 0                 # bullets taken (cop cars burn after COP_CAR_HITS)
+        self.copcar = False           # (v0.9) a police car somebody nicked while the officer was out
+        self.cash_hits = 0            # (v0.9) money trucks: knocks on the back doors
+        self.burst = False            # (v0.9) ...and whether they've given way
+        self.air_t = 0.0              # (v0.9) off a stunt ramp: seconds of BIG AIR left (cosmetic)
         self.refresh()
 
     def refresh(self):
@@ -201,7 +205,8 @@ class Player:
                  "prev_fire", "z", "vz", "seat_t", "carrying", "carrier", "wriggle", "prev_jump",
                  "charge_t", "dancing", "chute", "banner", "banner_t", "robbed_from", "menu", "menu_ack",
                  "trunk_view", "jailed", "keys", "jumpsuit", "pants_t", "tased_t", "dead_t", "cuffer",
-                 "cuff_prog", "arrests", "rap", "prev_hop")
+                 "cuff_prog", "arrests", "rap", "prev_hop", "slide_t", "prev_alt", "prev_horn", "boxed", "has_box",
+                 "grace_t", "inspect", "prev_box", "still_t")
 
     def __init__(self, pid, name, color):
         self.id = pid
@@ -234,7 +239,7 @@ class Player:
         self.weapon = ARM_FISTS
         self.arms = 1 << ARM_FISTS    # bitmask of what you own; everyone owns fists
         self.ammo = [0, 0, 0]         # per ARM_ slot (fists don't need any)
-        self.gear = [0, 0, 0, 0]      # spike strips, roadblocks, banana peels, boxes of donuts
+        self.gear = [0, 0, 0, 0, 0]   # spike strips, roadblocks, banana peels, boxes of donuts, whoopee cushions
         self.fire_cd = 0.0
         self.prev_fire = 0
         self.z = 0.0                  # feet off the ground (v0.7: you can jump now)
@@ -265,6 +270,16 @@ class Player:
         self.arrests = 0              # this run (bail goes up)
         self.rap = {}                 # crime -> count, for the mugshot's charge sheet
         self.prev_hop = False
+        # v0.9
+        self.slide_t = 0.0            # > 0: hit by a car, skidding along the road
+        self.prev_horn = False        # (v0.9) honk edges: the shop door's remote
+        self.prev_alt = False         # X on foot (sell whole / post bail): a tap, not a hold
+        self.boxed = False            # hiding under a cardboard box
+        self.has_box = False          # ...if you bought one
+        self.prev_box = False         # (C: a tap)
+        self.still_t = 0.0            # how long you've stood still (in a box, long enough = invisible)
+        self.grace_t = 0.0            # just got up: the jail guards give you a moment
+        self.inspect = None           # the car you're sizing up (id), for the inspection card
 
     def hands_used(self):
         if self.dolly is not None or self.carrying is not None:
@@ -287,8 +302,14 @@ class Player:
             return self.gear[GEAR_OF_ARM[slot]] > 0
         return bool(self.arms & (1 << slot))
 
+    def hidden(self):
+        """(v0.9) In the box, standing still: as far as anyone can tell, you're a box."""
+        return self.boxed and self.still_t >= C.BOX_STILL_TIME
+
     def speed_mult(self):
         k = C.PANTSED_SPEED_MULT if self.pants_t > 0 else 1.0     # hard to sprint with them round your ankles
+        if self.boxed:
+            k *= C.BOX_SPEED_MULT
         if self.dolly is not None:
             return k * (C.DOLLY_LOADED_SPEED_MULT if self.dolly.part is not None else C.DOLLY_SPEED_MULT)
         return k * (C.TWO_HAND_SPEED_MULT if self.hands_used() >= 2 else 1.0)
@@ -299,7 +320,7 @@ class NPC:
                  "turn_t", "target", "yell_t", "complain_cd", "spin", "flee_t", "fx", "fy", "ttl", "wallet",
                  "wallet_t", "surrender_t", "z", "vz", "brave", "armed", "hostile_t", "foe", "grit", "attack_cd",
                  "carried_by", "struggle_t", "thrown_by", "bowled", "laugh_t", "lure", "car_id", "mode",
-                 "home")
+                 "home", "slide_t", "hat")
 
     def __init__(self, nid, kind, x, y):
         self.id = nid
@@ -337,6 +358,8 @@ class NPC:
         self.car_id = None            # (v0.8) officers and dogs: the cop car they jumped out of
         self.mode = 0                 # officers: 0 chase, 1 taser out, 2 gun out, 3 cuffing, 4 heading back
         self.home = None              # guards: the spot they stand on; dogs: where to run off to
+        self.slide_t = 0.0            # (v0.9) skidding after a car hit
+        self.hat = 0                  # (v0.9) 0 none, else a hat style (it flies off when you hit them)
 
 
 class Dolly:
@@ -369,6 +392,10 @@ class Trap:
         self.open_t = 0.0             # (v0.8) the precinct gate: > 0 = open for this long
 
     def solid(self):
+        if self.kind == TRAP_CELL:
+            return self.uses > 0                   # (uses = punches it can still take)
+        if self.kind == TRAP_DOOR:
+            return self.open_t < C.DOOR_PASSABLE   # (open_t = how far up the roller door is, 0..1)
         return self.kind == TRAP_BLOCK or (self.kind == TRAP_GATE and self.open_t <= 0)
 
     def rect(self):
@@ -379,7 +406,12 @@ class Trap:
         if self.kind == TRAP_SMOKE:
             r = C.SMOKE_SCREEN_R
             return (self.x - r, self.y - r, 2 * r, 2 * r)
+        if self.kind == TRAP_WHOOPEE:
+            r = C.WHOOPEE_R
+            return (self.x - r, self.y - r, 2 * r, 2 * r)
         long_, short = ((C.SPIKE_LEN, C.SPIKE_WID) if self.kind == TRAP_SPIKES
+                        else (C.CELL_DOOR_W, C.CELL_BAR_T) if self.kind == TRAP_CELL
+                        else (self.uses, C.DOOR_T) if self.kind == TRAP_DOOR    # (the door's width rides in uses)
                         else (C.GATE_LEN, C.GATE_WID) if self.kind == TRAP_GATE
                         else (C.ROADBLOCK_LEN, C.ROADBLOCK_WID))
         if abs(math.cos(self.ang)) > 0.5:          # traffic runs along x: the trap spans y

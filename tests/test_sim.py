@@ -201,7 +201,7 @@ class TestCoreLoop(unittest.TestCase):
         engine = car.parts["Engine"]
         p.x, p.y = car.to_world(2.7, 0.0)
         face(p, car.x, car.y)
-        key, label, dur, act = w._find_interaction(p)
+        key, label, dur, act = w._find_interaction(p)[:4]
         self.assertIn("CRUSH", label)
         cash0 = w.cash
         press(p, S.B_USE)
@@ -217,7 +217,7 @@ class TestCoreLoop(unittest.TestCase):
         car.parts["Hood"] = None
         p.x, p.y = car.to_world(2.6, 0.0)     # at the nose, looking into the engine bay
         face(p, car.x, car.y)
-        key, label, dur, act = w._find_interaction(p)
+        key, label, dur, act = w._find_interaction(p)[:4]
         self.assertIsNone(key)
         self.assertIn("DOLLY", label)
 

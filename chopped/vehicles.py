@@ -12,7 +12,7 @@ No pygame in here (the sim and the predictor both import it).
 from .config import clamp
 
 # ---- models --------------------------------------------------------------------
-KEI, SEDAN, COUPE, MUSCLE, PICKUP, VAN, ICECREAM, SCOOTER, RICE, TRUCK4 = range(10)
+KEI, SEDAN, COUPE, MUSCLE, PICKUP, VAN, ICECREAM, SCOOTER, RICE, TRUCK4, ARMOURED = range(11)
 
 
 class Model:
@@ -75,6 +75,10 @@ MODELS = [
     # doesn't care what's under it (parks are shortcuts), and it will win any shoving match.
     Model(TRUCK4, "4X4 TRUCK", 5.3, 2.7, 2.3, 2400, 1.0, 40.0, 0.95, 8, bed=True, hood=0.3, roof=0.62,
           cab=0.32, civ_weight=8, traffic_weight=8, cg_h=1.0, awd=True, offroad=True),
+    # v0.9: the money truck. Armoured, slow, heavy as sin, and never parked (it turns up in
+    # traffic, MONEY_TRUCK_CHANCE of the time). Its back doors are its weak point.
+    Model(ARMOURED, "MONEY TRUCK", 5.8, 2.7, 2.6, 3400, 0.85, 36.0, 0.7, 4, fwd=False, hood=0.18,
+          roof=1.2, cab=0.24, civ_weight=0, traffic_weight=0, cg_h=1.0),
 ]
 MODEL_NAMES = [m.name for m in MODELS]
 COP_MODEL = SEDAN             # interceptors are sedans with attitude
@@ -115,8 +119,8 @@ def livery_parts(b):
 
 
 # ---- horns (the mod shop sells worse ones) -------------------------------------------
-HORNS = ["STOCK", "CLOWN", "LA CUCARACHA", "WET FART", "GOAT", "AIR HORN", "ICE CREAM JINGLE"]
-HORN_STOCK, HORN_CLOWN, HORN_CUCA, HORN_FART, HORN_GOAT, HORN_AIR, HORN_JINGLE = range(7)
+HORNS = ["STOCK", "CLOWN", "LA CUCARACHA", "WET FART", "GOAT", "AIR HORN", "ICE CREAM JINGLE", "POLICE SIREN"]
+HORN_STOCK, HORN_CLOWN, HORN_CUCA, HORN_FART, HORN_GOAT, HORN_AIR, HORN_JINGLE, HORN_SIREN = range(8)
 
 # ---- part styles ------------------------------------------------------------------
 # style 0 is always the boring factory one. Names show up in the mod shop and
