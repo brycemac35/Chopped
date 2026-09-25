@@ -312,23 +312,34 @@ class TestPolice(unittest.TestCase):
         cops_that_arrest = [c for c in w.cars.values() if c.kind == S.COP and c.donut_t <= 0]
         self.assertNotIn(cop, cops_that_arrest)
 
-    def test_high_heat_cops_shoot_crooks_on_foot(self):
+    def test_cops_only_shoot_to_kill_once_the_crew_has_escalated(self):
         w = world()
         p = w.add_player("BRYCE")
         p.x, p.y = street(w)
-        cop = S.Car(w.new_id(), S.COP, p.x - 15, p.y, 0.0, S.cop_loadout(w.rng))
-        w.cars[cop.id] = cop
-        acc = C.COP_GUN_ACCURACY
+        cop = S.NPC(w.new_id(), S.OFFICER, p.x - 10, p.y)
+        w.npcs[cop.id] = cop
+        acc = C.OFFICER_GUN_ACCURACY
         try:
-            C.COP_GUN_ACCURACY = 1.0
-            for _ in range(int(2.0 / DT)):
-                w.heat = 90
+            C.OFFICER_GUN_ACCURACY = 1.0
+            for _ in range(int(0.6 / DT)):
+                w.heat = 40                  # below taser heat: it's a foot chase and the cuffs
                 w.step(DT)
-                if p.state == S.TUMBLE:
+            self.assertEqual(p.state, S.FOOT, "no escalation: no bullets")
+            self.assertEqual(cop.mode, 0)
+            w.lethal_t = C.LETHAL_TIME
+            w.cash = 1000
+            for _ in range(int(2.0 / DT)):
+                w.heat = 40
+                w.step(DT)
+                if p.state == S.DEAD:
                     break
         finally:
-            C.COP_GUN_ACCURACY = acc
-        self.assertIn(p.state, (S.TUMBLE, S.CUFFED))
+            C.OFFICER_GUN_ACCURACY = acc
+        self.assertEqual(p.state, S.DEAD, "the crew shot first: the police shoot to kill")
+        self.assertEqual(w.cash, 1000 - int(1000 * C.DEATH_LOSS), "solo: lose DEATH_LOSS of the cash")
+        step(w, C.DEATH_TIME + 0.1)
+        self.assertEqual(p.state, S.FOOT)
+        self.assertTrue(w.map.in_garage(p.x, p.y), "wake up at the shop")
 
 
 class TestRidiculous(unittest.TestCase):

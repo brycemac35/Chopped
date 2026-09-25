@@ -14,7 +14,7 @@ from collections import deque
 
 from . import config as C
 
-ROAD, SIDEWALK, BUILDING, GRASS, TREE, WALL, GARAGE, LOT = range(8)
+ROAD, SIDEWALK, BUILDING, GRASS, TREE, WALL, GARAGE, LOT, PRECINCT = range(9)
 SOLID_TYPES = (BUILDING, TREE, WALL)
 OPAQUE_TYPES = (BUILDING, TREE, WALL)   # trees block sight: parks are hiding spots
 
@@ -35,6 +35,8 @@ class CityMap:
         self.cop_spawns = []    # (x, y, angle)
         self.sidewalk_tiles = []
         self.static_rects = []  # solid rectangles that aren't tiles (benches), metres (x, y, w, h)
+        self.precinct_outer = self.precinct_rect = self.gate = None
+        self.jail_spawns, self.guard_posts = [], []
 
         # ---- choose block types --------------------------------------------
         shop = (C.BLOCKS // 2, C.BLOCKS // 2)
@@ -45,6 +47,10 @@ class CityMap:
         rng.shuffle(far)
         parks = set(far[:C.PARK_BLOCKS])
         lots = set(far[C.PARK_BLOCKS:C.PARK_BLOCKS + C.LOT_BLOCKS])
+        # v0.8: the precinct. Far enough from the shop that breaking out means a run home.
+        rest = [c for c in far[C.PARK_BLOCKS + C.LOT_BLOCKS:]
+                if abs(c[0] - shop[0]) + abs(c[1] - shop[1]) >= C.PRECINCT_MIN_BLOCKS]
+        precinct = rest[0] if rest else None
 
         for i in range(C.BLOCKS):
             for j in range(C.BLOCKS):
@@ -52,6 +58,8 @@ class CityMap:
                 oy = C.ROAD_TILES + j * C.PITCH
                 if (i, j) == shop:
                     self._make_shop(ox, oy)
+                elif (i, j) == precinct:
+                    self._make_precinct(ox, oy)
                 elif (i, j) in parks:
                     self._make_park(rng, ox, oy)
                 elif (i, j) in lots:
@@ -162,6 +170,38 @@ class CityMap:
         cx = gx + gw / 2
         self.player_spawns = [(cx - 2, gy + 5), (cx + 2, gy + 5), (cx - 2, gy + 8), (cx + 2, gy + 8)]
         self.garage_center = (gx + gw / 2, gy + gh / 2)
+
+    def _make_precinct(self, ox, oy):
+        """The police station (v0.8): a walled lockup in the middle of a block,
+        one gated doorway onto the south street, a front desk for bail. The
+        cells are an open-plan concept. It's very modern."""
+        b = C.BLOCK_TILES
+        self._ring(ox, oy)
+        x0, y0, inner = ox + 1, oy + 1, b - 2
+        self._fill(x0, y0, inner, inner, WALL)
+        self._fill(x0 + 1, y0 + 1, inner - 2, inner - 2, PRECINCT)
+        T = C.TILE_M
+        door = x0 + inner // 2
+        self._set(door, y0 + inner - 1, PRECINCT)                    # the doorway (the gate goes here)
+        self.precinct_tiles = (x0, y0, inner, inner)
+        self.precinct_rect = ((x0 + 1) * T, (y0 + 1) * T, (inner - 2) * T, (inner - 2) * T)   # the lockup
+        self.precinct_outer = (x0 * T, y0 * T, inner * T, inner * T)                          # walls and all
+        self.gate = ((door + 0.5) * T, (y0 + inner - 0.5) * T, math.pi / 2)                   # spans x
+        px, py, pw, ph = self.precinct_rect
+        self.jail_spawns = [(px + 4 + k * 3.5, py + 3.5) for k in range(4)]
+        self.guard_posts = [(px + 3.0, py + ph - 4.5), (px + pw - 3.0, py + ph - 4.5), (px + pw / 2, py + ph / 2)]
+        self.bail_desk = (px + pw - 5.5, py + 1.0, 4.5, 1.4)
+        self.static_rects.append(self.bail_desk)
+        self.precinct_exit = ((door + 0.5) * T, (y0 + inner + 0.6) * T)   # the street, just outside
+
+    def in_precinct(self, x, y):
+        """Inside the police station's walls, lockup side of the gate. (The doorway is
+        split down the middle by the gate: north of it you're a prisoner, south of it
+        you're a member of the public with a lock pick.)"""
+        if self.precinct_outer is None:
+            return False
+        ox, oy, ow, oh = self.precinct_outer
+        return ox <= x <= ox + ow and oy <= y < self.gate[1]
 
     def _make_parking(self, rng, shop):
         T = C.TILE_M

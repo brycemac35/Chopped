@@ -150,7 +150,9 @@ def box_distance(car, x, y):
 def drive_input(car, buttons):
     """Driver's buttons -> pedals and wheel. Shared by the server and the
     client-side predictor so they can't disagree about what W means."""
-    car.throttle = (1.0 if buttons & B_UP else 0.0) - (1.0 if buttons & B_DOWN else 0.0)
+    up, down = bool(buttons & B_UP), bool(buttons & B_DOWN)
+    car.burnout = up and down                 # (v0.8) both pedals: brake stand. Smoke 'em.
+    car.throttle = (1.0 if up and not down else 0.0) - (1.0 if down and not up else 0.0)
     car.steer = (1.0 if buttons & B_RIGHT else 0.0) - (1.0 if buttons & B_LEFT else 0.0)
     car.handbrake = bool(buttons & B_HANDBRAKE)
     car.boosting = bool(buttons & B_SPRINT) and car.nos and car.nos_fuel > 0   # Shift = NOS (if fitted)
@@ -187,7 +189,7 @@ class Physics:
         driven = (car.driver is not None or car.kind == COP or car.kind == TRAFFIC) and car.state != DELIVERED
         ai = car.driver is None and driven
         mw = car.missing_wheels()
-        on_grass = self.map.tile_at(car.x, car.y) == 3  # GRASS
+        on_grass = self.map.tile_at(car.x, car.y) == 3 and not mdl.offroad   # GRASS (4x4s: what grass?)
         if car.kind == COP:
             accel = C.ACCEL_PER_100_POWER * C.COP_ACCEL_MULT
             top = C.COP_TOP_SPEED
@@ -197,9 +199,16 @@ class Physics:
         top *= (1.0 - C.MISSING_WHEEL_TOP * mw)
         thr = car.throttle if driven else 0.0
         hb = (car.handbrake if driven else False)
+        burn = driven and not ai and car.burnout
+        if burn and (abs(car.vx * c + car.vy * s) > C.BURNOUT_MAX_SPEED or mw >= 2):
+            burn, thr = False, -1.0                   # both pedals at speed: the brake wins
         boost = driven and car.boosting and car.nos_fuel > 0
         if boost:
             top *= C.NOS_TOP_MULT
+        if burn:
+            self._brake_stand(car, mdl, dt, top)
+            return
+        car.smoke_t = 0.0
         # ---- steering: the front wheels turn at a finite rate toward the target
         spd = math.hypot(car.vx, car.vy)
         lock = lerp(C.STEER_LOCK_LOW, C.STEER_LOCK_HIGH, clamp(spd / C.STEER_LOCK_SPEED, 0.0, 1.0))
@@ -216,6 +225,12 @@ class Physics:
         if vf > 3.0:
             align = clamp(math.atan2(vr + w * a, vf), -C.STEER_ALIGN_MAX, C.STEER_ALIGN_MAX) * C.STEER_ALIGN
         target = align + steer * lock
+        if driven and not ai and vf > C.DRIFT_ASSIST_MIN_SPEED and steer:
+            beta = math.atan2(vr, vf)
+            if steer * beta > 0 and abs(beta) > C.COUNTERSTEER_FROM:
+                # countersteering a slide on a keyboard: full lock is always too much (that's how
+                # tank-slappers start). Point the wheels where the car's going, plus a touch.
+                target = align + steer * min(lock, C.COUNTERSTEER_MARGIN)
         step = C.STEER_RATE * dt
         car.delta += clamp(target - car.delta, -step, step)
         delta = car.delta
@@ -264,8 +279,11 @@ class Physics:
         # ---- front tyre
         cap_f = mu_f * fz_f
         ff_long = 0.0
+        rear_share = 0.0 if mdl.fwd else (1.0 - C.AWD_FRONT_SHARE if mdl.awd else 1.0)
         if mdl.fwd:
             ff_long += drive
+        elif mdl.awd:
+            ff_long += drive * C.AWD_FRONT_SHARE
         ff_long -= math.copysign(min(brake * 0.6, cap_f * C.TIRE_LONG, abs(fl) * M / dt * 0.6), fl) if brake else 0.0
         ff_long = clamp(ff_long, -cap_f * C.TIRE_LONG, cap_f * C.TIRE_LONG)
         use_f = abs(ff_long) / (cap_f * C.TIRE_LONG) if cap_f > 0 else 1.0
@@ -279,10 +297,11 @@ class Physics:
             # locked: pure sliding friction, opposite to however the rear is moving
             sp = math.hypot(vf, v_ry)
             k = min(C.HANDBRAKE_MU * cap_r, sp * eff_r / dt) / sp if sp > 1e-6 else 0.0
-            fr_long = -vf * k + (0.0 if mdl.fwd else drive * C.HANDBRAKE_DRIVE)
+            fr_long = -vf * k + drive * rear_share * C.HANDBRAKE_DRIVE
             fr_lat = -v_ry * k
+            car.wheelspin = 0.0
         else:
-            fr_long = 0.0 if mdl.fwd else drive
+            fr_long = drive * rear_share
             if ai:
                 fr_long = clamp(fr_long, -cap_r * C.AI_TRACTION, cap_r * C.AI_TRACTION)   # traction control
             if brake:
@@ -296,6 +315,7 @@ class Physics:
             if demand > C.WHEELSPIN_AT:
                 # wheelspin: the rear goes light sideways. Boot it in a corner, hello drift.
                 fr_lat *= max(0.2, 1.0 - (demand - C.WHEELSPIN_AT) * C.WHEELSPIN_LOSS)
+            car.wheelspin = clamp((demand - C.WHEELSPIN_AT) * 2.5, 0.0, 1.0) if drive > 0 and rear_share else 0.0
             fr_lat = clamp(fr_lat, -abs(v_ry) * eff_r / dt, abs(v_ry) * eff_r / dt)
         # ---- sum up: forces in the car frame, torque about the CG
         f_long = ff_long * cd - ff_lat * sd + fr_long
@@ -312,6 +332,8 @@ class Physics:
         car.vx += (ax * c - ay * s) * dt
         car.vy += (ax * s + ay * c) * dt
         car.w += torque / inertia * dt
+        if driven and not ai and car.spin_t <= 0:
+            self._drift_assist(car, vf, vr, steer, hb, dt)
         if not driven and spd < 0.5:
             car.w *= math.exp(-6.0 * dt)               # parked cars don't pirouette on the spot
         # hard speed limits (reverse, and a sanity cap on top speed)
@@ -329,6 +351,78 @@ class Physics:
                 car.nos_fuel = max(0.0, car.nos_fuel - dt)
             else:
                 car.nos_fuel = min(C.NOS_TANK, car.nos_fuel + C.NOS_REFILL * dt)
+        if car.spin_t > 0:
+            car.spin_t -= dt
+
+    def _drift_assist(self, car, vf, vr, steer, hb, dt):
+        """v0.8 (Bryce: "the drifting feels too loose, please allow the driver
+        to regain control"). What a real drift car's diff, caster and a good
+        pair of hands do together, done for you: past DRIFT_ASSIST_START of
+        slide the car is nudged back toward where it's going, and any spin
+        that's making the slide WORSE is damped. Steer INTO the slide and the
+        help mostly steps back (you asked for the angle); let go or
+        countersteer and it catches you. On the handbrake it only stops the
+        car turning into a spinning top."""
+        if hb:
+            lim = C.HANDBRAKE_MAX_YAW
+            if abs(car.w) > lim:
+                car.w = math.copysign(lim, car.w)
+            return
+        if vf < C.DRIFT_ASSIST_MIN_SPEED:
+            return
+        # yaw stability: no faster rotation than the tyres could hold in a steady turn at this
+        # speed (more if you're steering WITH the rotation: you asked for it). This is what stops a
+        # caught slide snapping back the other way -- the fishtail every keyboard driver knows.
+        spd = math.hypot(vf, vr)
+        cap = C.YAW_CAP_K * car.grip * C.TIRE_GRIP * C.GRAVITY / max(spd, 6.0)
+        if steer * car.w > 0:
+            cap *= C.YAW_CAP_INTO
+        if abs(car.w) > cap:
+            car.w -= math.copysign((abs(car.w) - cap) * min(1.0, C.YAW_CAP_RATE * dt), car.w)
+        beta = math.atan2(vr, vf)                    # direction of travel, relative to the nose
+        over = abs(beta) - C.DRIFT_ASSIST_START
+        if over <= 0:
+            return
+        into = steer * beta < 0                      # steering further round: they want the angle
+        k = C.DRIFT_ASSIST_INTO if into else 1.0
+        # rotate the nose toward the direction of travel...
+        car.w += math.copysign(over, beta) * C.DRIFT_ASSIST_YAW * k * dt
+        # ...and bleed off rotation that's swinging the tail further out
+        if car.w * beta < 0:
+            car.w *= math.exp(-C.DRIFT_ASSIST_DAMP * k * min(1.0, over * 3.0) * dt)
+
+    def _brake_stand(self, car, mdl, dt, top):
+        """v0.8: W and S together at a standstill. The brakes hold one axle, the
+        other one spins itself into a cloud. Add steering and the spinning end
+        walks round the held one: donuts. (All-wheel drive can't do this -- it
+        just sits there on the rev limiter looking embarrassed.)"""
+        c, s = math.cos(car.ang), math.sin(car.ang)
+        vf = car.vx * c + car.vy * s
+        a = car.hl * C.AXLE_FRAC
+        steer = car.steer
+        k = min(1.0, C.BURNOUT_GRAB * dt)
+        if mdl.awd:
+            w_want, creep = 0.0, 0.0
+        elif mdl.fwd:
+            # front-drive: the fronts spin, the rears are held, the nose swings round
+            w_want, creep = steer * C.BURNOUT_YAW * 0.6, C.BURNOUT_CREEP * 0.5
+        else:
+            # rear-drive: pivot on the held fronts, tail swings out the other way
+            w_want, creep = steer * C.BURNOUT_YAW, C.BURNOUT_CREEP
+        car.w += (w_want - car.w) * k
+        vf += (creep - vf) * k
+        # the CG moves on a circle round whichever axle is held
+        vr = (-car.w * a) if not mdl.fwd else (car.w * a)
+        car.vx, car.vy = vf * c - vr * s, vf * s + vr * c
+        car.x += car.vx * dt
+        car.y += car.vy * dt
+        car.ang = wrap_angle(car.ang + car.w * dt)
+        car.delta += clamp(steer * C.STEER_LOCK_LOW - car.delta, -C.STEER_RATE * dt, C.STEER_RATE * dt)
+        car.wheelspin = 0.0 if mdl.awd else 1.0
+        if not mdl.awd:
+            car.smoke_t += dt
+        if car.nos:
+            car.nos_fuel = min(C.NOS_TANK, car.nos_fuel + C.NOS_REFILL * dt)
         if car.spin_t > 0:
             car.spin_t -= dt
 

@@ -19,7 +19,7 @@ import math
 from collections import deque
 
 from . import config as C
-from .sim import Physics, Car, Trap, TRAP_BLOCK, drive_input
+from .sim import Physics, Car, Trap, TRAP_BLOCK, TRAP_GATE, drive_input
 from .parts import SLOTS, SLOT_INDEX
 from .protocol import ME_NONE, ME_FOOT, ME_DRIVER, SF_EXHAUSTED, SX_NOS
 
@@ -152,7 +152,8 @@ class Predictor(Physics):
             self.err_x = self.err_y = self.err_a = 0.0
             return
         # things to bump into: roadblocks, and other cars near us, as of this snapshot
-        self.extra_rects = [trap_rect(t) for t in snap.traps.values() if t[1] == TRAP_BLOCK]
+        self.extra_rects = [trap_rect(t) for t in snap.traps.values()
+                            if t[1] == TRAP_BLOCK or (t[1] == TRAP_GATE and t[5] > 0)]   # (a shut gate)
         self.cars = {}
         r2 = C.PREDICT_OBSTACLE_RANGE ** 2
         for crow in snap.cars.values():

@@ -15,6 +15,8 @@ from . import config as C
 from . import sim as S
 from . import protocol as PR
 from . import vehicles as V
+from . import drivetrain as DT
+from .parts import ASP_TURBO, ASP_SC, V_I6, V_DIESEL, SLOT_INDEX
 from . import art
 from .art import P, PixelFont
 from .audio import Audio
@@ -130,6 +132,10 @@ class App:
         self.chase = False             # V: third-person chase camera when driving
         self.modshop = ModShop(self.font)
         self.horn_heard = None
+        self.tachos = {}               # car id -> drivetrain.Tacho (your car and the ones you can hear)
+        self.tacho_view = None         # what the tachometer shows this frame
+        self.pops_due = []             # [(when, volume, car id)] backfires still to go bang
+        self.vtec_said = -99.0
         self.cam_yaw = None            # the chase camera's own, lagging, heading
         self.cam_orbit = 0.0           # mouse-look around the car in chase view
         self.orbit_idle = 0.0
@@ -407,6 +413,7 @@ class App:
         if k[pygame.K_SPACE]: b |= S.B_HANDBRAKE
         if k[pygame.K_h]: b |= S.B_HORN
         if k[pygame.K_t]: b |= S.B_TAUNT
+        if k[pygame.K_x] and in_car: b |= S.B_HOP             # (v0.8) hydraulics: boing
         if k[pygame.K_LCTRL] or k[pygame.K_RCTRL] or (self.mouse_grabbed and pygame.mouse.get_pressed()[0]):
             b |= S.B_FIRE                      # held: the haymaker winds up while you hold it
         rel, rely = pygame.mouse.get_rel() if self.mouse_grabbed else (0, 0)
@@ -530,6 +537,7 @@ class App:
                 r.on_sfx(sid, x, y, me[4], me[5])
                 self.fp.on_sfx(sid, x, y, me[4], me[5], view.my_car)
                 self.audio.play(sid, math.hypot(x - me[4], y - me[5]))
+        self._engines(view)            # revs first: the tachometer and the engine notes both read them
         if self.fp_mode:
             self._draw_fp(low, view, now, dt)
         else:
@@ -576,8 +584,8 @@ class App:
                    C.FP_EYE_CAR * (m.height / 1.55 if car[15] != V.SCOOTER else 1.0))
             hide = car[0] if car[15] != V.SCOOTER else None
             moving = 0.0
-        elif state == S.TUMBLE:
-            cam = (me[4], me[5], me[8], 0.5 + me[15])
+        elif state in (S.TUMBLE, S.DEAD):
+            cam = (me[4], me[5], me[8], (0.5 if state == S.TUMBLE else 0.3) + me[15])
             pitch = 0
             moving = 0.0
         elif state == S.CARRIED:
@@ -590,13 +598,16 @@ class App:
             bob = abs(math.sin(now * 9.0)) * C.FP_BOB * moving
             cam = (me[4], me[5], self.yaw, (C.FP_EYE if state != S.CUFFED else 1.3) + bob + me[15])
         self.fp.car_emitters(view, dt)
+        self.fp.smoke_clouds(view)
+        self.fp._clear_pops()
         surf = self.fp.draw(view, cam, self.client.pid, now, dt, view.snap.rent, self.renderer.bank, hide,
                             pitch=int(pitch), hires=hires)
         steer = 0.0
         if self.client.inp is not None:
             b = self.client.inp.buttons
             steer = (1.0 if b & S.B_RIGHT else 0.0) - (1.0 if b & S.B_LEFT else 0.0)
-        self.hud.draw_overlay(surf, view, now, moving, steer, self._held_weapon(), self.fire_anim, chase=chase)
+        self.hud.draw_overlay(surf, view, now, moving, steer, self._held_weapon(), self.fire_anim, chase=chase,
+                              tacho=self.tacho_view)
         self.hud.drift_meter(surf, view, now, dt)
         low.blit(surf, (0, 0))
 
@@ -630,12 +641,6 @@ class App:
             return
         me = view.me
         mx, my = me[4], me[5]
-        car = view.my_car
-        if car is not None and me[2] in (S.DRIVER, S.PASSENGER):
-            spd = math.hypot(car[9], car[10])
-            a.set_loop("engine", 0.35, min(9, int(spd / 5)))
-        else:
-            a.set_loop("engine", 0)
         alarm = horn = siren = fire = jingle = 0.0
         horn_type = 0
         for c in view.cars.values():
@@ -665,6 +670,107 @@ class App:
         size = self.scaled.get_size() if self.scaled is not None else (W, H)
         ox, oy = (sw - size[0]) // 2, (sh - size[1]) // 2
         return int((pos[0] - ox) * W / size[0]), int((pos[1] - oy) * H / size[1])
+
+    # ------------------------------------------------------------------ engines (v0.8)
+    @staticmethod
+    def _car_top(row):
+        return C.COP_TOP_SPEED if row[1] == S.COP else V.model(row[15]).top
+
+    def _engines(self, view):
+        """Revs for your car and every running car you can hear; engine notes, the
+        turbo whistle, blow-off valves, backfires and tyre screech from those."""
+        a = self.audio
+        now = time.perf_counter()
+        dt = min(0.1, max(0.0, now - getattr(self, "_eng_t", now)))
+        self._eng_t = now
+        me, mine = view.me, view.my_car
+        mx, my = me[4], me[5]
+        pr = self.client.predictor if self.client is not None else None
+        in_car = mine is not None and me[2] in (S.DRIVER, S.PASSENGER)
+        seen = set()
+        loud, loud_v = None, 0.0
+        screech = 0.0
+        self.tacho_view = None
+        for row in view.cars.values():
+            live = row[3] == S.RUNNING and (row[12] or row[1] in (S.COP, S.TRAFFIC)) and \
+                row[5] & (1 << SLOT_INDEX["Engine"])
+            d = math.hypot(row[7] - mx, row[8] - my)
+            if not live or d > C.ENGINE_HEAR_DIST:
+                continue
+            is_mine = in_car and row[0] == mine[0]
+            voice, asp, gears = DT.unpack_engine_byte(row[19])
+            drive = row[20]
+            thr = 1.0 if drive & PR.DR_THROTTLE else 0.0
+            spin = 1.0 if drive & PR.DR_SPIN else 0.0
+            burn = bool(drive & PR.DR_BURNOUT)
+            spd = math.hypot(row[9], row[10])
+            if is_mine and me[2] == S.DRIVER and pr is not None and pr.car is not None and pr.car.id == row[0]:
+                c = pr.car                            # our own feet, not 100 ms ago's
+                burn = c.burnout and c.wheelspin >= 1.0
+                thr = 1.0 if (c.throttle > 0 or c.burnout) else 0.0
+                spin = c.wheelspin
+                spd = math.hypot(c.vx, c.vy)
+            t = self.tachos.get(row[0])
+            if t is None or (t.voice, t.asp, t.gears) != (voice, asp, gears):
+                t = self.tachos[row[0]] = DT.Tacho(voice, asp, gears)
+            seen.add(row[0])
+            events = t.update(spd, thr, self._car_top(row), spin, burn, dt)
+            near = 1.0 if is_mine else max(0.0, 1.0 - d / C.ENGINE_HEAR_DIST)
+            self._engine_events(row, t, events, near, is_mine, now)
+            # tyre noise: sideways, spinning, or locked up
+            slip = abs(-row[9] * math.sin(row[11]) + row[10] * math.cos(row[11]))
+            sq = max(min(1.0, (slip - 3.0) / 8.0), 0.9 if burn else 0.0, 0.6 * spin,
+                     0.5 if drive & PR.DR_HANDBRAKE and spd > 4 else 0.0)
+            screech = max(screech, sq * near)
+            if is_mine:
+                a.engine_note(0, voice, asp == ASP_SC, t.rpm, 0.55 * (0.65 + 0.35 * thr) if me[2] == S.DRIVER
+                              else 0.4)
+                if asp == ASP_TURBO:
+                    a.turbo_whistle(t.boost, 0.5)
+                self.tacho_view = (t.rpm, t.redline, t.gear, t.gears, t.boost, asp, t.vtec)
+            else:
+                v = near * (0.5 + 0.5 * thr) * 0.45
+                if v > loud_v:
+                    loud, loud_v = (voice, asp, t.rpm), v
+        if not in_car:
+            a.engine_note(0, 0, False, 0, 0.0)
+            a.turbo_whistle(0.0, 0.0)
+        elif self.tacho_view is None or self.tacho_view[5] != ASP_TURBO:
+            a.turbo_whistle(0.0, 0.0)
+        if loud is not None:
+            a.engine_note(1, loud[0], loud[1] == ASP_SC, loud[2], loud_v)
+        else:
+            a.engine_note(1, 0, False, 0, 0.0)
+        a.set_loop("screech", screech * 0.6)
+        for cid in [k for k in self.tachos if k not in seen]:
+            del self.tachos[cid]
+        # backfires queued by a lift-off go bang one after another
+        keep = []
+        for when, vol, cid in self.pops_due:
+            if when <= now:
+                a.oneshot("pops", vol, random.randrange(3))
+                if self.fp is not None:
+                    self.fp.exhaust_pop(cid, now)
+            else:
+                keep.append((when, vol, cid))
+        self.pops_due = keep
+
+    def _engine_events(self, row, t, events, near, is_mine, now):
+        a = self.audio
+        drive = row[20]
+        for ev in events:
+            if ev == "shift" and is_mine:
+                a.oneshot("shift", 0.35)
+            elif ev == "bov" and t.asp == ASP_TURBO:
+                a.oneshot("flutter" if t.voice in (V_I6, V_DIESEL) else "bov", 0.7 * near)
+            elif ev == "lift" and drive & PR.DR_POPS:
+                for k in range(random.randrange(2, 5)):
+                    self.pops_due.append((now + 0.05 + k * random.uniform(0.07, 0.16), 0.8 * near, row[0]))
+            elif ev == "limiter" and drive & PR.DR_POPS and drive & PR.DR_BURNOUT and random.random() < 0.5:
+                self.pops_due.append((now, 0.7 * near, row[0]))         # two-step: brap-bang-brap
+            elif ev == "vtec" and is_mine and now - self.vtec_said > 8.0:
+                self.vtec_said = now
+                self.hud.add_toast("VTEC JUST KICKED IN, YO!", S.T_MONEY, now)
 
     def _present(self):
         sw, sh = self.screen.get_size()

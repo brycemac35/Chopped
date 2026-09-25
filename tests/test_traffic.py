@@ -55,9 +55,10 @@ class TestTraffic(unittest.TestCase):
         orig = w._crash
         w._crash = lambda car, dv, nx, ny: (crashes.append((car.kind, dv)), orig(car, dv, nx, ny))
         speeds, offroad, samples, counts = [], 0, 0, []
-        for _ in range(30 * C.SIM_HZ):
+        for i in range(30 * C.SIM_HZ):
             w.step(DT)
-            counts.append(len(traffic(w)))
+            if i >= 5 * C.SIM_HZ:               # (after the first few seconds of the fleet pulling out)
+                counts.append(len(traffic(w)))
             for c in traffic(w):
                 samples += 1
                 speeds.append(c.speed())

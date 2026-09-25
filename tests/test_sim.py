@@ -355,10 +355,14 @@ class TestCops(unittest.TestCase):
         x += 40
         a.x, a.y = x, y
         a.hands = [Part("whl_stock_alloy"), Part("ecu_tuned")]
-        cop = S.Car(w.new_id(), S.COP, x + 2.8, y, math.pi, {s: None for s in SLOTS})
+        cop = S.Car(w.new_id(), S.COP, x + 6.0, y, math.pi, {s: None for s in SLOTS})
         w.cars[cop.id] = cop
-        w.heat = 50.0
-        step(w, 1.15)
+        # (v0.8) the officer gets out and does the cuffing; standing still, that's quick
+        for _ in range(int(5.0 / DT)):
+            w.heat = 40.0
+            w.step(DT)
+            if a.state == S.CUFFED:
+                break
         self.assertEqual(a.state, S.CUFFED)
         self.assertEqual(a.hands, [])
         near = [pk for pk in w.pickups.values() if math.hypot(pk.x - x, pk.y - y) < 4.0]
@@ -375,7 +379,7 @@ class TestCops(unittest.TestCase):
         self.assertEqual(len(b.hands), 1)
         step(w, C.CUFFED_TIME)
         self.assertEqual(a.state, S.FOOT)
-        self.assertTrue(w.map.in_garage(a.x, a.y), "respawn at the shop")
+        self.assertTrue(a.jailed and w.map.in_precinct(a.x, a.y), "(v0.8) off to the precinct lockup")
 
     def test_horn_confuses_cop(self):
         w = quiet_world()

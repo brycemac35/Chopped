@@ -51,6 +51,9 @@ class Brawl:
     def _knock_down_npc(self, n, vx, vy, t, attacker=None, vz=0.0):
         if n.carried_by is not None:
             return
+        if n.kind in LAW or n.kind == STREAKER:
+            self._law_hit(n, vx, vy, t, attacker, vz)     # (police.py: cops, guards, dogs, the naked man)
+            return
         n.tumble_t = max(n.tumble_t, t)
         n.vx, n.vy = vx, vy
         if vz:
@@ -100,7 +103,7 @@ class Brawl:
         """A pedestrian with a grudge. Returns True if it drove n's movement."""
         q = self.players.get(n.foe)
         n.hostile_t -= dt
-        if q is None or n.hostile_t <= 0 or q.state in (CUFFED,) or self.map.in_garage(q.x, q.y):
+        if q is None or n.hostile_t <= 0 or q.state in (CUFFED, DEAD) or q.jailed or self.map.in_garage(q.x, q.y):
             n.hostile_t = 0.0
             n.foe = None
             return False
@@ -287,6 +290,7 @@ class Brawl:
             return
         fx, fy = math.cos(p.ang), math.sin(p.ang)
         if throw:
+            self._charge(p, "yeet")
             spd = C.THROW_PERSON_SPEED
             vx, vy, vz = p.vx * 0.5 + fx * spd, p.vy * 0.5 + fy * spd, C.THROW_PERSON_LIFT
             self.sfx(S_WHOOSH, p.x, p.y)
@@ -472,6 +476,7 @@ class Brawl:
                 continue
             if n.brave and self.rng.random() < C.DANCE_OFFEND_CHANCE:
                 self._provoke(n, p, witnesses=False)
+                self._charge(p, "dance")           # somebody was offended enough to press charges
                 self.toast(self.rng.choice(OFFENDED_LINES), T_BAD)
             elif n.laugh_t <= 0:
                 n.laugh_t = C.DANCE_LAUGH_TIME

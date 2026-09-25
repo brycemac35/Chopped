@@ -137,7 +137,7 @@ class ModShop:
                 out.append(Item(name + " NEON", "FITTED" if m["glow"] == c + 1 else "$%d" % C.PRICE_GLOW,
                                 G.OP_GLOW, c + 1, preview=("glow", c + 1), col=CAR_COLORS[c]))
         elif kind == "extra":
-            owned = (m["nos"], m["ejector"], m["gnome"])
+            owned = (m["nos"], m["ejector"], m["gnome"], m.get("hydro", False))
             for k, name in enumerate(G.EXTRA_NAMES):
                 out.append(Item(name, "FITTED" if owned[k] else "$%d" % G.extra_price(k), G.OP_EXTRA, k,
                                 preview=("gnome", True) if k == G.EXTRA_GNOME else None))

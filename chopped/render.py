@@ -107,7 +107,7 @@ class Renderer:
             self.burst(CONFETTI, x, y, 5, 3, 0.7, P["money"])
 
     def on_shot(self, weapon, x0, y0, x1, y1):
-        self.tracers.append([x0, y0, x1, y1, 0.08])
+        self.tracers.append([x0, y0, x1, y1, 0.3 if weapon == S.TRACER_TASER else 0.08, weapon])
         self.burst(SPARK, x1, y1, 3, 5, 0.2)
 
     # ------------------------------------------------------------------ camera
@@ -223,6 +223,18 @@ class Renderer:
                 low.fill(P["ink"], (sx - 3, sy, 7, 1))
         blink = int(now * 6) % 2
         for t in getattr(view, "traps", {}).values():
+            if t[1] == S.TRAP_SMOKE:
+                sx, sy = self.to_screen(t[2], t[3])
+                pygame.draw.circle(low, (150, 150, 158), (sx, sy), max(2, int(C.SMOKE_SCREEN_R * PPM * (0.6 + 0.4 * t[5]))))
+                continue
+            if t[1] == S.TRAP_GATE:
+                if t[5] > 0:
+                    tr = S.Trap(t[0], t[1], t[2], t[3], t[4]).rect()
+                    x0, y0 = self.to_screen(tr[0], tr[1])
+                    w = max(1, int(tr[2] * PPM))
+                    for k in range(0, w, 3):
+                        low.fill((150, 154, 166), (x0 + k, y0, 1, max(2, int(tr[3] * PPM))))
+                continue
             if t[5] < 0.1 and blink:
                 continue
             if t[1] in (S.TRAP_BANANA, S.TRAP_DONUT):
@@ -254,7 +266,8 @@ class Renderer:
             tr[4] -= dt
             if tr[4] > 0:
                 keep.append(tr)
-                pygame.draw.line(low, (255, 240, 170), self.to_screen(tr[0], tr[1]), self.to_screen(tr[2], tr[3]))
+                col = (255, 230, 80) if len(tr) > 5 and tr[5] == S.TRACER_TASER else (255, 240, 170)
+                pygame.draw.line(low, col, self.to_screen(tr[0], tr[1]), self.to_screen(tr[2], tr[3]))
         self.tracers = keep
 
     def _pickups(self, low, view, now):
@@ -292,6 +305,13 @@ class Renderer:
                 k = ((250, 250, 250), (250, 240, 235), (255, 120, 40), "clown")
             elif kind == S.OWNER:
                 k = ((236, 150, 190), r.choice(art.SKINS), r.choice(art.HAIRS), "owner")
+            elif kind == S.OFFICER:
+                k = ((34, 44, 96), r.choice(art.SKINS), (26, 32, 70), None)        # navy, peaked cap
+            elif kind in (S.GUARD, S.KEYGUARD):
+                k = ((96, 104, 124), r.choice(art.SKINS), (60, 66, 84), None)
+            elif kind == S.STREAKER:
+                sk = r.choice(art.SKINS)
+                k = (sk, sk, r.choice(art.HAIRS), None)
             else:
                 k = (r.choice(art.SHIRTS), r.choice(art.SKINS), r.choice(art.HAIRS), None)
             self.person_keys[(eid, kind)] = k
@@ -303,6 +323,11 @@ class Renderer:
         for n in view.npcs.values():
             sx, sy = self.to_screen(n[3], n[4])
             if not (-10 < sx < W + 10 and -10 < sy < H + 10):
+                continue
+            if n[1] == S.DOG:
+                c, sn = math.cos(n[5]), math.sin(n[5])
+                low.fill((150, 100, 55), (sx - 2, sy - 2, 4, 4))
+                low.fill((60, 40, 26), (int(sx + c * 3) - 1, int(sy + sn * 3) - 1, 2, 2))
                 continue
             shirt, skin, hair, extra = self._person_key(n[0], n[1])
             fr = frame if n[2] in (0, 4, 5) else panic if n[2] == 2 else 0

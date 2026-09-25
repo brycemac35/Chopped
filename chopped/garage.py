@@ -25,8 +25,8 @@ from . import vehicles as V
 # ---- menu commands (InputState.menu_op) ----------------------------------------------
 (OP_NONE, OP_CLOSE, OP_INSTALL, OP_BUY, OP_REMOVE, OP_SELL, OP_TAKE, OP_PAINT, OP_LIVERY, OP_HORN,
  OP_GLOW, OP_EXTRA) = range(12)
-EXTRA_NOS, EXTRA_EJECTOR, EXTRA_GNOME = range(3)
-EXTRA_NAMES = ("NITROUS (SHIFT)", "EJECTOR SEAT (F AT SPEED)", "GNOME HOOD ORNAMENT")
+EXTRA_NOS, EXTRA_EJECTOR, EXTRA_GNOME, EXTRA_HYDRO = range(4)
+EXTRA_NAMES = ("NITROUS (SHIFT)", "EJECTOR SEAT (F AT SPEED)", "GNOME HOOD ORNAMENT", "HYDRAULICS (X: HOP)")
 
 # parts you can't buy new (they come off scooters, out of trunks, or out of gardens)
 NOT_FOR_SALE = {"eng_electric", "whl_scooter", "gnome", "cash_bag", "briefcase", "rubber_duck"}
@@ -51,7 +51,7 @@ def horn_price(h):
 
 
 def extra_price(which):
-    return (C.PRICE_NOS, C.PRICE_EJECTOR, C.PRICE_GNOME_MOUNT)[which]
+    return (C.PRICE_NOS, C.PRICE_EJECTOR, C.PRICE_GNOME_MOUNT, C.PRICE_HYDRAULICS)[which]
 
 
 class Garage:
@@ -280,6 +280,9 @@ class Garage:
                 return
             car.gnome = True
             self.toast("THE GNOME HAS BEEN INSTALLED. IT WATCHES THE ROAD. IT WATCHES YOU.", T_INFO)
+        elif which == EXTRA_HYDRO and not car.hydraulics and self._pay(C.PRICE_HYDRAULICS):
+            car.hydraulics = True
+            self.toast("HYDRAULICS FITTED. PRESS X IN THE CAR. BOUNCE RESPONSIBLY.", T_INFO)
         else:
             return
         self.sfx(S_MOD, p.x, p.y)
@@ -295,7 +298,8 @@ def encode_menu(world, me):
         out += bytes(6)
     else:
         out += bytes((car.color & 255, car.livery & 255, car.horn_type & 255, car.glow & 255,
-                      (1 if car.nos else 0) | (2 if car.ejector else 0) | (4 if car.gnome else 0), car.model & 255))
+                      (1 if car.nos else 0) | (2 if car.ejector else 0) | (4 if car.gnome else 0) |
+                      (8 if car.hydraulics else 0), car.model & 255))
     for s in SLOTS:
         part = car.parts.get(s) if car is not None else None
         if part is None:
@@ -315,7 +319,8 @@ def decode_menu(data, off):
     off += 1
     (menu["color"], menu["livery"], menu["horn"], menu["glow"], ex, menu["model"]) = data[off:off + 6]
     off += 6
-    menu["nos"], menu["ejector"], menu["gnome"] = bool(ex & 1), bool(ex & 2), bool(ex & 4)
+    menu["nos"], menu["ejector"], menu["gnome"], menu["hydro"] = bool(ex & 1), bool(ex & 2), bool(ex & 4), \
+        bool(ex & 8)
     slots = {}
     for s in SLOTS:
         idx, style, cond = data[off:off + 3]

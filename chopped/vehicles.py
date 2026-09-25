@@ -12,7 +12,7 @@ No pygame in here (the sim and the predictor both import it).
 from .config import clamp
 
 # ---- models --------------------------------------------------------------------
-KEI, SEDAN, COUPE, MUSCLE, PICKUP, VAN, ICECREAM, SCOOTER = range(8)
+KEI, SEDAN, COUPE, MUSCLE, PICKUP, VAN, ICECREAM, SCOOTER, RICE, TRUCK4 = range(10)
 
 
 class Model:
@@ -20,11 +20,12 @@ class Model:
     the renderers read the shape numbers; the trunk is how many hands' worth
     of parts fit in the back (a door is 2, a wheel is 1)."""
     __slots__ = ("id", "name", "length", "width", "height", "mass", "grip", "top", "accel", "trunk",
-                 "bed", "fwd", "cg_h", "hood", "roof", "cab", "civ_weight", "traffic_weight", "sporty")
+                 "bed", "fwd", "cg_h", "hood", "roof", "cab", "civ_weight", "traffic_weight", "sporty",
+                 "awd", "offroad")
 
     def __init__(self, mid, name, length, width, height, mass, grip, top, accel, trunk, bed=False,
                  fwd=False, cg_h=0.5, hood=0.3, roof=0.5, cab=0.45, civ_weight=0, traffic_weight=0,
-                 sporty=False):
+                 sporty=False, awd=False, offroad=False):
         self.id = mid
         self.name = name
         self.length, self.width, self.height = length, width, height
@@ -42,6 +43,8 @@ class Model:
         self.civ_weight = civ_weight
         self.traffic_weight = traffic_weight
         self.sporty = sporty          # rolls the good loot table
+        self.awd = awd                # (v0.8) all four wheels drive: no power slides, no brake stands
+        self.offroad = offroad        # (v0.8) grass is just more road
 
 
 # Sizes are real-ish; top speeds are "fun-real". The Kei stays exactly the
@@ -63,6 +66,15 @@ MODELS = [
           roof=1.2, cab=0.2, civ_weight=3, traffic_weight=2, cg_h=0.95),
     Model(SCOOTER, "MOBILITY SCOOTER", 1.6, 0.9, 0.9, 160, 0.9, 12.0, 0.55, 1, hood=0.2, roof=0.0,
           cab=0.5, civ_weight=3, traffic_weight=0, cg_h=0.4),
+    # v0.8, Bryce: "add riced out cars and 4x4 trucks". The rice rocket is a hatch with a wing
+    # taller than its roof, a fart-can exhaust and stickers that add 5 hp each (they don't).
+    # Loud, low, twitchy, and genuinely quite quick when someone's dropped a turbo in it.
+    Model(RICE, "RICE ROCKET", 4.3, 2.3, 1.2, 1020, 1.04, 48.0, 1.08, 2, hood=0.3, roof=0.4, cab=0.42,
+          civ_weight=9, traffic_weight=6, sporty=True, cg_h=0.4),
+    # The lifted 4x4: all-wheel drive, a diesel, tyres up to your hip. Slow on the straights,
+    # doesn't care what's under it (parks are shortcuts), and it will win any shoving match.
+    Model(TRUCK4, "4X4 TRUCK", 5.3, 2.7, 2.3, 2400, 1.0, 40.0, 0.95, 8, bed=True, hood=0.3, roof=0.62,
+          cab=0.32, civ_weight=8, traffic_weight=8, cg_h=1.0, awd=True, offroad=True),
 ]
 MODEL_NAMES = [m.name for m in MODELS]
 COP_MODEL = SEDAN             # interceptors are sedans with attitude
@@ -197,7 +209,10 @@ WHEEL_GRIP = {"whl_worn_steel": 0.93, "whl_stock_alloy": 1.0, "whl_tuned_light":
 SPOILER_GRIP = {"spl_lip": 0.02, "spl_wing": 0.05, "spl_whale": 0.06, "spl_shelf": 0.09}
 SPOILER_DRAG = {"spl_lip": 0.0, "spl_wing": 0.01, "spl_whale": 0.015, "spl_shelf": 0.05}
 MASS_DELTA = {"hood_tuned_cf": -25, "seat_tuned_bkt": -20, "bmp_tuned_aero": -5, "whl_tuned_light": -4,
-              "whl_worn_steel": 3}
+              "whl_worn_steel": 3,
+              # engines (v0.8): a V8 is a lot of iron; a rotary is a lot of nothing
+              "eng_v6_3_0": 40, "eng_v8_5_7": 90, "eng_sc_6_2": 120, "eng_diesel_4_5": 140,
+              "eng_rotary_13b": -40, "eng_tt_3_0": 70, "eng_electric": -60}
 
 
 def performance(mdl, parts):

@@ -12,9 +12,11 @@ import struct
 import zlib
 
 from . import config as C
-from .parts import SLOTS, PART_INDEX, PART_IDS, NO_PART
+from .parts import SLOTS, PART_INDEX, PART_IDS, NO_PART, engine_spec, gear_count
+from .drivetrain import engine_byte
 from .garage import encode_menu, decode_menu
-from .sim import COP, TRAFFIC, TUMBLE, FOOT, DRIVER, PASSENGER
+from .sim import (COP, TRAFFIC, TUMBLE, FOOT, DRIVER, PASSENGER, DEAD, OFFICER, GUARD, KEYGUARD, DOG,
+                  TRAP_GATE, TRAP_SMOKE)
 from . import vehicles as V
 
 MAGIC = b"CH"
@@ -27,10 +29,11 @@ INPUT = struct.Struct("<IIIHBBBHBBBBBB")  # seq, client_ms, ack_event, buttons (
                                           # yaw16, fire (click counter), weapon slot,
                                           # mod-shop command: counter, op, arg, arg2
 
-SNAP_HDR = struct.Struct("<IIBiHHBBBBHBBIHI")
+SNAP_HDR = struct.Struct("<IIBiHHBBBBHBBIHIB")
 # tick, echo_ms, your_pid, cash, day_left_ds, debt_ds, heat, witness(|128 cooling),
 # cops, gameover_ds, run, hold_byte, nplayers_total, ack_input (last input seq applied for you),
-# day, rent_due
+# day, rent_due, (v0.8) alert bits (AL_*)
+AL_LETHAL = 1                   # the police are shooting to kill
 
 # Your own physics state at full precision, for client-side prediction. The
 # regular entity rows are 1/16 m fixed point; rewinding to a rounded position
@@ -50,10 +53,11 @@ TRUNK_HDR = struct.Struct("<HBBB")      # car id, capacity, used, item count; th
 SF_EXHAUSTED = 1
 SX_NOS = 1
 COUNTS = struct.Struct("<BBBBBBB")
-CAR = struct.Struct("<HBBBBHIHHhhHBBBBBBB")
+CAR = struct.Struct("<HBBBBHIHHhhHBBBBBBBBB")
 # id, kind, colour, state, flags, part mask, style word, x, y, vx, vy, ang, driver, passenger, damage,
-# model, livery, extras (horn 0-2, NOS flame 3, glow 4-7), extras2 (see CX_*)
-PLAYER = struct.Struct("<BBBBHHhhHBBBHBBB")    # ... + weapon, z (0.1 m), banner
+# model, livery, extras (horn 0-2, NOS flame 3, glow 4-7), extras2 (see CX_*),
+# (v0.8) engine byte (drivetrain.engine_byte: voice, turbo/supercharger, gearbox), drive byte (DR_*)
+PLAYER = struct.Struct("<BBBBHHhhHBBBHBBBB")   # ... + weapon, z (0.1 m), banner, (v0.8) flags2 (PF2_*)
 NPC = struct.Struct("<HBBHHBB")           # id, kind, state, x, y, ang8, z (0.1 m)
 PICKUP = struct.Struct("<HBHHBBB")        # id, part, x, y, scale, z (0.1 m), style
 DOLLY = struct.Struct("<HHHBBB")        # id, x, y, ang8, part_idx (255 empty), holder pid (0 none)
@@ -65,10 +69,15 @@ EV_SFX = struct.Struct("<BHH")
 CF_ALARM, CF_FIRE, CF_HORN, CF_HANDBRAKE, CF_CONFUSED, CF_WANTED = 1, 2, 4, 8, 16, 32
 CF_TRUNK = 64                   # something in the trunk (you only find out what by looking)
 CX_GNOME, CX_NOS, CX_EJECTOR, CX_SPIN, CX_DONUT, CX_PATROL = 1, 2, 4, 8, 16, 32
+CX_OFFICER_OUT = 64             # (v0.8) cops: the officer's out on foot, chasing someone
+# (v0.8) what the driver's feet are doing, for everyone else's engine notes and tyre smoke
+DR_THROTTLE, DR_BRAKE, DR_BURNOUT, DR_SPIN, DR_HYDRO, DR_HOP, DR_POPS, DR_HANDBRAKE = 1, 2, 4, 8, 16, 32, 64, 128
 PF_SPRINT, PF_EXHAUSTED, PF_MOVING, PF_DOLLY = 1, 2, 4, 8
 PF_CARRY, PF_DANCE, PF_CHARGE, PF_CHUTE = 16, 32, 64, 128
+PF2_JUMPSUIT, PF2_PANTSED, PF2_TASED, PF2_JAILED, PF2_KEYS, PF2_CUFFING = 1, 2, 4, 8, 16, 32
 # NPC row states
-NS_WALK, NS_DOWN, NS_FLEE, NS_HANDSUP, NS_BRAWL, NS_ARMED, NS_CARRIED, NS_LAUGH = range(8)
+NS_WALK, NS_DOWN, NS_FLEE, NS_HANDSUP, NS_BRAWL, NS_ARMED, NS_CARRIED, NS_LAUGH, \
+    NS_TASER, NS_CUFFING, NS_RUNOFF = range(11)
 
 SLOT_BITS = {s: 1 << i for i, s in enumerate(SLOTS)}
 
@@ -175,6 +184,14 @@ def _encode_motion(world, me):
     return SELF_MOTION.pack(ME_NONE, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0, 0, 0)
 
 
+def _trap_life(t):
+    """The trap row's last byte: time left as 0..255. (The precinct gate: 255 shut, 0 open.)"""
+    if t.kind == TRAP_GATE:
+        return 0 if t.open_t > 0 else 255
+    life = C.SMOKE_SCREEN_LIFE if t.kind == TRAP_SMOKE else C.TRAP_LIFETIME
+    return max(0, min(255, int(255 * (1 - t.age / life))))
+
+
 def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
     """Build one client's snapshot. Per-client so we can cull by distance and
     tuck in their private prompt text and prediction state."""
@@ -188,7 +205,8 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
         min(65535, max(0, int(world.day_t * 10))), min(65535, max(0, int(world.debt_t * 10))),
         int(round(world.heat)), wit, cops, min(255, max(0, int(world.gameover_t * 10))),
         world.run & 0xFFFF, int((me.hold_frac if me else 0) * 255), len(world.players),
-        max(0, ack_input) & 0xFFFFFFFF, min(65535, world.day), min(0xFFFFFFFF, world.rent_due()))
+        max(0, ack_input) & 0xFFFFFFFF, min(65535, world.day), min(0xFFFFFFFF, world.rent_due()),
+        AL_LETHAL if world.lethal_t > 0 else 0)
     prompt = encode_text(me.prompt if me else "") + encode_self(world, me)
 
     r2 = C.NET_CULL_RADIUS ** 2
@@ -207,11 +225,21 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
         extras = (car.horn_type & 7) | (8 if car.boosting else 0) | ((car.glow & 15) << 4)
         extras2 = ((CX_GNOME if car.gnome else 0) | (CX_NOS if car.nos else 0) |
                    (CX_EJECTOR if car.ejector else 0) | (CX_SPIN if car.spin_t > 0 else 0) |
-                   (CX_DONUT if car.donut_t > 0 else 0) | (CX_PATROL if car.patrol else 0))
+                   (CX_DONUT if car.donut_t > 0 else 0) | (CX_PATROL if car.patrol else 0) |
+                   (CX_OFFICER_OUT if car.kind == COP and car.officer else 0))
+        voice, asp, _red, _idle = engine_spec(car.parts)
+        live = car.driver is not None or car.kind in (COP, TRAFFIC)
+        drive = 0
+        if live:
+            drive = ((DR_THROTTLE if car.throttle > 0 or car.burnout else 0) | (DR_BRAKE if car.throttle < 0 else 0) |
+                     (DR_BURNOUT if car.burnout and car.wheelspin >= 1.0 else 0) |
+                     (DR_SPIN if car.wheelspin > 0.3 else 0) | (DR_HANDBRAKE if car.handbrake else 0))
+        drive |= (DR_HYDRO if car.hydraulics else 0) | (DR_HOP if car.hop_t > 0 else 0) | \
+            (DR_POPS if car.pops() else 0)
         cars.append(CAR.pack(car.id, car.kind, car.color, car.state, flags, mask, V.pack_styles(car.parts),
                              _pos(car.x), _pos(car.y), _vel(car.vx), _vel(car.vy), _ang(car.ang),
                              car.driver or 0, car.passenger or 0, car.damage, car.model, car.livery,
-                             extras, extras2))
+                             extras, extras2, engine_byte(voice, asp, gear_count(car.parts)), drive))
     players = []
     for p in world.players.values():
         h0 = PART_INDEX[p.hands[0].type_id] if len(p.hands) > 0 else NO_PART
@@ -220,10 +248,13 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
                 (PF_MOVING if p.moving else 0) | (PF_DOLLY if p.dolly is not None else 0) | \
                 (PF_CARRY if p.carrying is not None else 0) | (PF_DANCE if p.dancing else 0) | \
                 (PF_CHARGE if p.charge_t > 0.15 else 0) | (PF_CHUTE if p.chute else 0)
-        ang = p.spin if p.state == TUMBLE else p.ang
+        ang = p.spin if p.state in (TUMBLE, DEAD) else p.ang
+        flags2 = (PF2_JUMPSUIT if p.jumpsuit else 0) | (PF2_PANTSED if p.pants_t > 0 else 0) | \
+            (PF2_TASED if p.tased_t > 0 else 0) | (PF2_JAILED if p.jailed else 0) | \
+            (PF2_KEYS if p.keys else 0) | (PF2_CUFFING if p.cuff_prog > 0 else 0)
         players.append(PLAYER.pack(p.id, p.color, p.state, flags, _pos(p.x), _pos(p.y),
                                    _vel(p.vx), _vel(p.vy), _ang(ang), h0, h1,
-                                   int(p.stamina * 2.55), p.car_id or 0, p.weapon, _z(p.z), p.banner)
+                                   int(p.stamina * 2.55), p.car_id or 0, p.weapon, _z(p.z), p.banner, flags2)
                        + encode_text(p.name, 12))
     npcs = []
     for n in world.npcs.values():
@@ -233,6 +264,12 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
                 state = NS_CARRIED
             elif n.tumble_t > 0:
                 state = NS_DOWN
+            elif n.kind == OFFICER:
+                state = (NS_TASER, NS_ARMED, NS_CUFFING)[n.mode - 1] if 1 <= n.mode <= 3 else NS_WALK
+            elif n.kind == DOG and n.mode == 4:
+                state = NS_RUNOFF
+            elif n.kind in (GUARD, KEYGUARD):
+                state = NS_BRAWL if n.hostile_t > 0 else NS_WALK
             elif n.surrender_t > 0:
                 state = NS_HANDSUP
             elif n.hostile_t > 0:
@@ -256,9 +293,11 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
     dollies = [DOLLY.pack(d.id, _pos(d.x), _pos(d.y), _ang8(d.ang),
                           PART_INDEX[d.part.type_id] if d.part is not None else NO_PART, d.holder or 0)
                for d in world.dollies.values()]
-    traps = [TRAP.pack(t.id, t.kind, _pos(t.x), _pos(t.y), _ang8(t.ang),
-                       max(0, min(255, int(255 * (1 - t.age / C.TRAP_LIFETIME)))))
-             for t in world.traps.values()]
+    everything = list(world.traps.values())
+    gate = world.gate()
+    if gate is not None and (gate.x - px) ** 2 + (gate.y - py) ** 2 < r2:
+        everything.append(gate)                     # (only matters if you're anywhere near the precinct)
+    traps = [TRAP.pack(t.id, t.kind, _pos(t.x), _pos(t.y), _ang8(t.ang), _trap_life(t)) for t in everything]
     evs = []
     for (seq, _t, kind, payload) in world.events:
         if seq <= ack_event:
@@ -292,7 +331,7 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
 class Snapshot:
     __slots__ = ("tick", "time", "echo_ms", "pid", "cash", "rent", "debt", "heat", "witness",
                  "cooling", "cops", "gameover", "run", "hold", "nplayers", "prompt", "ack_input", "day",
-                 "rent_due",
+                 "rent_due", "alert",
                  "me", "me2", "arsenal", "trunk", "menu", "cars", "players", "npcs", "pickups", "dollies", "traps", "events", "arrival")
 
 
@@ -305,7 +344,7 @@ def decode_snapshot(payload):
     data = zlib.decompress(payload)
     s = Snapshot()
     (s.tick, s.echo_ms, s.pid, s.cash, rent, debt, s.heat, wit, s.cops, go, s.run, hold,
-     s.nplayers, s.ack_input, s.day, s.rent_due) = SNAP_HDR.unpack_from(data, 0)
+     s.nplayers, s.ack_input, s.day, s.rent_due, s.alert) = SNAP_HDR.unpack_from(data, 0)
     s.time = s.tick / C.SIM_HZ
     s.rent, s.debt, s.gameover = rent / 10.0, debt / 10.0, go / 10.0
     s.witness, s.cooling = wit & 127, bool(wit & 128)
@@ -338,19 +377,20 @@ def decode_snapshot(payload):
         f = CAR.unpack_from(data, off)
         off += CAR.size
         # (id, kind, color, state, flags, mask, styles, x, y, vx, vy, ang, driver, passenger, damage,
-        #  model, livery, extras, extras2)
+        #  model, livery, extras, extras2, engine byte, drive byte)
         s.cars[f[0]] = [f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7] / 16.0, f[8] / 16.0,
                         f[9] / 64.0, f[10] / 64.0, f[11] / 65536.0 * 2 * math.pi, f[12], f[13], f[14],
-                        f[15], f[16], f[17], f[18]]
+                        f[15], f[16], f[17], f[18], f[19], f[20]]
     s.players = {}
     for _ in range(npl):
         f = PLAYER.unpack_from(data, off)
         off += PLAYER.size
         name, off = _text(data, off)
-        # (id, color, state, flags, x, y, vx, vy, ang, h0, h1, stamina, car_id, name, weapon, z, banner)
+        # (id, color, state, flags, x, y, vx, vy, ang, h0, h1, stamina, car_id, name, weapon, z, banner,
+        #  flags2)
         s.players[f[0]] = [f[0], f[1], f[2], f[3], f[4] / 16.0, f[5] / 16.0, f[6] / 64.0, f[7] / 64.0,
                            f[8] / 65536.0 * 2 * math.pi, f[9], f[10], f[11] / 2.55, f[12], name, f[13],
-                           f[14] / 10.0, f[15]]
+                           f[14] / 10.0, f[15], f[16]]
     s.dollies = {}
     for _ in range(ndl):
         f = DOLLY.unpack_from(data, off)

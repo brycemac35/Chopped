@@ -104,6 +104,7 @@ class FPRenderer:
         self._fog_rows = None
         self._fog_key = None
         self.person_keys = {}
+        self.pops = set()             # cars that backfired since the last frame
 
     # ------------------------------------------------------------------ setup
     def _build_walls(self):
@@ -112,6 +113,7 @@ class FPRenderer:
         cm = self.map
         n = cm.n
         self.wall_def = [None]                     # index 0 = no wall
+        self.inner_plain = {}                      # sign wall -> the same wall without the sign (back face)
         self.wall_of = [0] * (n * n)
         self.tex_cache = {}
         defs = {}
@@ -129,9 +131,19 @@ class FPRenderer:
                     self.wall_of[y * n + x] = def_id(("bld", style, floors, variant))
         ox, oy, b, _ = cm.garage_tiles
         mid = ox + b // 2
+        pt = cm.precinct_tiles if cm.precinct_outer is not None else None
         for y in range(n):
             for x in range(n):
                 if cm.tiles[y * n + x] == M.WALL:
+                    if pt is not None and pt[0] <= x < pt[0] + pt[2] and pt[1] <= y < pt[1] + pt[3]:
+                        # the police station: POLICE either side of the front gate
+                        door = pt[0] + pt[2] // 2
+                        sign = 1 if (y == pt[1] + pt[3] - 1 and abs(x - door) == 1) else 0
+                        self.wall_of[y * n + x] = def_id(("precinct", sign))
+                        if sign:
+                            # the sign faces the street; from inside the lockup it's just wall
+                            self.inner_plain[def_id(("precinct", 1))] = def_id(("precinct", 0))
+                        continue
                     sign = x - (mid - 1) if (y == oy and mid - 1 <= x <= mid + 1) else -1
                     self.wall_of[y * n + x] = def_id(("brick", sign))
         self.edge_def = def_id(("concrete",))
@@ -143,6 +155,13 @@ class FPRenderer:
             d = self.wall_def[did]
             if d[0] == "bld":
                 surf = FA.facade(d[1], d[2], d[3], night)
+            elif d[0] == "precinct":
+                surf = FA.precinct_wall(64, night)
+                if d[1]:
+                    sign = pygame.Surface((FA.TEX, 10), pygame.SRCALPHA)
+                    sign.fill((30, 60, 150))
+                    self.font.draw(sign, "POLICE", FA.TEX // 2, 2, P["white"], None, align="center")
+                    surf.blit(sign, (0, 14))
             elif d[0] == "brick":
                 surf = FA.brick_wall(48, night, sign=d[1] >= 0)
                 if d[1] >= 0:
@@ -158,6 +177,8 @@ class FPRenderer:
         d = self.wall_def[did]
         if d[0] == "bld":
             return d[2] * FA.FLOOR_M
+        if d[0] == "precinct":
+            return 8.0
         return 6.0
 
     def _build_static_sprites(self):
@@ -189,7 +210,8 @@ class FPRenderer:
             self.benches.append((bx + bw / 2, by + bh / 2, is_sell, bw, bh))
 
     # ------------------------------------------------------------------ sprites
-    def _car_sprite(self, row, az, steps=16, ppm=12):
+    def _car_sprite(self, row, az, steps=None, ppm=12):
+        steps = steps or C.CAR_ANGLES
         (cid, kind, color, state, flags, mask, styles, x, y, vx, vy, ang, drv, psg, dmg,
          model, livery, extras, extras2) = row[:19]
         idx = int(round(az / (TWO_PI / steps))) % steps
@@ -201,46 +223,63 @@ class FPRenderer:
         if extras & 8:
             lights |= 4                                  # NOS: blue fire out the back
         key = (kind, color, mask, styles, dmg, lights, idx, model, livery, extras & 0xF8, extras2 & 1, steps, ppm)
+        # (the hop: hydraulics are drawn as the whole sprite bouncing, see the car loop)
         spr = self.car_cache.get(key)
         if spr is None:
-            if len(self.car_cache) > 1500:
+            if len(self.car_cache) > C.SPRITE_CACHE_CARS:
                 self.car_cache.clear()
             spr = self.car_cache[key] = FA.render_boxes(
                 FA.car_boxes(kind, color, mask, styles, dmg, lights, model, livery, extras, extras2),
                 idx * TWO_PI / steps, ppm)
         return spr, ppm
 
+    OUTFIT_OF = {S.OFFICER: "officer", S.GUARD: "guard", S.KEYGUARD: "keyguard", S.STREAKER: "streaker"}
+
     def _person_look(self, eid, kind):
         k = self.person_keys.get((eid, kind))
         if k is None:
             r = random.Random(eid * 7919)
             if kind == S.CLOWN:
-                k = ((250, 250, 250), (250, 240, 235), (255, 120, 40), "clown")
+                k = ((250, 250, 250), (250, 240, 235), (255, 120, 40), "clown", None)
             elif kind == S.OWNER:
-                k = ((236, 150, 190), r.choice(SKINS), r.choice(HAIRS), "owner")
+                k = ((236, 150, 190), r.choice(SKINS), r.choice(HAIRS), "owner", None)
             else:
-                k = (r.choice(SHIRTS), r.choice(SKINS), r.choice(HAIRS), None)
+                k = (r.choice(SHIRTS), r.choice(SKINS), r.choice(HAIRS), None, self.OUTFIT_OF.get(kind))
             self.person_keys[(eid, kind)] = k
         return k
 
-    def _person_sprite(self, shirt, skin, hair, frame, extra, down, az, gun=0):
-        idx = int(round(az / (TWO_PI / 8))) % 8
-        key = (shirt, skin, hair, frame, extra, down, idx, gun, self.big_heads)
+    def _person_sprite(self, shirt, skin, hair, frame, extra, down, az, gun=0, outfit=None):
+        n = C.PERSON_ANGLES
+        idx = int(round(az / (TWO_PI / n))) % n
+        key = (shirt, skin, hair, frame, extra, down, idx, gun, self.big_heads, outfit)
         spr = self.person_cache.get(key)
         if spr is None:
-            if len(self.person_cache) > 2000:
+            if len(self.person_cache) > C.SPRITE_CACHE_PEOPLE:
                 self.person_cache.clear()
-            boxes = FA.person_boxes(shirt, skin, hair, frame, extra, gun=gun)
+            boxes = FA.person_boxes(shirt, skin, hair, frame, extra, gun=gun, outfit=outfit)
             if self.big_heads:
                 boxes = FA.big_head(boxes)
             if down:
                 boxes = FA.lying(boxes)
-            spr = self.person_cache[key] = FA.render_boxes(boxes, idx * TWO_PI / 8, 16)
+            spr = self.person_cache[key] = FA.render_boxes(boxes, idx * TWO_PI / n, 16)
         return spr, 16
 
-    def _model_sprite(self, name, boxes_fn, az, steps=8, ppm=16):
+    def _dog_sprite(self, frame, trousers, down, az):
+        n = C.PERSON_ANGLES
+        idx = int(round(az / (TWO_PI / n))) % n
+        key = ("dog", frame, trousers, down, idx)
+        spr = self.model_cache.get(key)
+        if spr is None:
+            boxes = FA.dog_boxes(frame, trousers)
+            if down:
+                boxes = [(x0, x1, y0, y1, z0 * 0.4, z1 * 0.4, c) for x0, x1, y0, y1, z0, z1, c in boxes]
+            spr = self.model_cache[key] = FA.render_boxes(boxes, idx * TWO_PI / n, 20)
+        return spr, 20
+
+    def _model_sprite(self, name, boxes_fn, az, steps=None, ppm=16):
+        steps = C.PROP_ANGLES if not steps or steps == 8 else steps     # (v0.8: 8 was choppy up close)
         idx = int(round(az / (TWO_PI / steps))) % steps
-        key = (name, idx)
+        key = (name, idx, steps)
         spr = self.model_cache.get(key)
         if spr is None:
             spr = self.model_cache[key] = FA.render_boxes(boxes_fn(), idx * TWO_PI / steps, ppm)
@@ -301,12 +340,20 @@ class FPRenderer:
             self.shake = max(self.shake, 1.5)
         elif sid == S.S_ROB:
             self.burst(CONFETTI, x, y, 1.0, 6, 3, 0.7, P["money"])
+        elif sid == S.S_CONFETTI:
+            for col in ((255, 80, 80), (80, 200, 255), (255, 220, 60), (120, 255, 120), (255, 120, 220)):
+                self.burst(CONFETTI, x, y, 2.2, 14, 6, 2.2, col)
+        elif sid == S.S_FLASH and d < 25:
+            self.flash = ((255, 255, 255), 200)            # SMILE!
+        elif sid == S.S_TASER:
+            self.burst(SPARK, x, y, 1.2, 6, 3, 0.2)
         elif sid in (S.S_PISTOL, S.S_SHOTGUN) and d < 1.0:
             self.shake = max(self.shake, 2.5 if sid == S.S_SHOTGUN else 1.0)    # your own shot
 
     def on_shot(self, weapon, x0, y0, x1, y1):
         """A bullet's path, from the server. A streak, sparks where it landed."""
-        self.tracers.append([x0, y0, x1, y1, weapon, 0.07 if weapon == S.ARM_PISTOL else 0.05])
+        self.tracers.append([x0, y0, x1, y1, weapon, 0.07 if weapon == S.ARM_PISTOL else
+                             0.35 if weapon == S.TRACER_TASER else 0.05])
         self.burst(SPARK, x1, y1, 1.1, 3 if weapon == S.ARM_SHOTGUN else 5, 5, 0.25)
         self.emit(FIRE, x0, y0, 1.35, 0, 0, 0, 0.06)          # muzzle flash (for other people's guns)
 
@@ -467,6 +514,8 @@ class FPRenderer:
             u = int((hit % T) / T * FA.TEX)
             if (side == 0 and dx > 0) or (side == 1 and dy < 0):
                 u = FA.TEX - 1 - u                          # so text reads the right way round
+            if did in self.inner_plain and not (side == 1 and dy < 0):
+                did = self.inner_plain[did]                 # (a one-sided sign: only the street face has it)
             wt = self._wall_tex(did, night)
             H = self.wall_height(did)
             level = base_level + int(dist / 11.0) + side
@@ -524,16 +573,27 @@ class FPRenderer:
                 ("bench", s), lambda: FA.bench_boxes(s, w, h), a, 8, 10))
         for (x, y, item) in self.crates:
             az = math.atan2(y - cy, x - cx) - math.pi       # the crates face into the shop
-            add(x, y, lambda a=az, it=item: self._model_sprite(("crate", it), lambda: FA.crate_boxes(it), a, 8, 16),
+            add(x, y, lambda a=az, it=item: self._model_sprite(("crate", it), lambda: FA.crate_boxes(it), a, None, 16),
                 tag=("crate", item))
         for t in getattr(view, "traps", {}).values():
+            if t[1] == S.TRAP_SMOKE:
+                continue                                        # (smoke is particles: see smoke_clouds)
+            if t[1] == S.TRAP_GATE:
+                if t[5] > 0:                                    # shut: a row of bars across the doorway
+                    for k in range(2):
+                        off = -C.GATE_LEN / 2 + (k + 0.5) * C.GATE_LEN / 2
+                        x, y = t[2] + off, t[3]
+                        az = math.atan2(y - cy, x - cx) - math.pi / 2
+                        add(x, y, lambda a=az: self._model_sprite("gate", lambda: FA.gate_boxes(C.GATE_LEN / 2),
+                                                                  a, None, 16))
+                continue
             if t[5] < 0.1 and int(now * 6) % 2:
                 continue                                        # about to be towed: blink
             if t[1] in (S.TRAP_BANANA, S.TRAP_DONUT):
                 az = math.atan2(t[3] - cy, t[2] - cx)
                 name = "banana" if t[1] == S.TRAP_BANANA else "donutbox"
                 fn = FA.banana_boxes if t[1] == S.TRAP_BANANA else FA.donut_box_boxes
-                add(t[2], t[3], lambda a=az, nm=name, f=fn: self._model_sprite(nm, f, a, 8, 24))
+                add(t[2], t[3], lambda a=az, nm=name, f=fn: self._model_sprite(nm, f, a, None, 24))
                 continue
             spikes = t[1] == S.TRAP_SPIKES
             along = 0.0 if abs(math.cos(t[4])) > 0.5 else math.pi / 2   # which way the traffic runs
@@ -546,7 +606,7 @@ class FPRenderer:
                 x, y = t[2] + px * off, t[3] + py * off
                 az = math.atan2(y - cy, x - cx) - along
                 if spikes:
-                    add(x, y, lambda a=az, L=seg: self._model_sprite(("spikes", L), lambda: FA.spike_boxes(L), a, 8, 16))
+                    add(x, y, lambda a=az, L=seg: self._model_sprite(("spikes", L), lambda: FA.spike_boxes(L), a, None, 16))
                 else:
                     lamp = k % 2 == 1
                     add(x, y, lambda a=az, L=seg, lp=lamp: self._model_sprite(
@@ -567,32 +627,42 @@ class FPRenderer:
                         self._person_sprite(s, k, h, 0, None, False, a), z=0.25)
             if row[1] == S.COP and row[18] & PR.CX_DONUT:
                 add(row[7], row[8], None, z=2.2, tag=("say", "NOM NOM"))
+            hop = 0.0
+            if len(row) > 20 and row[20] & PR.DR_HOP:
+                hop = abs(math.sin(now * 9.0 + row[0])) * 0.9      # boing. boing. boing.
             if row[0] == self.hires:
                 # the chase cam's car: more angles, more pixels (it's right there, being drifted)
-                add(row[7], row[8], lambda r=row, a=az: self._car_sprite(r, a, 64, 20), tag=("smoke", row))
+                add(row[7], row[8], lambda r=row, a=az: self._car_sprite(r, a, C.CHASE_CAR_ANGLES, 20),
+                    z=hop, tag=("smoke", row))
             else:
-                add(row[7], row[8], lambda r=row, a=az: self._car_sprite(r, a), tag=self._car_marker(row))
+                add(row[7], row[8], lambda r=row, a=az: self._car_sprite(r, a), z=hop, tag=self._car_marker(row))
         frame = int(now * 7) % 2
         for n in view.npcs.values():
-            shirt, skin, hair, extra = self._person_look(n[0], n[1])
             az = math.atan2(n[4] - cy, n[3] - cx) - n[5]
             st = n[2]
-            fr = frame if st in (PR.NS_WALK, PR.NS_FLEE, PR.NS_BRAWL) else 0
-            gun = 0
-            if st == PR.NS_HANDSUP:
-                extra = "handsup"
-            elif st == PR.NS_BRAWL and extra is None:
-                extra = "fists"
-            elif st == PR.NS_ARMED:
-                gun = 1
-            elif st == PR.NS_LAUGH and extra is None:
-                extra = "laugh"
+            fr = frame if st in (PR.NS_WALK, PR.NS_FLEE, PR.NS_BRAWL, PR.NS_TASER, PR.NS_RUNOFF) else 0
             down = st in (PR.NS_DOWN, PR.NS_CARRIED)
             z = n[6] if len(n) > 6 else 0.0
             if st == PR.NS_CARRIED:
                 z -= 0.55                              # draped over a shoulder, not floating above it
-            add(n[3], n[4], lambda s=shirt, k=skin, h=hair, e=extra, f=fr, dn=down, a=az, g=gun:
-                self._person_sprite(s, k, h, f, e, dn, a, g), z=z)
+            if n[1] == S.DOG:
+                add(n[3], n[4], lambda f=fr, tr=(st == PR.NS_RUNOFF), dn=down, a=az: self._dog_sprite(f, tr, dn, a),
+                    z=z)
+                continue
+            shirt, skin, hair, extra, outfit = self._person_look(n[0], n[1])
+            gun = 0
+            if st == PR.NS_HANDSUP:
+                extra = "handsup"
+            elif st in (PR.NS_BRAWL, PR.NS_CUFFING) and extra is None:
+                extra = "fists"
+            elif st == PR.NS_ARMED:
+                gun = 1
+            elif st == PR.NS_TASER:
+                gun = 3
+            elif st == PR.NS_LAUGH and extra is None:
+                extra = "laugh"
+            add(n[3], n[4], lambda s=shirt, k=skin, h=hair, e=extra, f=fr, dn=down, a=az, g=gun, o=outfit:
+                self._person_sprite(s, k, h, f, e, dn, a, g, o), z=z)
         for p in view.players.values():
             if p[0] == me_pid or p[2] in (S.DRIVER, S.PASSENGER):
                 continue
@@ -608,11 +678,19 @@ class FPRenderer:
             elif flags & PR.PF_CHARGE:
                 extra = "windup"
             z = p[15] if len(p) > 15 else 0.0
-            down = p[2] in (S.TUMBLE, S.CARRIED)
+            down = p[2] in (S.TUMBLE, S.CARRIED, S.DEAD)
             if p[2] == S.CARRIED:
                 z -= 0.55
+            f2 = p[17] if len(p) > 17 else 0
+            outfit = "jumpsuit" if f2 & (PR.PF2_JUMPSUIT | PR.PF2_JAILED) else ("pantsed" if f2 & PR.PF2_PANTSED
+                                                                                else None)
+            if f2 & PR.PF2_TASED and p[2] == S.TUMBLE:
+                z += 0.05 * (int(now * 30) % 2)          # twitching. It's not funny. (It's a bit funny.)
+                if self.rng.random() < 0.4:
+                    self.emit(SPARK, p[4] + self.rng.uniform(-0.4, 0.4), p[5] + self.rng.uniform(-0.4, 0.4),
+                              0.3, 0, 0, 1.5, 0.15)
             add(p[4], p[5], lambda s=shirt, k=SKINS[p[0] % 4], h=HAIRS[p[0] % 6], f=fr, e=extra,
-                dn=down, a=az, g=gun: self._person_sprite(s, k, h, f, e, dn, a, g), z=z, tag=("name", p))
+                dn=down, a=az, g=gun, o=outfit: self._person_sprite(s, k, h, f, e, dn, a, g, o), z=z, tag=("name", p))
             if flags & PR.PF_CHUTE:
                 add(p[4], p[5], lambda: (self.chute_img, 12), z=z + 1.9)
         for pk in view.pickups.values():
@@ -620,7 +698,7 @@ class FPRenderer:
             if pk[1] == GNOME_IDX:
                 # gnomes don't bob like loot; they stand there and judge you
                 az = math.atan2(pk[3] - cy, pk[2] - cx) - pk[0] * 0.7
-                add(pk[2], pk[3], lambda a=az: self._model_sprite("gnome", FA.gnome_boxes, a, 8, 40),
+                add(pk[2], pk[3], lambda a=az: self._model_sprite("gnome", FA.gnome_boxes, a, None, 40),
                     z=pz, tag=("pickup", pk[4]))
                 continue
             ic = self._icon(bank, pk[1])
@@ -630,7 +708,7 @@ class FPRenderer:
             if d[5] == me_pid:
                 continue
             az = math.atan2(d[2] - cy, d[1] - cx) - d[3]
-            add(d[1], d[2], lambda a=az: self._model_sprite("dolly", FA.dolly_boxes, a, 8, 16),
+            add(d[1], d[2], lambda a=az: self._model_sprite("dolly", FA.dolly_boxes, a, None, 16),
                 tag=("dolly", d[4]))
         for e in self.explosions:
             add(e[0], e[1], None, z=1.2, tag=("boom", e))
@@ -758,7 +836,13 @@ class FPRenderer:
             for d, l, z in ((d0, l0, z0), (d1, l1, z1)):
                 pts.append((max(-5000, min(5000, int(vw / 2 + l / d * D))),
                             max(-5000, min(5000, int(hor + (eye - z) * D / d)))))
-            pygame.draw.line(surf, TRACER_COL, pts[0], pts[1], 1)
+            if tr[4] == S.TRACER_TASER:
+                # two wiggly yellow wires
+                mx = (pts[0][0] + pts[1][0]) // 2 + self.rng.randint(-3, 3)
+                my = (pts[0][1] + pts[1][1]) // 2 + self.rng.randint(-3, 3)
+                pygame.draw.lines(surf, (255, 230, 80), False, [pts[0], (mx, my), pts[1]], 1)
+            else:
+                pygame.draw.line(surf, TRACER_COL, pts[0], pts[1], 1)
         self.tracers = keep
 
     def _draw_boom(self, surf, e, sx, depth, eye, dt):
@@ -827,11 +911,42 @@ class FPRenderer:
                 keep.append(e)
         self.explosions = keep
 
+    def smoke_clouds(self, view):
+        """Burnout smoke screens (server-side TRAP_SMOKE): keep them billowing."""
+        r = self.rng
+        for t in getattr(view, "traps", {}).values():
+            if t[1] != S.TRAP_SMOKE or r.random() > 0.35 + 0.4 * t[5]:
+                continue
+            a, d = r.uniform(0, TWO_PI), r.uniform(0, C.SMOKE_SCREEN_R)
+            self.emit(SMOKE, t[2] + math.cos(a) * d, t[3] + math.sin(a) * d, r.uniform(0.2, 1.5),
+                      r.uniform(-0.4, 0.4), r.uniform(-0.4, 0.4), 0.3, 1.8)
+
+    def exhaust_pop(self, cid, now):
+        """A backfire: a gout of flame out of this car's exhaust (next car_emitters)."""
+        self.pops.add(cid)
+
     def car_emitters(self, view, dt):
         """Fire, smoke and dragging hubs, emitted in world space."""
         r = self.rng
         for c in view.cars.values():
             (cid, kind, color, state, flags, mask, styles, x, y, vx, vy, ang, drv, psg, dmg) = c[:15]
+            drive = c[20] if len(c) > 20 else 0
+            if cid in self.pops or drive & PR.DR_BURNOUT:
+                mdl = V.model(c[15])
+                fx, fy = math.cos(ang), math.sin(ang)
+                if cid in self.pops:
+                    # pops and bangs: flame out the back, then it's gone
+                    lx = -mdl.length / 2 - 0.3
+                    for _ in range(5):
+                        self.emit(FIRE, x + fx * lx - fy * 0.5, y + fy * lx + fx * 0.5, 0.35,
+                                  -fx * r.uniform(3, 7) + vx, -fy * r.uniform(3, 7) + vy, 0.6, 0.18)
+                if drive & PR.DR_BURNOUT:
+                    # a brake stand: the driven wheels vanish into their own weather system
+                    lx = mdl.length * (0.32 if mdl.fwd else -0.32)
+                    for ly in (-mdl.width * 0.42, mdl.width * 0.42):
+                        if r.random() < 0.55:          # (smoke is opaque pixels: a little goes a long way)
+                            self.emit(SMOKE, x + fx * lx - fy * ly, y + fy * lx + fx * ly, 0.3,
+                                      r.uniform(-1.5, 1.5) - fx * 1.5, r.uniform(-1.5, 1.5) - fy * 1.5, 1.0, 1.5)
             if flags & PR.CF_FIRE:
                 for _ in range(2):
                     self.emit(FIRE, x + r.uniform(-1, 1), y + r.uniform(-1, 1), 1.0, r.uniform(-1, 1),
@@ -861,6 +976,9 @@ class FPRenderer:
                         lx, ly = lx * mdl.length / 4.4, ly * mdl.width / 2.4
                         self.emit(SPARK, x + fx * lx - fy * ly, y + fy * lx + fx * ly, 0.2,
                                   -vx * 0.3 + r.uniform(-3, 3), -vy * 0.3 + r.uniform(-3, 3), 1.0, 0.25)
+
+    def _clear_pops(self):
+        self.pops.clear()
 
     def _skids(self, view):
         """Skid marks get painted onto the floor texture itself, forever."""

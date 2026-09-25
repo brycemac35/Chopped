@@ -106,6 +106,23 @@ def brick_wall(height_px, night, sign=None):
     return s
 
 
+def precinct_wall(height_px, night):
+    """The police station: pale concrete, a blue stripe, barred windows. Cheerful."""
+    s = pygame.Surface((TEX, height_px))
+    base = (196, 198, 206) if not night else (104, 106, 118)
+    s.fill(base)
+    rng = random.Random(8)
+    _noise(s, rng, (shade(base, 0.9), shade(base, 1.06)), TEX * height_px // 8)
+    s.fill((40, 70, 170) if not night else (26, 44, 110), (0, height_px - 22, TEX, 5))
+    for y in range(0, height_px, 16):
+        s.fill(shade(base, 0.8), (0, y, TEX, 1))
+    wy = 30
+    s.fill((30, 34, 44), (8, wy, 16, 12))                                  # a window...
+    for x in range(9, 24, 3):
+        s.fill((150, 150, 160), (x, wy, 1, 12))                            # ...with bars
+    return s
+
+
 def concrete_wall(height_px, night):
     s = pygame.Surface((TEX, height_px))
     base = P["concrete"] if not night else shade(P["concrete"], 0.55)
@@ -291,7 +308,10 @@ WOOD = (130, 86, 50)
 # per model: (sill height, waistline, wheel radius, front/rear axle as a fraction of half-length)
 _BODY = {V.KEI: (0.3, 1.0, 0.31, 0.63), V.SEDAN: (0.3, 0.95, 0.33, 0.62), V.COUPE: (0.26, 0.82, 0.33, 0.64),
          V.MUSCLE: (0.3, 0.9, 0.35, 0.62), V.PICKUP: (0.4, 1.1, 0.4, 0.62), V.VAN: (0.36, 1.05, 0.38, 0.66),
-         V.ICECREAM: (0.36, 1.05, 0.38, 0.66), V.SCOOTER: (0.12, 0.25, 0.12, 0.62)}
+         V.ICECREAM: (0.36, 1.05, 0.38, 0.66), V.SCOOTER: (0.12, 0.25, 0.12, 0.62),
+         V.RICE: (0.18, 0.76, 0.3, 0.64),          # slammed. Scrapes on painted lines.
+         V.TRUCK4: (0.78, 1.55, 0.56, 0.6)}        # lifted. You need a step ladder.
+STICKER_COLS = [(255, 255, 255), (240, 60, 60), (40, 200, 240), (250, 220, 60), (30, 30, 36), (255, 110, 200)]
 
 
 def _decal(b, x0, x1, y0, y1, z0, z1, col):
@@ -376,7 +396,7 @@ def car_boxes(kind, color, mask, styles, damage, lights, model=V.KEI, livery=0, 
                                             (0.36, (240, 236, 220)), (0.3, (236, 130, 190)), (0.18, (120, 70, 40)))):
                 zb = top + k * 0.22
                 b.append((cx - rad, cx + rad, -rad, rad, zb, zb + 0.22, col))
-    elif model == V.PICKUP:
+    elif model in (V.PICKUP, V.TRUCK4):
         b.append((cr + 0.05, cf - 0.05, -gy, gy, zw, zr, {"*": P["glass"], "+z": roof, "-z": None,
                                                           "-x": P["glass_d"]}))
         # the bed: floor and walls, open on top
@@ -393,6 +413,28 @@ def car_boxes(kind, color, mask, styles, damage, lights, model=V.KEI, livery=0, 
         b.append((rw, ws, -gy, gy, zw, zr, {"*": P["glass"], "+z": roof, "-z": None, "+x": None, "-x": None}))
         b.append((cr + 0.05, rw, -gy, gy, zw, zr - 0.06, {"*": P["glass_d"], "-z": None, "+x": None}))
     top_z = zr + (zw * 0.1 if boxy else 0.0)
+    if model == V.TRUCK4:
+        # the lift: a chassis you can see daylight under, a light bar, a snorkel
+        b.append((-hl + 0.4, hl - 0.4, -hw + 0.45, hw - 0.45, wr * 0.8, z0, P["ink2"]))
+        b.append((cf - 0.45, cf - 0.2, -hw + 0.3, hw - 0.3, zr, zr + 0.14,
+                  {"*": P["ink2"], "+x": (255, 240, 170)}))
+        b.append((cf - 0.05, cf + 0.1, hw - 0.12, hw + 0.02, zw - 0.3, zr + 0.2, P["ink2"]))
+    elif model == V.RICE:
+        # stickers: one for every brand of oil the owner has never used
+        rng = random.Random(color * 29 + 3)
+        for _ in range(9):
+            x = rng.uniform(-hl + 0.3, hl - 0.6)
+            z = rng.uniform(z0 + 0.08, zw - 0.18)
+            sgn = rng.choice((-1, 1))
+            y0, y1 = (hw, hw + 0.02) if sgn > 0 else (-hw - 0.02, -hw)
+            _decal(b, x, x + rng.uniform(0.2, 0.45), y0, y1, z, z + 0.1, rng.choice(STICKER_COLS))
+        # canards on the nose, and a windscreen banner nobody can see out of
+        for sgn in (-1, 1):
+            y0 = hw - 0.3 if sgn > 0 else -hw + 0.05
+            b.append((hl - 0.25, hl + 0.1, y0, y0 + 0.25, z0 + 0.35, z0 + 0.4, CARBON))
+        cab_len = cf - cr
+        b.append((cf - cab_len * 0.3, cf - cab_len * 0.2, -hw + 0.2, hw - 0.2, zr - 0.12, zr - 0.02,
+                  (40, 40, 48)))
     # ---- livery ---------------------------------------------------------------------
     if pattern == V.LIV_STRIPES:
         for yc in (-0.2, 0.2):
@@ -525,6 +567,8 @@ def car_boxes(kind, color, mask, styles, damage, lights, model=V.KEI, livery=0, 
             b.append((-hl - 0.25, -hl, y - 0.08, y + 0.08, z0 + 0.02, z0 + 0.16, P["chrome"]))
         if es == 3:                                                                    # stovepipe
             b.append((cr - 0.2, cr - 0.05, -hw + 0.02, -hw + 0.17, z0, zr + 0.5, P["chrome"]))
+        if model == V.RICE:                                                            # the fart can
+            b.append((-hl - 0.45, -hl, 0.35, 0.75, z0, z0 + 0.4, {"*": P["chrome"], "-x": P["ink"]}))
         if extras & 8 and lights & 4:                                                  # NOS flames
             for y in (pipes or (-0.7,)):
                 b.append((-hl - 0.9, -hl - 0.25, y - 0.12, y + 0.12, z0, z0 + 0.2, (90, 170, 255)))
@@ -603,7 +647,11 @@ GUN_WOOD = (110, 70, 40)
 
 
 def gun_boxes(gun, x, y, z):
-    """A pistol (1) or a shotgun (2) whose grip sits at (x, y, z), barrel along +x."""
+    """A pistol (1), a shotgun (2) or a taser (3) whose grip sits at (x, y, z), barrel along +x."""
+    if gun == 3:
+        return [(x - 0.03, x + 0.2, y - 0.035, y + 0.035, z + 0.02, z + 0.11, (250, 210, 40)),
+                (x - 0.03, x + 0.03, y - 0.03, y + 0.03, z - 0.08, z + 0.05, (30, 30, 36)),
+                (x + 0.2, x + 0.23, y - 0.03, y + 0.03, z + 0.03, z + 0.1, (30, 30, 36))]
     if gun == 1:
         return [(x - 0.03, x + 0.22, y - 0.03, y + 0.03, z + 0.03, z + 0.1, GUN_METAL),
                 (x - 0.03, x + 0.03, y - 0.03, y + 0.03, z - 0.08, z + 0.05, GUN_METAL)]
@@ -612,22 +660,59 @@ def gun_boxes(gun, x, y, z):
             (x + 0.2, x + 0.42, y - 0.04, y + 0.04, z - 0.03, z + 0.03, GUN_WOOD)]         # pump
 
 
-def person_boxes(shirt, skin, hair, frame, extra=None, pants=(52, 56, 78), gun=0):
+OUTFITS = {
+    # outfit: (shirt, trousers, hat colour or None)
+    "officer": ((34, 44, 96), (26, 30, 60), (26, 32, 70)),
+    "guard": ((96, 104, 124), (54, 58, 70), (60, 66, 84)),
+    "keyguard": ((96, 104, 124), (54, 58, 70), (60, 66, 84)),
+    "jumpsuit": ((240, 120, 30), (240, 120, 30), None),
+}
+BOXER_WHITE, BOXER_HEART = (240, 236, 240), (220, 50, 80)
+
+
+def person_boxes(shirt, skin, hair, frame, extra=None, pants=(52, 56, 78), gun=0, outfit=None):
     """A little blocky crook, about 1.75 m, facing +x. frame 0/1 = legs
-    together/apart for the walk cycle. gun 1/2 = pistol/shotgun out in front."""
+    together/apart for the walk cycle. gun 1/2 = pistol/shotgun out in front,
+    3 = a taser. outfit (v0.8): "officer", "guard", "keyguard", "jumpsuit",
+    "streaker" (a censor bar and a smile) or "pantsed" (boxers, trousers at
+    the ankles, dignity elsewhere)."""
     swing = 0.16 if frame else 0.0
     shoe = (30, 26, 30)
     b = []
+    hat = None
     if extra == "clown":
         shoe, pants = (230, 40, 40), (80, 200, 255)
+    if outfit in OUTFITS:
+        shirt, pants, hat = OUTFITS[outfit]
+        if outfit != "jumpsuit":
+            shoe = (16, 16, 20)
+    elif outfit == "streaker":
+        shirt = pants = shoe = skin
     for side, s in ((-1, 1), (1, -1)):
         lx = s * swing
-        b.append((lx - 0.09, lx + 0.09, side * 0.2 if side < 0 else 0.03, -0.03 if side < 0 else side * 0.2,
-                  0.08, 0.82, pants))
+        y0, y1 = (side * 0.2, -0.03) if side < 0 else (0.03, side * 0.2)
+        if outfit == "pantsed":
+            b.append((lx - 0.09, lx + 0.09, y0, y1, 0.2, 0.62, skin))                   # bare legs
+            b.append((lx - 0.1, lx + 0.1, y0, y1, 0.08, 0.2, pants))                    # trousers, at the ankles
+        else:
+            b.append((lx - 0.09, lx + 0.09, y0, y1, 0.08, 0.82, pants))
         big = 0.12 if extra == "clown" else 0.0
         b.append((lx - 0.1, lx + 0.14 + big, side * 0.21 if side < 0 else 0.02, -0.02 if side < 0 else side * 0.21,
                   0.0, 0.1, shoe))
+    if outfit == "pantsed":
+        b.append((-0.12, 0.12, -0.22, 0.22, 0.62, 0.86, BOXER_WHITE))                     # the boxers...
+        for y in (-0.14, 0.02):
+            b.append((0.12, 0.13, y, y + 0.08, 0.7, 0.78, BOXER_HEART))                   # ...with hearts on
     b.append((-0.13, 0.13, -0.24, 0.24, 0.8, 1.4, shirt))                                 # torso
+    if outfit == "keyguard":
+        b.append((0.0, 0.2, -0.2, 0.2, 0.85, 1.25, shirt))                                # the big one
+        b.append((0.02, 0.1, 0.2, 0.3, 0.82, 0.95, (240, 200, 60)))                       # THE KEYS
+    if outfit in ("officer", "guard", "keyguard"):
+        b.append((-0.14, 0.14, -0.25, 0.25, 0.8, 0.86, (20, 20, 24)))                    # duty belt
+        b.append((0.13, 0.14, -0.14, -0.06, 1.22, 1.3, (230, 196, 70)))                   # badge
+    if outfit == "streaker":
+        b.append((0.12, 0.2, -0.16, 0.16, 0.66, 0.88, P["ink"]))                         # [CENSORED]
+        b.append((-0.2, -0.12, -0.16, 0.16, 0.66, 0.88, P["ink"]))
     for side in (-1, 1):
         y0, y1 = (-0.35, -0.24) if side < 0 else (0.24, 0.35)
         if extra == "cuffed":
@@ -669,12 +754,42 @@ def person_boxes(shirt, skin, hair, frame, extra=None, pants=(52, 56, 78), gun=0
     b.append((-0.14, 0.14, -0.13, 0.13, 1.42, 1.72, skin))                                # head
     b.append((0.14, 0.15, -0.08, -0.03, 1.56, 1.61, P["ink"]))                            # eyes
     b.append((0.14, 0.15, 0.03, 0.08, 1.56, 1.61, P["ink"]))
+    if hat is not None:
+        # a peaked cap. Authority, in box form.
+        b.append((-0.16, 0.16, -0.16, 0.16, 1.7, 1.82, hat))
+        b.append((0.12, 0.26, -0.14, 0.14, 1.7, 1.74, P["ink"]))
+        b.append((0.15, 0.17, -0.04, 0.04, 1.73, 1.79, (230, 196, 70)))
+        return b
     if extra == "clown":
         b.append((0.15, 0.2, -0.03, 0.03, 1.5, 1.56, (255, 40, 40)))                      # honk
         b.append((-0.2, 0.1, -0.24, 0.24, 1.6, 1.84, (255, 110, 40)))                     # wig
     else:
         b.append((-0.16, 0.08, -0.15, 0.15, 1.66, 1.78, hair))
         b.append((-0.16, -0.12, -0.15, 0.15, 1.46, 1.7, hair))
+    return b
+
+
+DOG_BROWN, DOG_DARK = (150, 100, 55), (60, 40, 26)
+
+
+def dog_boxes(frame=0, trousers=False):
+    """A police dog: German shepherd-ish, facing +x. A very good boy. It wants
+    your trousers. Sometimes it has them (trousers=True)."""
+    leg = 0.06 if frame else -0.06
+    b = []
+    for x, s in ((0.28, 1), (-0.28, -1)):
+        for y in (-0.12, 0.08):
+            b.append((x + leg * s - 0.04, x + leg * s + 0.04, y, y + 0.05, 0.0, 0.34, DOG_DARK))
+    b.append((-0.36, 0.34, -0.14, 0.14, 0.3, 0.58, DOG_BROWN))                          # body
+    b.append((-0.1, 0.3, -0.15, 0.15, 0.5, 0.6, DOG_DARK))                              # saddle
+    b.append((0.3, 0.52, -0.1, 0.1, 0.5, 0.74, DOG_BROWN))                              # head
+    b.append((0.5, 0.64, -0.06, 0.06, 0.52, 0.62, DOG_DARK))                            # snout
+    for y in (-0.09, 0.05):
+        b.append((0.32, 0.38, y, y + 0.04, 0.74, 0.86, DOG_DARK))                       # ears
+    b.append((-0.5, -0.36, -0.03, 0.03, 0.5, 0.56, DOG_BROWN))                          # tail
+    b.append((0.2, 0.3, -0.15, 0.15, 0.56, 0.6, (40, 60, 150)))                         # POLICE harness
+    if trousers:
+        b.append((0.58, 0.7, -0.25, 0.25, 0.42, 0.56, (52, 56, 78)))                    # your trousers
     return b
 
 
@@ -746,6 +861,19 @@ def gnome_boxes():
             (-0.09, 0.09, -0.09, 0.09, 0.42, 0.5, GNOME_RED),
             (-0.05, 0.05, -0.05, 0.05, 0.5, 0.6, GNOME_RED),
             (-0.02, 0.02, -0.02, 0.02, 0.6, 0.66, GNOME_RED)]
+
+
+def gate_boxes(length):
+    """Half the precinct gate: steel bars across the doorway (along model y)."""
+    hl = length / 2
+    steel, dark = (120, 124, 136), (60, 62, 72)
+    b = [(-0.08, 0.08, -hl, hl, 2.3, 2.45, dark), (-0.08, 0.08, -hl, hl, 0.0, 0.12, dark),
+         (-0.06, 0.06, -hl, hl, 1.2, 1.3, steel)]
+    n = int(length / 0.28)
+    for k in range(n):
+        y = -hl + (k + 0.5) * length / n
+        b.append((-0.04, 0.04, y - 0.04, y + 0.04, 0.12, 2.3, steel))
+    return b
 
 
 def banana_boxes():

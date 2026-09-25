@@ -14,6 +14,9 @@ import pygame
 from . import config as C
 from . import music as MU
 from . import sim as S
+from . import enginesynth as ES
+from . import drivetrain as DT
+from . import parts as PT
 
 RATE = 22050
 MASTER = 0.55          # keep it sane: car alarms are annoying enough at 55%
@@ -35,6 +38,13 @@ class Audio:
         self._music_bytes = None
         self.music_ch = None
         self.music_level = None
+        self.engine_banks = {}        # (voice, supercharged) -> (band rpms, [Sound]) once rendered
+        self._engine_bytes = None
+        self.eng_ch = []              # [(chanA, chanB)] per engine slot: 0 = your car, 1 = the loudest other
+        self.eng_state = [[None, None], [None, None]]
+        self.whistle = []             # turbo whistle bands
+        self.whistle_state = [None, None]
+        self.oneshots = {}
         if not enabled:
             return
         try:
@@ -44,14 +54,20 @@ class Audio:
             if not init:
                 return
             self.rate, _fmt, self.nch = init
-            pygame.mixer.set_num_channels(24)
-            pygame.mixer.set_reserved(8)
+            pygame.mixer.set_num_channels(32)
+            pygame.mixer.set_reserved(15)
             self._build()
-            for i, name in enumerate(("engine", "alarm", "siren", "horn", "fire", "jingle", "nos")):
+            names = ("engine", "alarm", "siren", "horn", "fire", "jingle", "nos", "screech")
+            for i, name in enumerate(names):
                 self.channels[name] = pygame.mixer.Channel(i)
                 self.loop_state[name] = None
-            self.music_ch = pygame.mixer.Channel(7)
+            k = len(names)
+            self.eng_ch = [(pygame.mixer.Channel(k), pygame.mixer.Channel(k + 1)),
+                           (pygame.mixer.Channel(k + 2), pygame.mixer.Channel(k + 3))]
+            self.wh_ch = (pygame.mixer.Channel(k + 4), pygame.mixer.Channel(k + 5))
+            self.music_ch = pygame.mixer.Channel(k + 6)
             self.ok = True
+            threading.Thread(target=self._render_engines, name="chopped-engines", daemon=True).start()
             if music:
                 threading.Thread(target=self._compose, name="chopped-beat", daemon=True).start()
         except Exception:
@@ -167,6 +183,45 @@ class Audio:
                                                      * (1 - p) ** 2 + rnd.uniform(-1, 1) * 0.2 * (1 - p) ** 6), 0.8)
         self.sounds[S.S_WRIGGLE] = self._mk(self._tone(0.15, lambda t, p: sq(700 + 300 * math.sin(t * 60), t) * 0.2), 0.4)
         self.sounds[S.S_NOS] = self._mk(self._tone(0.5, lambda t, p: rnd.uniform(-1, 1) * 0.5 * (1 - p)), 0.7)
+        # ---- v0.8: the law, and the silly department ------------------------------
+        # taser: a mains-hum buzz with a crackle on top. Ow.
+        self.sounds[S.S_TASER] = self._mk(self._tone(0.7, lambda t, p: (sq(120, t) * 0.25 + rnd.uniform(-1, 1) * 0.35
+                                                                        * (1 if (t * 40) % 1 < 0.4 else 0.2))
+                                                     * (1 - p * 0.5)), 0.7)
+        # a bark: two quick rough "ruffs"
+        self.sounds[S.S_BARK] = self._mk(self._tone(0.35, lambda t, p: (saw(260 - 120 * ((t * 6) % 1), t) * 0.4
+                                                                       + rnd.uniform(-1, 1) * 0.25)
+                                                    * (1 if (t * 6) % 1 < 0.45 else 0)), 0.7)
+        # the speed camera: a click and a whine, the sound of a fine
+        self.sounds[S.S_FLASH] = self._mk(self._tone(0.35, lambda t, p: (rnd.uniform(-1, 1) * max(0, 1 - t / 0.01))
+                                                     + math.sin(2 * math.pi * (3000 + 3000 * p) * t) * 0.2 * (1 - p)), 0.6)
+        # party popper + a little kazoo fanfare (for a delivered car)
+        self.sounds[S.S_CONFETTI] = self._mk(self._tone(0.9, lambda t, p: (rnd.uniform(-1, 1) * max(0, 1 - t / 0.03))
+                                                        + saw([523, 659, 784, 1046][min(3, int(p * 4))], t)
+                                                        * 0.18 * min(1, p * 8)), 0.6)
+        # hydraulics: pssssht-CLUNK
+        self.sounds[S.S_HYDRO] = self._mk(self._tone(0.45, lambda t, p: rnd.uniform(-1, 1) * 0.35 * (1 - p)
+                                                     + (math.sin(2 * math.pi * 70 * t) * (1 if p > 0.75 else 0))), 0.7)
+        # WASTED: a slow falling sting
+        self.sounds[S.S_WASTED] = self._mk(self._tone(1.6, lambda t, p: (sq(220 - 110 * p, t) * 0.18
+                                                                         + sq(165 - 80 * p, t) * 0.12) * (1 - p)), 0.8)
+        # the gate: a big metal clank and a rattle
+        self.sounds[S.S_GATE] = self._mk(self._tone(0.6, lambda t, p: (math.sin(2 * math.pi * 95 * t)
+                                                                       + rnd.uniform(-1, 1) * 0.4) * (1 - p) ** 2), 0.8)
+        # keys: jingle jangle
+        self.sounds[S.S_KEYS] = self._mk(self._tone(0.4, lambda t, p: math.sin(2 * math.pi * (3200 + 800 *
+                                                                                      math.sin(t * 90)) * t)
+                                                    * 0.3 * (1 if (t * 18) % 1 < 0.3 else 0) * (1 - p)), 0.6)
+        # cuffs: click-click
+        self.sounds[S.S_CUFF] = self._mk(self._tone(0.25, lambda t, p: sq(2600, t) * 0.4
+                                                    * (1 if (t < 0.02 or 0.12 < t < 0.14) else 0)), 0.7)
+        # the police whistle: FWEEEEET
+        self.sounds[S.S_WHISTLE] = self._mk(self._tone(0.6, lambda t, p: math.sin(2 * math.pi * (2900 + 120 *
+                                                                                         math.sin(t * 70)) * t)
+                                                       * 0.35 * min(1, p * 20) * (1 - p) ** 0.3), 0.6)
+        # the streaker: "wheeeee!" (a rising then falling whoop)
+        self.sounds[S.S_WHEE] = self._mk(self._tone(0.8, lambda t, p: sq(500 + 700 * math.sin(p * math.pi), t)
+                                                    * 0.2 * (1 - p * 0.4)), 0.6)
         # ---- horns (the mod shop sells worse ones), indexed by vehicles.HORN_*
         self.horns = [
             self._mk(self._tone(0.2, lambda t, p: (sq(392, t) + sq(494, t)) * 0.18), 0.9),            # stock
@@ -197,6 +252,13 @@ class Audio:
         self.loops["siren"] = self._mk(self._tone(1.2, lambda t, p: sq(650 + 250 * math.sin(p * 2 * math.pi), t) * 0.18), 0.8)
         self.loops["horn"] = self._mk(self._tone(0.2, lambda t, p: (sq(392, t) + sq(494, t)) * 0.18), 0.9)
         self.loops["fire"] = self._mk(self._tone(0.6, lambda t, p: rnd.uniform(-1, 1) * 0.15), 0.6)
+        # ---- v0.8 car noises (the engine notes themselves render in the background) ----
+        self.loops["screech"] = self._mk(ES.render_screech(self.rate), 0.55)
+        self.oneshots["bov"] = self._mk(ES.render_bov(self.rate), 0.6)
+        self.oneshots["flutter"] = self._mk(ES.render_bov(self.rate, flutter=True), 0.6)
+        self.oneshots["pops"] = [self._mk(ES.render_pop(self.rate, 0.8 + 0.25 * k, k), 0.8) for k in range(3)]
+        self.oneshots["shift"] = self._mk(ES.render_shift(self.rate), 0.5)
+        self.whistle = [self._mk(ES.render_whistle(f, self.rate), 0.35) for f in C.TURBO_WHISTLE_HZ]
         # engine hum: 10 pre-pitched loops; we hop between them with speed
         self.engine = []
         for k in range(10):
@@ -218,6 +280,109 @@ class Audio:
             lp += (buzz + rnd.uniform(-0.6, 0.6) - lp) * 0.25
             out.append(lp * 0.7 * min(1, p * 20) * (1 - p) ** 0.6)
         return out
+
+    # ------------------------------------------------------------------ engines (v0.8)
+    def _render_engines(self):
+        """Background thread: every engine voice at ENGINE_BANDS rpm points, as raw
+        PCM. Turned into Sounds on the main thread (engine_note) as they're needed."""
+        try:
+            out = {}
+            keys = [(v, False) for v in ES.VOICES] + [(PT.V_ELECTRIC, False), (PT.V_V8, True), (PT.V_I4, True)]
+            for voice, sc in keys:
+                red = max((sp[2] for sp in PT.ENGINE_SPECS.values() if sp[0] == voice), default=7000)
+                rpms, bands = [], []
+                for r in DT.band_rpms(voice):
+                    x, actual = ES.render_engine(voice, r, self.rate, supercharged=sc, redline=red,
+                                                 vtec_rpm=red * C.VTEC_AT, seed=voice)
+                    rpms.append(actual)
+                    bands.append(self._pcm(x, 0.55))
+                out[(voice, sc)] = (rpms, bands)
+            self._engine_bytes = out
+        except Exception:
+            self._engine_bytes = None     # the old buzz it is, then
+
+    def _pcm(self, samples, vol):
+        a = array("h", (_clip(v * vol * MASTER * 32767) for v in samples))
+        if self.nch > 1:
+            wide = array("h")
+            for v in a:
+                wide.extend((v,) * self.nch)
+            a = wide
+        return a.tobytes()
+
+    def _bank(self, key):
+        if self._engine_bytes is not None and not self.engine_banks:
+            try:
+                for k, (rpms, bands) in self._engine_bytes.items():
+                    self.engine_banks[k] = (rpms, [pygame.mixer.Sound(buffer=b) for b in bands])
+            except Exception:
+                self.engine_banks = {}
+            self._engine_bytes = None
+        return self.engine_banks.get(key) or self.engine_banks.get((key[0], False))
+
+    def engine_note(self, slot, voice, sc, rpm, vol):
+        """Keep engine slot 0 (your car) or 1 (the loudest car near you) singing at rpm.
+        Two channels per slot: even bands on one, odd on the other, so the band
+        that's being swapped out is always the silent one."""
+        if not self.ok:
+            return
+        chans, state = self.eng_ch[slot], self.eng_state[slot]
+        bank = self._bank((voice, sc)) if vol > 0.02 else None
+        if bank is None:
+            for k in (0, 1):
+                if state[k] is not None:
+                    chans[k].stop()
+                    state[k] = None
+            if slot == 0:
+                # not rendered yet (first second of the game): the old buzz
+                self.set_loop("engine", vol * 0.8 if vol > 0.02 else 0, min(9, int(rpm / 800)))
+            return
+        if slot == 0:
+            self.set_loop("engine", 0)
+        rpms, sounds = bank
+        i, wi, j, wj = DT.band_weights(rpms, rpm)
+        for band, w in ((i, wi), (j, wj)):
+            k = band % 2
+            ch = chans[k]
+            tag = (voice, sc, band)
+            if state[k] != tag or not ch.get_busy():
+                ch.play(sounds[band], loops=-1)
+                state[k] = tag
+            ch.set_volume(min(1.0, vol * (w ** 0.7)))
+
+    def turbo_whistle(self, boost, vol):
+        if not self.ok or not self.whistle:
+            return
+        state = self.whistle_state
+        if vol * boost <= 0.02:
+            for k in (0, 1):
+                if state[k] is not None:
+                    self.wh_ch[k].stop()
+                    state[k] = None
+            return
+        pos = boost * (len(self.whistle) - 1)
+        i = min(len(self.whistle) - 2, int(pos))
+        w = pos - i
+        for band, bw in ((i, 1 - w), (i + 1, w)):
+            k = band % 2
+            ch = self.wh_ch[k]
+            if state[k] != band or not ch.get_busy():
+                ch.play(self.whistle[band], loops=-1)
+                state[k] = band
+            ch.set_volume(min(1.0, vol * boost * bw))
+
+    def oneshot(self, name, vol=1.0, pick=0):
+        if not self.ok or vol <= 0.02:
+            return
+        snd = self.oneshots.get(name)
+        if isinstance(snd, list):
+            snd = snd[pick % len(snd)]
+        if snd is None:
+            return
+        ch = pygame.mixer.find_channel()
+        if ch:
+            ch.set_volume(min(1.0, vol))
+            ch.play(snd)
 
     # ------------------------------------------------------------------ music
     def _compose(self):
@@ -322,7 +487,12 @@ class Audio:
         if self.ok:
             for ch in self.channels.values():
                 ch.stop()
-            for i in range(6, pygame.mixer.get_num_channels()):
+            for pair in list(self.eng_ch) + [self.wh_ch]:
+                for ch in pair:
+                    ch.stop()
+            self.eng_state = [[None, None], [None, None]]
+            self.whistle_state = [None, None]
+            for i in range(15, pygame.mixer.get_num_channels()):
                 pygame.mixer.Channel(i).stop()
             for k in self.loop_state:
                 self.loop_state[k] = None

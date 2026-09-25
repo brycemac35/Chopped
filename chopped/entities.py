@@ -64,7 +64,8 @@ class Car:
                  "special_fired", "route", "route_prev", "tdir", "node", "blocked_t", "shaken_t",
                  "overtake_t", "hits", "model", "hl", "hw", "bound", "delta", "trunk", "livery", "horn_type",
                  "glow", "nos", "nos_fuel", "boosting", "ejector", "gnome", "grip", "top_mult", "spin_t",
-                 "donut_t", "patrol", "beat", "gun_cd")
+                 "donut_t", "patrol", "beat", "gun_cd", "burnout", "wheelspin", "hydraulics", "hop_t",
+                 "smoke_t", "officer")
 
     def __init__(self, cid, kind, x, y, ang, parts, color=0, model=None):
         self.id = cid
@@ -93,6 +94,12 @@ class Car:
         self.patrol = False           # cops only: cruising the grid, not (yet) chasing
         self.beat = False             # cops only: a patrol unit (goes back on patrol instead of home)
         self.gun_cd = 0.0             # cops only: seconds until they can shoot again
+        self.burnout = False          # (v0.8) W+S held: brake stand / donuts
+        self.wheelspin = 0.0          # 0..1 how hard the driven wheels are spinning (smoke, screech, revs)
+        self.hydraulics = False       # (v0.8) lowrider hydraulics fitted (mod shop extra)
+        self.hop_t = 0.0              # > 0: mid-hop
+        self.smoke_t = 0.0            # seconds of burnout so far (long enough = smoke screen)
+        self.officer = None           # (v0.8) cops: id of this car's officer while they're out on foot
         self.x, self.y, self.ang = x, y, ang
         self.vx = self.vy = self.w = 0.0
         self.state = RUNNING if kind != CIV else LOCKED
@@ -154,6 +161,12 @@ class Car:
     def trunk_used(self):
         return sum(p.bulk if p.bulk != DOLLY else 3 for p in self.trunk)
 
+    def pops(self):
+        """Pops and bangs on the overrun (v0.8): a tuned ECU or exhaust, or any rice rocket."""
+        ecu, exh = self.parts.get("ECU"), self.parts.get("Exhaust")
+        return self.model == V.RICE or (ecu is not None and ecu.type_id == "ecu_tuned") or \
+            (exh is not None and exh.type_id == "exh_tuned")
+
     def power(self):
         # Sum of every part's power. Worn engine alone = 45 = sad trombone.
         return sum(part_power(p.type_id) for p in self.parts.values() if p is not None)
@@ -187,7 +200,8 @@ class Player:
                  "moving", "last_seen", "addr", "dolly", "weapon", "arms", "ammo", "gear", "fire_cd",
                  "prev_fire", "z", "vz", "seat_t", "carrying", "carrier", "wriggle", "prev_jump",
                  "charge_t", "dancing", "chute", "banner", "banner_t", "robbed_from", "menu", "menu_ack",
-                 "trunk_view")
+                 "trunk_view", "jailed", "keys", "jumpsuit", "pants_t", "tased_t", "dead_t", "cuffer",
+                 "cuff_prog", "arrests", "rap", "prev_hop")
 
     def __init__(self, pid, name, color):
         self.id = pid
@@ -239,6 +253,18 @@ class Player:
         self.menu = False             # in the mod shop (movement frozen; menu commands run)
         self.menu_ack = 0             # last mod-shop command we ran (the client waits for this)
         self.trunk_view = None        # the car whose trunk you're looking into (for the HUD)
+        # v0.8: the long arm of the law
+        self.jailed = False           # in the precinct's lockup, looking for a way out
+        self.keys = False             # ...holding the lockup keys (lifted off the big guard)
+        self.jumpsuit = False         # escaped: orange, conspicuous, until you get back to the shop
+        self.pants_t = 0.0            # > 0: a police dog has your trousers. Walk of shame.
+        self.tased_t = 0.0            # > 0: twitching on the pavement
+        self.dead_t = 0.0             # DEAD: seconds until you wake up at the shop, poorer
+        self.cuffer = None            # the officer (npc id) currently putting cuffs on you
+        self.cuff_prog = 0.0          # 0..CUFF_TIME
+        self.arrests = 0              # this run (bail goes up)
+        self.rap = {}                 # crime -> count, for the mugshot's charge sheet
+        self.prev_hop = False
 
     def hands_used(self):
         if self.dolly is not None or self.carrying is not None:
@@ -262,16 +288,18 @@ class Player:
         return bool(self.arms & (1 << slot))
 
     def speed_mult(self):
+        k = C.PANTSED_SPEED_MULT if self.pants_t > 0 else 1.0     # hard to sprint with them round your ankles
         if self.dolly is not None:
-            return C.DOLLY_LOADED_SPEED_MULT if self.dolly.part is not None else C.DOLLY_SPEED_MULT
-        return C.TWO_HAND_SPEED_MULT if self.hands_used() >= 2 else 1.0
+            return k * (C.DOLLY_LOADED_SPEED_MULT if self.dolly.part is not None else C.DOLLY_SPEED_MULT)
+        return k * (C.TWO_HAND_SPEED_MULT if self.hands_used() >= 2 else 1.0)
 
 
 class NPC:
     __slots__ = ("id", "kind", "x", "y", "vx", "vy", "ang", "tumble_t", "life_t", "dirx", "diry",
                  "turn_t", "target", "yell_t", "complain_cd", "spin", "flee_t", "fx", "fy", "ttl", "wallet",
                  "wallet_t", "surrender_t", "z", "vz", "brave", "armed", "hostile_t", "foe", "grit", "attack_cd",
-                 "carried_by", "struggle_t", "thrown_by", "bowled", "laugh_t", "lure")
+                 "carried_by", "struggle_t", "thrown_by", "bowled", "laugh_t", "lure", "car_id", "mode",
+                 "home")
 
     def __init__(self, nid, kind, x, y):
         self.id = nid
@@ -306,6 +334,9 @@ class NPC:
         self.bowled = 0               # people this flying person has knocked over
         self.laugh_t = 0.0            # > 0: laughing at your dance
         self.lure = None              # (x, y): walking toward something (an ice cream van)
+        self.car_id = None            # (v0.8) officers and dogs: the cop car they jumped out of
+        self.mode = 0                 # officers: 0 chase, 1 taser out, 2 gun out, 3 cuffing, 4 heading back
+        self.home = None              # guards: the spot they stand on; dogs: where to run off to
 
 
 class Dolly:
@@ -326,7 +357,7 @@ class Trap:
     """A spike strip or a roadblock, lying across the road. ang is the way the
     traffic it's meant for is travelling (0 or pi/2 or ...), so the long side
     is across the lane."""
-    __slots__ = ("id", "kind", "x", "y", "ang", "age", "uses", "hit")
+    __slots__ = ("id", "kind", "x", "y", "ang", "age", "uses", "hit", "open_t")
 
     def __init__(self, tid, kind, x, y, ang):
         self.id = tid
@@ -335,13 +366,21 @@ class Trap:
         self.age = 0.0
         self.uses = C.SPIKE_USES
         self.hit = set()
+        self.open_t = 0.0             # (v0.8) the precinct gate: > 0 = open for this long
+
+    def solid(self):
+        return self.kind == TRAP_BLOCK or (self.kind == TRAP_GATE and self.open_t <= 0)
 
     def rect(self):
         """Axis-aligned (x, y, w, h): traps only ever go down square to the street grid."""
         if self.kind in (TRAP_BANANA, TRAP_DONUT):
             r = C.BANANA_R if self.kind == TRAP_BANANA else C.DONUT_R
             return (self.x - r, self.y - r, 2 * r, 2 * r)
+        if self.kind == TRAP_SMOKE:
+            r = C.SMOKE_SCREEN_R
+            return (self.x - r, self.y - r, 2 * r, 2 * r)
         long_, short = ((C.SPIKE_LEN, C.SPIKE_WID) if self.kind == TRAP_SPIKES
+                        else (C.GATE_LEN, C.GATE_WID) if self.kind == TRAP_GATE
                         else (C.ROADBLOCK_LEN, C.ROADBLOCK_WID))
         if abs(math.cos(self.ang)) > 0.5:          # traffic runs along x: the trap spans y
             w, h = short, long_

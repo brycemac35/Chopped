@@ -9,8 +9,8 @@ engine and exactly no maths textbooks).
 import math
 
 GAME_TITLE = "Chopped"
-VERSION = 7  # bump when the wire protocol changes so old clients get a polite "no"
-RELEASE = (0, 7, 0)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
+VERSION = 8  # bump when the wire protocol changes so old clients get a polite "no"
+RELEASE = (0, 8, 0)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
 
 # --------------------------------------------------------------------------
 # Rendering scale
@@ -37,6 +37,7 @@ PITCH = ROAD_TILES + BLOCK_TILES
 MAP_TILES = BLOCKS * PITCH + ROAD_TILES   # 111 tiles = 444 m. Crossable in ~10 s at full tilt.
 MAP_M = MAP_TILES * TILE_M
 PARK_BLOCKS = 5                  # grass + trees: places to hide from cameras (trees block sight)
+PRECINCT_MIN_BLOCKS = 3          # (v0.8) the police station is at least this many blocks from the shop
 LOT_BLOCKS = 4                   # open parking lots: extra spots for victims, er, vehicles
 CAMERA_COUNT = 12                # street cameras at intersections
 
@@ -164,10 +165,46 @@ AI_TRACTION = 0.8                # cops and traffic have traction control (playe
 AI_STEER_LOCK = 0.8              # ...and a bit less lock at speed, so they don't pirouette into shops
 BANANA_SPIN_TIME = 1.6           # s the rear tyres are on banana
 BANANA_GRIP = 0.12               # what's left of the rear grip while they are
+# v0.8, Bryce: "the drifting feels too loose, please allow the driver to regain control when
+# handbraking". The tyres are the same; these help your hands (see Physics._drift_assist).
+DRIFT_ASSIST_START = 0.30        # rad (~17 degrees) of slide before the assist wakes up: small slides are yours
+DRIFT_ASSIST_YAW = 5.0           # rad/s^2 per rad past that, turning the nose toward where you're going
+DRIFT_ASSIST_DAMP = 6.0          # 1/s: how fast rotation that makes the slide WORSE is bled off
+DRIFT_ASSIST_INTO = 0.45         # share of the help you still get while steering INTO the slide
+DRIFT_ASSIST_MIN_SPEED = 4.0     # m/s: below this it's parking, not drifting
+COUNTERSTEER_FROM = 0.12         # rad (~7 degrees) of slide before countersteer is "catching a slide"...
+COUNTERSTEER_MARGIN = 0.08       # ...and then the wheels go this far past the direction of travel, no more
+YAW_CAP_K = 1.4                  # yaw-rate cap, as a multiple of what the tyres hold in a steady turn...
+YAW_CAP_INTO = 1.6               # ...times this while you're steering with the rotation...
+YAW_CAP_RATE = 8.0               # ...and excess rotation is bled off this fast (1/s)
+HANDBRAKE_MAX_YAW = 2.4          # rad/s: a handbrake yank swings the tail, it doesn't make a spinning top
+AWD_FRONT_SHARE = 0.4            # 4x4s send this much of the push to the front wheels
+BURNOUT_MAX_SPEED = 4.0          # m/s: above this, W+S together is just braking
+BURNOUT_CREEP = 0.35             # m/s: a brake stand still crawls forward. That's the fun part.
+BURNOUT_YAW = 1.8                # rad/s of donut with the wheel on the lock
+BURNOUT_GRAB = 6.0               # 1/s: how fast the car settles into the stand
 NOS_ACCEL = 9.0                  # m/s^2 extra, like being rear-ended by a rocket
 NOS_TOP_MULT = 1.25
 NOS_TANK = 4.0                   # seconds of boost when full
 NOS_REFILL = 0.25                # s of boost regained per second (fills in 16 s)
+
+# ---- revs and gears (v0.8): the tachometer and the engine note. Cosmetic: the tyre model
+# decides how fast you go; drivetrain.Tacho decides what the engine sounds like doing it.
+ENGINE_BANDS = 6                 # pre-rendered engine loops per voice, crossfaded by rpm
+GEAR_SPREAD = 0.8                # gear n tops out at top * (n / gears) ** this: short first, tall top
+GEAR_TOP_OVERRUN = 1.06          # top gear would reach the redline just past top speed
+SHIFT_UP_AT = 0.93               # share of the redline where the box shifts up...
+SHIFT_DOWN_AT = 0.55             # ...and it drops a gear when the one below would be this far up
+SHIFT_TIME = 0.16                # s of throttle cut per shift (the "bwaaa-ap" between gears)
+LAUNCH_REVS = 0.45               # pulling away, the clutch holds the revs this high
+REV_RISE = 9.0                   # 1/s: revs chase the target this fast going up...
+REV_FALL = 5.0                   # ...and this fast falling (flywheels are heavy)
+LIMITER_PERIOD = 0.09            # s between rev-limiter cuts: brap-brap-brap
+TURBO_SPOOL = 1.6                # 1/s: turbo lag. It's a feature.
+TURBO_DUMP = 6.0                 # 1/s: boost falls off this fast when you lift
+TURBO_WHISTLE_HZ = (2200, 3300, 4700, 6400)   # turbo whistle pitch bands, crossfaded by boost
+ENGINE_HEAR_DIST = 45.0          # m: engines further off than this are just city noise
+VTEC_AT = 0.64                   # share of the redline where VTEC kicks in, yo
 
 LIVERY_CHANCE = 0.3              # v0.7: stripes, flames, polka dots... 30% of the city dresses up
 CIV_GLOW_CHANCE = 0.06           # neon underglow on a parked car: someone's pride and joy. Now yours.
@@ -182,6 +219,31 @@ GNOME_COUNT = 12                 # garden gnomes about the city
 GNOME_RESPAWN = 30.0             # s between replacement gnomes (gardeners are resilient)
 GNOME_HEAT = 3.0                 # heat for pinching one. It's the principle of the thing.
 ICECREAM_LURE = 25.0             # m: peds this close to a slow ice cream van go and queue for it
+# ---- v0.8 ridiculous features ----
+K9_HEAT = 60.0                   # from this heat, some cop cars bring a dog...
+K9_CHANCE = 0.4                  # ...this often
+K9_SPEED = 11.0                  # m/s: faster than your sprint. You can't outrun the dog.
+K9_LIFETIME = 25.0
+PANTSED_TIME = 9.0               # s without trousers after the dog gets them
+PANTSED_SPEED_MULT = 0.55        # shuffling, ankles bound, dignity gone
+STREAKER_EVERY = (90.0, 180.0)   # s between streakers
+STREAKER_SPEED = 8.5
+STREAKER_LIFETIME = 30.0
+STREAKER_COP_RANGE = 45.0        # cops this close would much rather chase HIM
+STREAKER_REWARD = 50             # a citizen's arrest: $50 from a grateful city...
+STREAKER_HEAT_CUT = 10.0         # ...and the police think you're alright, actually
+SPEEDCAM_SPEED = 25.0            # m/s (90 km/h) past a camera in your own clean ride...
+SPEEDCAM_RANGE = 12.0
+SPEEDCAM_FINE = 40               # ...is a $40 ticket in the post
+SPEEDCAM_COOLDOWN = 10.0
+SMOKE_SCREEN_AT = 1.5            # s of burnout before the smoke is thick enough to hide in...
+SMOKE_SCREEN_EVERY = 0.8         # ...then a new cloud this often...
+SMOKE_SCREEN_R = 4.5             # ...this big...
+SMOKE_SCREEN_LIFE = 10.0         # ...lasting this long. Witnesses can't see through it.
+SMOKE_SCREEN_MAX = 8
+HOP_TIME = 0.7                   # s of hydraulic bounce per press of X (and you can't re-hop mid-air)
+HOP_CROWD_RANGE = 14.0           # peds this close stop to enjoy the lowrider show (and don't witness)
+PRICE_HYDRAULICS = 500
 
 # --------------------------------------------------------------------------
 # v0.7 mod shop and parts locker (garage.py)
@@ -280,10 +342,57 @@ COP_TIERS = ((25.0, 1), (50.0, 2), (75.0, 3), (99.9, 5))   # heat -> units on th
 PATROL_COPS = 2                  # cruisers that are ALWAYS out there, doing laps, being witnesses
 PATROL_SPAWN_DIST = (60.0, 130.0)   # they turn up this far from the crew, never on top of you
 PATROL_RECYCLE_DIST = 170.0
-COP_SHOOT_HEAT = 75.0            # at this heat, cops shoot at crooks on foot...
-COP_GUN_RANGE = 26.0             # ...from this close...
+# v0.8, Bryce: "instead of the cops shooting you lethally right away have them try to handcuff
+# you". Cars chase; an officer gets out to make the arrest; tasers at high heat; real bullets
+# only once the crew has started shooting (see LETHAL_*).
+COP_GUN_RANGE = 26.0             # lethal mode: cop cars shoot from the window from this close...
 COP_GUN_COOLDOWN = 1.6           # ...this often...
-COP_GUN_ACCURACY = 0.28          # ...and hit about this often (it knocks you flat, the cuffs do the rest)
+COP_GUN_ACCURACY = 0.28          # ...and hit about this often. A hit is WASTED.
+OFFICER_DEPLOY_RANGE = 22.0      # m: a cop car this close to a crook on foot lets its officer out
+OFFICER_DEPLOY_SPEED = 6.0       # m/s: ...once it's slowed down enough to open the door
+OFFICER_SPEED = 7.6              # m/s: faster than your walk (6), slower than your sprint (10). Run!
+OFFICER_CHASE_RANGE = 70.0       # m: lose them by this much and they walk back to the car
+OFFICER_GIVE_UP = 40.0           # s on foot before the officer gives up and goes back regardless
+CUFF_RANGE = 1.3                 # m: close enough to reach for the cuffs
+CUFF_TIME = 1.2                  # s of standing there being cuffed (x2 speed if you're on the floor)
+CUFF_BREAK_PRESSES = 6           # Space presses to wriggle out of an officer's grip
+OFFICER_KO_TIME = 2.2            # s an officer stays down after a punch (they're trained. A bit.)
+ASSAULT_OFFICER_HEAT = 15.0      # punching a police officer is noticed. By the police.
+TASER_HEAT = 50.0                # from this heat, officers draw tasers...
+TASER_RANGE = 9.0                # ...and fire from this close (but not point blank: then it's cuffs)
+TASER_MIN = 2.5
+TASER_COOLDOWN = 3.0
+TASER_ACCURACY = 0.55
+TASER_TIME = 2.2                 # s of twitching on the floor. Plenty for the cuffs.
+LETHAL_TIME = 45.0               # s the police are authorised to shoot to kill after the crew shoots
+COP_HEAR_RANGE = 55.0            # m: a gunshot this close to any cop starts the lethal clock
+OFFICER_GUN_RANGE = 20.0         # lethal mode: officers shoot from here...
+OFFICER_GUN_COOLDOWN = 1.2
+OFFICER_GUN_ACCURACY = 0.33
+# dying (v0.8, Bryce: "if the cops do decide to lethally shoot you... you die, lose a/x % of your
+# money depending on how many people are playing"): the crew loses DEATH_LOSS / players of its
+# cash: 50% solo, 25% for two, 12.5% for four. Medical bills, split fairly.
+DEATH_LOSS = 0.5
+DEATH_TIME = 4.0                 # s of WASTED before you wake up at the shop
+# the precinct (v0.8): busted = locked up. Punch your way out, or get broken out.
+JAIL_GUARDS = 3                  # guards in the lockup (one of them has the keys)
+GUARD_DOWN_TIME = 4.0            # s a punched guard stays down
+GUARD_KO_TIME = 25.0             # s once they've had enough (after GUARD_GRIT knockdowns)
+GUARD_GRIT = 2
+GUARD_RESET_TIME = 30.0          # s with nobody locked up before the guards get back on their feet
+GATE_OPEN_TIME = 8.0             # s the gate stays open after the keys turn
+GATE_SMASH_TIME = 15.0           # s a rammed gate stays (in pieces, so: open)
+GUARD_SPEED = 6.4                # m/s: guards are slower than your sprint (they've had lunch)
+GUARD_PUNCH_COOLDOWN = 1.1
+GATE_PICK_TIME = 6.0             # s to pick the lock from outside (a crewmate breaking you out)
+GATE_RAM_DV = 9.0                # m/s of impact that smashes the gate in (the dramatic way)
+GATE_ID = 65500                  # the precinct gate's fixed entity id (new_id never hands it out)
+GATE_LEN = 4.0                   # the gate fills one doorway tile
+GATE_WID = 0.5
+BAIL_BASE = 250                  # bail at the front desk: the cowardly way out...
+BAIL_PER_ARREST = 100            # ...and it goes up every time
+JAILBREAK_HEAT = 40.0            # walking out of a police station is noticed
+JUMPSUIT_WITNESS = True          # escaped convicts in orange are wanted on sight, heat or no heat
 COP_SPAWN_GAP = 2.0
 COP_REINFORCE_DELAY = 9.0        # after you blow one up, dispatch takes a moment to stop crying
 COP_SPAWN_MIN_DIST = 45.0
@@ -291,10 +400,7 @@ COP_DESPAWN_AT_ZERO = 3.0
 HORN_CONFUSE_RANGE = 40.0
 HORN_CONFUSE_TIME = 3.0
 HORN_CONFUSE_COOLDOWN = 7.0      # (our call) a cop can't be re-donut'd for 7 s, or holding H is god mode
-ARREST_RANGE = 1.0               # m from the cop car's bodywork (v0.7; was 3.2 from its middle, same thing
-                                 # for a Kei, fairer now cars come in sizes)
-ARREST_TIME = 1.0
-CUFFED_TIME = 5.0
+CUFFED_TIME = 3.0                # s cuffed on the kerb (the mugshot), then off to the precinct
 
 # --------------------------------------------------------------------------
 # Traffic & NPCs
@@ -433,6 +539,15 @@ TOAST_TIME = 3.5
 MUSIC_VOLUME = 0.45              # the beat sits under the engine and the sirens, not on top of them
 MOUSE_PITCH_SENS = 0.0022        # look up/down: share of the view height per mouse count
 PITCH_LIMIT = 0.42               # ...up to this share of the view (y-shearing gets weird past it)
+# ---- sprite angles (v0.8, Bryce: "make the objects you interact with have more angles so they
+# feel more real"). Box models are rendered once per angle and cached, so more angles cost a
+# little memory and a little first-sight rendering, not frame time.
+CAR_ANGLES = 32                  # was 16: cars turning in front of you no longer "tick" round
+CHASE_CAR_ANGLES = 72            # your own car in the chase cam: it's right there, being drifted
+PERSON_ANGLES = 16               # was 8
+PROP_ANGLES = 16                 # crates, the dolly, gnomes, traps, the gate (was 8)
+SPRITE_CACHE_CARS = 4000
+SPRITE_CACHE_PEOPLE = 4000
 CHASE_BACK = 3.8                 # 3rd-person camera: this far behind, plus 0.75 x the car's length
 CHASE_HEIGHT = 2.1               # ...and this high, plus a bit for tall vans
 CHASE_PITCH = 0.12               # looking down at the car by this share of the view

@@ -174,7 +174,8 @@ class DoomHud:
         self.toasts.append((text, TOAST_COLORS.get(color, P["white"]), now))
 
     # ------------------------------------------------------------------ first-person overlays
-    def draw_overlay(self, surf, view, now, speed_bob, steer, weapon=S.ARM_FISTS, fire_t=-9.0, chase=False):
+    def draw_overlay(self, surf, view, now, speed_bob, steer, weapon=S.ARM_FISTS, fire_t=-9.0, chase=False,
+                     tacho=None):
         """Hands / held parts / dolly / weapon / car interior, over the 3D view."""
         me = view.me
         if me is None:
@@ -184,7 +185,13 @@ class DoomHud:
         vw, vh = pen.size
         if state in (S.DRIVER, S.PASSENGER) and view.my_car is not None:
             if not chase:
-                self._dashboard(pen, view.my_car, state == S.DRIVER, steer, now)
+                self._dashboard(pen, view.my_car, state == S.DRIVER, steer, now, tacho)
+            elif tacho is not None:
+                # chase cam: no dashboard to put it on, so the gauges float bottom-right
+                spd = math.hypot(view.my_car[9], view.my_car[10]) * 3.6
+                self._tacho(pen, vw - 36, vh - 36, 26, tacho, now)
+                pen.text(self.font, "%d" % spd, vw - 70, vh - 22, P["white"], scale=2, align="right")
+                pen.text(self.font, "KM/H", vw - 70, vh - 8, P["metal_l"], align="right")
             return
         if state == S.CUFFED:
             for x in range(0, vw, 26):
@@ -193,7 +200,8 @@ class DoomHud:
             return
         if state != S.FOOT:
             return
-        sleeve0 = PLAYER_COLORS[me[1] % 4]
+        orange = len(me) > 17 and me[17] & (PR.PF2_JUMPSUIT | PR.PF2_JAILED)
+        sleeve0 = (240, 120, 30) if orange else PLAYER_COLORS[me[1] % 4]
         skin0 = SKINS[me[0] % 4]
         if me[3] & PR.PF_CARRY:
             # a pair of legs over your left shoulder, kicking; your hands on their knees
@@ -213,7 +221,7 @@ class DoomHud:
             return
         bob = math.sin(now * 9.0) * 3 * speed_bob
         sway = math.cos(now * 4.5) * 4 * speed_bob
-        sleeve = PLAYER_COLORS[me[1] % 4]
+        sleeve = sleeve0
         skin = SKINS[me[0] % 4]
         if me[3] & PR.PF_DOLLY:
             d = next((d for d in view.dollies.values() if d[5] == me[0]), None)
@@ -405,7 +413,47 @@ class DoomHud:
         for side in (-1, 1):
             self._fist(pen, cx + side * 128, vh - 14 + int(bob), skin, sleeve, side)
 
-    def _dashboard(self, pen, car, driving, steer, now):
+    def _tacho(self, pen, cx, cy, r, tacho, now):
+        """The rev counter (v0.8): redline in red, a needle that bounces off the
+        limiter, the gear in the middle, and a boost gauge if there's a turbo or
+        a blower to brag about."""
+        rpm, red, gear, gears, boost, asp, vtec = tacho
+        top = max(1000, int(math.ceil(red * 1.08 / 1000.0)) * 1000)
+        pen.circle((14, 14, 20), (cx, cy), r)
+        pen.circle((120, 120, 130), (cx, cy), r, 1)
+        a0, sweep = 225.0, 270.0
+
+        def ang(v):
+            return math.radians(a0 - sweep * min(1.0, v / float(top)))
+        # redline arc, as a row of ticks
+        steps = 18
+        for k in range(steps + 1):
+            v = red + (top - red) * k / steps
+            a = ang(v)
+            pen.line((210, 40, 40), (cx + int(math.cos(a) * (r - 4)), cy - int(math.sin(a) * (r - 4))),
+                     (cx + int(math.cos(a) * (r - 1)), cy - int(math.sin(a) * (r - 1))), 1)
+        for k in range(0, top // 1000 + 1):
+            a = ang(k * 1000)
+            pen.line((200, 200, 210), (cx + int(math.cos(a) * (r - 6)), cy - int(math.sin(a) * (r - 6))),
+                     (cx + int(math.cos(a) * (r - 1)), cy - int(math.sin(a) * (r - 1))), 1)
+        a = ang(rpm)
+        pen.line((255, 90, 60), (cx, cy), (cx + int(math.cos(a) * (r - 3)), cy - int(math.sin(a) * (r - 3))), 2)
+        pen.circle((60, 60, 70), (cx, cy), 3)
+        shift = rpm > red * 0.93 and gear < gears
+        gtxt = "N" if gears == 0 and rpm < 10 else (str(gear) if gears else "E")
+        pen.text(self.font, gtxt, cx, cy + r // 3, (255, 80, 60) if shift and int(now * 12) % 2 else P["gold"],
+                 align="center")
+        pen.text(self.font, "x1000", cx, cy - r // 2 - 2, (140, 140, 150), align="center")
+        if vtec:
+            pen.text(self.font, "VTEC", cx, cy + r + 2, (255, 60, 60), align="center")
+        if asp:
+            # the boost gauge: a little bar under the dial
+            bw = r * 2 - 8
+            pen.fill((30, 30, 40), (cx - bw // 2, cy + r + (10 if vtec else 3), bw, 4))
+            pen.fill((80, 200, 255) if asp == 1 else (255, 200, 60),
+                     (cx - bw // 2, cy + r + (10 if vtec else 3), int(bw * boost), 4))
+
+    def _dashboard(self, pen, car, driving, steer, now, tacho=None):
         vw, vh = pen.size
         kind, color = car[1], car[2]
         body = (36, 36, 48) if kind == S.COP else CAR_COLORS[color % len(CAR_COLORS)]
@@ -431,6 +479,8 @@ class DoomHud:
         a = math.radians(210 - min(240, spd * 1.2))
         pen.line((255, 90, 60), (dx, dy), (dx + int(math.cos(a) * 14), dy - int(math.sin(a) * 14)), 2)
         pen.text(self.font, "%d" % spd, dx, dy + 6, P["white"], align="center")
+        if tacho is not None:
+            self._tacho(pen, dx - 44, dy - 2, 19, tacho, now)
         if not driving:
             return
         # steering wheel, turning with your inputs
@@ -504,7 +554,7 @@ class DoomHud:
                 self.look_t = now + self.rng.uniform(0.8, 2.2)
                 self.look = self.rng.choice((-1, 0, 0, 1))
             state = me[2]
-            if state == S.CUFFED:
+            if state in (S.CUFFED, S.DEAD):
                 mood = "busted"
             elif state == S.TUMBLE:
                 mood = "dazed"
@@ -540,7 +590,10 @@ class DoomHud:
             low.fill(P["ink"], (BX + 338 + i * 16, by + 5, 12, 14))
             low.fill(c, (BX + 339 + i * 16, by + 6, 10, 5))
             low.fill(P["white"], (BX + 339 + i * 16, by + 12, 10, 6))
-        f.draw(low, "COPS", BX + 351, by + 23, (130, 170, 255) if snap.cops else P["white"], align="center")
+        lethal = getattr(snap, "alert", 0) & PR.AL_LETHAL
+        f.draw(low, "LETHAL" if lethal else "COPS", BX + 351, by + 23,
+               (P["danger"] if flash else P["white"]) if lethal else (130, 170, 255) if snap.cops else P["white"],
+               align="center")
         # DAY / RENT
         dx = BX + 378
         f.draw(low, "DAY %d" % snap.day, dx, by + 3, P["gold"])
@@ -565,17 +618,52 @@ class DoomHud:
             if info.get("fp"):
                 self._shop_compass(low, view, info, now)
                 self._car_compass(low, view, info, now)
+        self._law_overlay(low, snap, me, now, flash)
         self._banners(low, snap, me, now, flash)
         self._comedy_banner(low, me, now)
         if now < self.help_until and not info.get("paused") and not info.get("menu"):
             lines = ["MOUSE LOOK  WASD MOVE/DRIVE  SPACE JUMP/HANDBRAKE  SHIFT SPRINT/NOS  E USE (HOLD)",
                      "CLICK/CTRL PUNCH/SHOOT/THROW (HOLD: HAYMAKER)  1-7 WEAPONS  G GRAB/DROP  F EXIT CAR",
-                     "V CHASE CAM  TAB MAP  H HORN  T DANCE  M MUSIC  ESC MENU  F11 FULLSCREEN",
+                     "V CHASE CAM  W+S BURNOUT  X HOP  TAB MAP  H HORN  T DANCE  M MUSIC  ESC MENU",
                      "STEAL CARS (FOLLOW THE GREEN ARROWS). PARK THEM IN THE SHOP. STRIP. SELL.",
                      "TUNE-UP BENCH = MOD SHOP.  GUNS, TRAPS, BANANAS: THE CRATES.  RENT'S DUE AT MIDNIGHT."]
             low.blit(self._panel(440, 43, 170), (W // 2 - 220, 30))
             for i, l in enumerate(lines):
                 f.draw(low, l, W // 2, 33 + i * 8, P["white"] if i < 3 else P["gold"], align="center")
+
+    def _law_overlay(self, low, snap, me, now, flash):
+        """v0.8: WASTED, the lockup objective, the keys, and the lethal-force warning."""
+        f = self.font
+        if me is None:
+            return
+        f2 = me[17] if len(me) > 17 else 0
+        if me[2] == S.DEAD:
+            # GTA's grey-out, with our own sad word on it
+            grey = pygame.Surface((W, VIEW_H), pygame.SRCALPHA)
+            grey.fill((40, 40, 44, 150))
+            low.blit(grey, (0, 0))
+            f.draw(low, "WASTED", W // 2 + 3, VIEW_H // 2 - 27, P["ink"], scale=7, align="center")
+            f.draw(low, "WASTED", W // 2, VIEW_H // 2 - 30, (200, 40, 40), scale=7, align="center")
+            f.draw(low, "THE CREW PAYS THE HOSPITAL. YOU WAKE UP AT THE SHOP.", W // 2, VIEW_H // 2 + 12,
+                   P["white"], align="center")
+            return
+        if f2 & PR.PF2_JAILED:
+            low.blit(self._panel(360, 12, 170), (W // 2 - 180, 16))
+            msg = "IN THE LOCKUP: OPEN THE GATE!" if f2 & PR.PF2_KEYS else \
+                "IN THE LOCKUP: KNOCK OUT THE BIG GUARD, TAKE HIS KEYS (OR POST BAIL AT THE DESK)"
+            f.draw(low, msg, W // 2, 18, P["gold"], align="center")
+        elif f2 & PR.PF2_JUMPSUIT:
+            f.draw(low, "ESCAPED CONVICT: GET BACK TO THE SHOP AND CHANGE", W // 2, 18,
+                   (255, 140, 40) if flash else P["white"], align="center")
+        if f2 & PR.PF2_KEYS:
+            low.fill(P["ink"], (W // 2 - 10, 30, 20, 12))
+            f.draw(low, "KEYS", W // 2, 33, P["gold"], align="center")
+        if f2 & PR.PF2_CUFFING and me[2] in (S.FOOT, S.TUMBLE):
+            f.draw(low, "CUFFS GOING ON! MASH SPACE!", W // 2, VIEW_H // 2 + 24,
+                   P["danger"] if flash else P["white"], scale=2, align="center")
+        if getattr(snap, "alert", 0) & PR.AL_LETHAL and int(now * 2) % 2:
+            f.draw(low, "SHOTS FIRED: THE POLICE ARE SHOOTING TO KILL", W // 2, VIEW_H - 12, P["danger"],
+                   align="center")
 
     def _toasts(self, low, now):
         y = 3
@@ -741,7 +829,9 @@ class DoomHud:
             self.banner_t0 = now
         t = now - self.banner_t0
         text = S.BANNER_TEXT[me[16] % len(S.BANNER_TEXT)]
-        good = me[16] in (S.BN_HOMERUN, S.BN_STRIKE)
+        good = me[16] in (S.BN_HOMERUN, S.BN_STRIKE, S.BN_FREE)
+        if me[16] == S.BN_WASTED:
+            return                              # (the WASTED screen has it covered)
         scale = 5 if t > 0.15 else 8
         col = P["gold"] if good else P["danger"]
         wob = int(math.sin(now * 14) * 2)
@@ -766,6 +856,7 @@ class DoomHud:
                    scale=5, align="center")
             f.draw(low, "YOUR PARTS ARE ON THE PAVEMENT. YOUR PARTNER CAN GRAB THEM.", W // 2, VIEW_H // 2 - 18,
                    P["white"], align="center")
+            f.draw(low, "NEXT STOP: THE PRECINCT LOCKUP.", W // 2, VIEW_H // 2 - 8, P["gold"], align="center")
         if snap.gameover > 0:
             low.blit(self._panel(W, 60, 190), (0, VIEW_H // 2 - 40))
             f.draw(low, "SHOP SEIZED", W // 2, VIEW_H // 2 - 34, P["danger"], scale=5, align="center")
@@ -787,6 +878,7 @@ class DoomHud:
         for l in ("MOUSE / ARROWS LOOK (UP AND DOWN TOO)     WASD MOVE / DRIVE     SPACE JUMP (IN A CAR: HANDBRAKE)",
                   "SHIFT SPRINT (IN A CAR WITH NOS: BOOST)     E USE (HOLD FOR TIMED ACTIONS)     F EXIT CAR",
                   "V CHASE CAM     TAB MAP     H HORN (CONFUSES COPS)     T DANCE     M MUSIC     F9 BIG HEADS",
+                  "IN A CAR: W+S TOGETHER = BURNOUT (+STEER: DONUTS)     X = HYDRAULIC HOP (IF FITTED)",
                   "CLICK / CTRL: PUNCH, SHOOT, PLACE A TRAP OR THROW WHATEVER'S IN YOUR HANDS",
                   "HOLD CLICK WITH EMPTY FISTS, LET GO: HAYMAKER.  1-7 / WHEEL / Q: PICK A WEAPON",
                   "G: DROP A PART / LET GO OF THE DOLLY / PICK UP A PERSON (THEN CLICK TO THROW THEM)",
@@ -796,6 +888,8 @@ class DoomHud:
                   "E AT THE TUNE-UP BENCH: MOD SHOP. FIT PARTS, PAINT, LIVERIES, JOKE HORNS, NOS",
                   "ENGINES ARE TOO HEAVY TO CARRY: USE THE DOLLY IN THE SHOP",
                   "COPS CAN'T RESIST A BOX OF DONUTS.  RENT IS DUE AT MIDNIGHT AND GOES UP EVERY DAY",
+                  "OFFICERS CUFF YOU ON FOOT: PUNCH THEM OR MASH SPACE.  SHOOT AT COPS AND THEY SHOOT BACK",
+                  "BUSTED = THE PRECINCT LOCKUP: KNOCK OUT THE BIG GUARD AND TAKE HIS KEYS",
                   "",
                   "ESC: RESUME        Q: LEAVE TO MAIN MENU"):
             f.draw(low, l, W // 2, y, P["white"], align="center")

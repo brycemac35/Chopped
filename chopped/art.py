@@ -381,16 +381,21 @@ def make_part_icon(type_id):
 # ---------------------------------------------------------------------------
 # The city, pre-rendered once into one big surface (~2220 px square)
 # ---------------------------------------------------------------------------
+PRECINCT_FLOOR = (150, 160, 176)
+
+
 def render_map(cmap):
     T = C.TILE_PX
     n = cmap.n
     surf = pygame.Surface((n * T, n * T))
     rng = random.Random(cmap.seed * 7 + 1)
     base = {M.ROAD: P["asphalt"], M.SIDEWALK: P["sidewalk"], M.BUILDING: P["ink"], M.GRASS: P["grass"],
-            M.TREE: P["grass"], M.WALL: P["wall"], M.GARAGE: P["concrete"], M.LOT: P["asphalt_l"]}
+            M.TREE: P["grass"], M.WALL: P["wall"], M.GARAGE: P["concrete"], M.LOT: P["asphalt_l"],
+            M.PRECINCT: PRECINCT_FLOOR}
     speck = {M.ROAD: (P["asphalt_d"], P["asphalt_l"]), M.SIDEWALK: (P["sidewalk_d"], P["curb"]),
              M.GRASS: (P["grass_d"], P["grass_l"]), M.TREE: (P["grass_d"], P["grass_l"]),
-             M.GARAGE: (P["concrete_d"], P["concrete_d"]), M.LOT: (P["asphalt"], P["asphalt_d"])}
+             M.GARAGE: (P["concrete_d"], P["concrete_d"]), M.LOT: (P["asphalt"], P["asphalt_d"]),
+             M.PRECINCT: (shade(PRECINCT_FLOOR, 0.9), shade(PRECINCT_FLOOR, 1.08))}
     for ty in range(n):
         for tx in range(n):
             t = cmap.tiles[ty * n + tx]
@@ -408,6 +413,12 @@ def render_map(cmap):
                 if cmap.tile(tx, ty + 1) == M.ROAD: surf.fill(P["curb"], (x, y + T - 2, T, 2))
                 if cmap.tile(tx - 1, ty) == M.ROAD: surf.fill(P["curb"], (x, y, 2, T))
                 if cmap.tile(tx + 1, ty) == M.ROAD: surf.fill(P["curb"], (x + T - 2, y, 2, T))
+            elif t == M.PRECINCT:
+                # institutional lino: checkerboard, scuffed, depressing
+                for k in range(0, T, 5):
+                    for j in range(0, T, 5):
+                        if (k // 5 + j // 5 + tx + ty) % 2:
+                            surf.fill(shade(PRECINCT_FLOOR, 0.88), (x + k, y + j, 5, 5))
             elif t == M.WALL:
                 surf.fill(P["wall_l"], (x, y, T, T - 4))
                 surf.fill(P["wall"], (x, y + T - 4, T, 4))
@@ -566,7 +577,8 @@ def render_minimap(cmap, scale_div=2):
     size = n // scale_div + 1
     mm = pygame.Surface((size, size))
     col = {M.ROAD: (92, 92, 104), M.SIDEWALK: (70, 68, 74), M.BUILDING: (34, 32, 44), M.GRASS: (50, 90, 50),
-           M.TREE: (40, 76, 46), M.WALL: (120, 100, 90), M.GARAGE: (200, 170, 70), M.LOT: (80, 80, 92)}
+           M.TREE: (40, 76, 46), M.WALL: (120, 100, 90), M.GARAGE: (200, 170, 70), M.LOT: (80, 80, 92),
+           M.PRECINCT: (70, 110, 200)}
     for ty in range(0, n, scale_div):
         for tx in range(0, n, scale_div):
             mm.set_at((tx // scale_div, ty // scale_div), col[cmap.tiles[ty * n + tx]])

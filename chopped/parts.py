@@ -80,6 +80,16 @@ PART_DEFS = {
     "spl_shelf":       ("Ironing-board wing", "spoiler", 2,   600,   0, True),
     # the mobility scooter's bits (yes, you can put its motor in your car. No, you shouldn't.)
     "eng_electric":    ("Scooter motor",     "engine",  1,    160,  30, False),
+    # v0.8 engines (Bryce: "add super chargers and a few more engine options"). Power is
+    # part-power (a stock Kei totals 100); value is what the sell bench pays.
+    "eng_v6_3_0":      ("3.0 V6",            "engine",  DOLLY, 1100, 130, False),  # sedans, cops, dads
+    "eng_v8_5_7":      ("5.7 V8",            "engine",  DOLLY, 1800, 160, False),  # burble burble
+    "eng_diesel_4_5":  ("4.5 turbo diesel",  "engine",  DOLLY, 1500, 125, False),  # 4x4s. Clatters.
+    "eng_sc_1_6":      ("1.6 supercharged",  "engine",  DOLLY, 1600, 145, True),   # whines like a kettle
+    "eng_vtec_1_8":    ("1.8 VTEC",          "engine",  DOLLY, 1400, 130, True),   # ...just kicked in, yo
+    "eng_rotary_13b":  ("13B rotary",        "engine",  DOLLY, 2600, 175, True),   # brap brap. Drinks oil.
+    "eng_tt_3_0":      ("3.0 twin-turbo six", "engine", DOLLY, 3200, 220, True),   # the legend
+    "eng_sc_6_2":      ("6.2 supercharged V8", "engine", DOLLY, 3800, 245, True),  # the top of the tree
     "whl_scooter":     ("Tiny wheel",        "wheel",   1,     12,   0, False),
     # trunk loot and other things that aren't car parts but sell anyway
     "gnome":           ("Garden gnome",      "junk",    1,     60,   0, False),
@@ -88,6 +98,43 @@ PART_DEFS = {
     "rubber_duck":     ("Giant rubber duck", "loot",    2,     90,   0, False),
 }
 PART_IDS = list(PART_DEFS.keys())          # index = network id
+
+# ---- what an engine SOUNDS like (v0.8) -----------------------------------------------
+# voice: which synth patch the audio uses (and the car row carries, so everyone hears your
+# rotary). aspiration: 0 natural, 1 turbo (whistle + pssh), 2 supercharger (whine).
+# redline and idle in rpm; the tachometer and the engine note both read them.
+V_I4, V_I4T, V_ELECTRIC, V_V8, V_ROTARY, V_I6, V_DIESEL, V_V6, V_VTEC = range(9)
+ASP_NA, ASP_TURBO, ASP_SC = range(3)
+ENGINE_SPECS = {
+    # tid:            (voice,      aspiration, redline, idle)
+    "eng_worn_1_0":   (V_I4,       ASP_NA,     6200,    850),
+    "eng_stock_1_6":  (V_I4,       ASP_NA,     6800,    800),
+    "eng_tuned_2_0t": (V_I4T,      ASP_TURBO,  7200,    900),
+    "eng_electric":   (V_ELECTRIC, ASP_NA,     9000,      0),
+    "eng_v6_3_0":     (V_V6,       ASP_NA,     6500,    700),
+    "eng_v8_5_7":     (V_V8,       ASP_NA,     6000,    650),
+    "eng_diesel_4_5": (V_DIESEL,   ASP_TURBO,  4200,    700),
+    "eng_sc_1_6":     (V_I4,       ASP_SC,     7000,    850),
+    "eng_vtec_1_8":   (V_VTEC,     ASP_NA,     8600,    900),
+    "eng_rotary_13b": (V_ROTARY,   ASP_NA,     9000,   1000),
+    "eng_tt_3_0":     (V_I6,       ASP_TURBO,  7200,    750),
+    "eng_sc_6_2":     (V_V8,       ASP_SC,     6600,    700),
+}
+NO_ENGINE_SPEC = (V_I4, ASP_NA, 6500, 800)
+# gears per gearbox (the tachometer shifts through them; the physics doesn't care)
+GEARBOX_GEARS = {"trn_worn_4mt": 4, "trn_stock_5mt": 5, "trn_tuned_6mt": 6}
+
+
+def engine_spec(parts):
+    e = parts.get("Engine")
+    return ENGINE_SPECS.get(e.type_id, NO_ENGINE_SPEC) if e is not None else NO_ENGINE_SPEC
+
+
+def gear_count(parts):
+    t = parts.get("Transmission")
+    if t is None:
+        return 0
+    return GEARBOX_GEARS.get(t.type_id, 5)
 PART_INDEX = {pid: i for i, pid in enumerate(PART_IDS)}
 NO_PART = 255
 
@@ -190,6 +237,34 @@ COP_TABLE = {
     "Seats": [("seat_stock", 70), ("seat_tuned_bkt", 30)],
     "Spoiler": [(None, 70), ("spl_lip", 20), ("spl_wing", 10)],
 }
+# v0.8: engines depend on the body. Nobody puts a scooter motor in a muscle car (you might).
+ENGINE_TABLES = {
+    V.KEI: [("eng_worn_1_0", 38), ("eng_stock_1_6", 50), ("eng_sc_1_6", 4), ("eng_tuned_2_0t", 4),
+            ("eng_vtec_1_8", 4)],
+    V.SEDAN: [("eng_stock_1_6", 42), ("eng_v6_3_0", 42), ("eng_tuned_2_0t", 7), ("eng_sc_1_6", 6),
+              ("eng_tt_3_0", 3)],
+    V.COUPE: [("eng_stock_1_6", 16), ("eng_tuned_2_0t", 28), ("eng_rotary_13b", 20), ("eng_tt_3_0", 14),
+              ("eng_vtec_1_8", 14), ("eng_sc_1_6", 8)],
+    V.MUSCLE: [("eng_v8_5_7", 58), ("eng_sc_6_2", 30), ("eng_v6_3_0", 6), ("eng_tt_3_0", 6)],
+    V.PICKUP: [("eng_v6_3_0", 40), ("eng_v8_5_7", 40), ("eng_diesel_4_5", 20)],
+    V.VAN: [("eng_stock_1_6", 30), ("eng_v6_3_0", 40), ("eng_diesel_4_5", 30)],
+    V.ICECREAM: [("eng_stock_1_6", 40), ("eng_diesel_4_5", 60)],
+    V.RICE: [("eng_vtec_1_8", 40), ("eng_tuned_2_0t", 22), ("eng_sc_1_6", 16), ("eng_rotary_13b", 12),
+             ("eng_stock_1_6", 10)],
+    V.TRUCK4: [("eng_diesel_4_5", 50), ("eng_v8_5_7", 32), ("eng_sc_6_2", 18)],
+}
+COP_ENGINES = [("eng_v6_3_0", 50), ("eng_v8_5_7", 30), ("eng_tuned_2_0t", 20)]
+# Rice: every panel is aftermarket, every aftermarket panel is "tuned". Performance optional.
+RICE_TABLE = dict(SPORT_TABLE, **{
+    "ECU": [("ecu_stock", 40), ("ecu_tuned", 60)],
+    "Exhaust": [("exh_tuned", 100)],
+    "BumperF": [("bmp_tuned_aero", 100)], "BumperR": [("bmp_tuned_aero", 80), ("bmp_stock", 20)],
+    "Hood": [("hood_tuned_cf", 55), ("hood_stock", 45)],
+    "Seats": [("seat_tuned_bkt", 80), ("seat_stock", 20)],
+    "Spoiler": [("spl_shelf", 55), ("spl_wing", 45)],
+    "wheel": [("whl_tuned_light", 60), ("whl_stock_alloy", 40)],
+})
+
 # Your own ride starts humble: stock engine, worn gearbox, steelies. Upgrade it.
 PERSONAL_LOADOUT = {
     "Engine": "eng_stock_1_6", "Transmission": "trn_worn_4mt", "ECU": "ecu_stock",
@@ -247,13 +322,18 @@ def model_loadout(rng, mid):
         for w in WHEEL_SLOTS:
             parts[w] = Part("whl_scooter", rng.uniform(0.4, 1.0))
         return parts
-    if V.model(mid).sporty:
-        return roll_loadout(rng, SPORT_TABLE, 0.5, 1.0)
-    return roll_loadout(rng, KEI_TABLE, 0.35, 1.0)
+    if mid == V.RICE:
+        table, lo = RICE_TABLE, 0.45
+    elif V.model(mid).sporty:
+        table, lo = SPORT_TABLE, 0.5
+    else:
+        table, lo = KEI_TABLE, 0.35
+    table = dict(table, Engine=ENGINE_TABLES.get(mid, KEI_TABLE["Engine"]))
+    return roll_loadout(rng, table, lo, 1.0)
 
 
 def cop_loadout(rng):
-    return roll_loadout(rng, COP_TABLE, 0.6, 1.0, styled=False)
+    return roll_loadout(rng, dict(COP_TABLE, Engine=COP_ENGINES), 0.6, 1.0, styled=False)
 
 
 def personal_loadout():
