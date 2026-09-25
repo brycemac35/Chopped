@@ -16,8 +16,10 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
   - runs all tests on Windows and Linux
   - generates the icon, builds from `Chopped.spec`, and smoke-tests the built exe (`tools/smoke_exe.py`: a solo selftest, then a host exe and a client exe over UDP)
   - uploads the **Chopped-windows** artifact. A `v*` tag also publishes a GitHub Release.
-  - The same recipe was verified locally on Linux: build, then smoke test, **passed**.
-  - **Whether it has run green on GitHub yet: check the Actions tab.** Session 2 couldn't push at first, because the Claude GitHub App lacked access to `brycemac35/Chopped`.
+  - **First Windows run (Build #1, Sept 25, 2026): all green.**
+    - All 56 tests passed on Windows and Linux.
+    - `Chopped.exe` is 15.6 MB and was built with its icon and version info.
+    - Smoke test on Windows: the solo selftest, the host and the client all printed SELFTEST OK at about 59–60 fps, and the host saw 2 players.
 - **Gaps closed in session 2:**
   - client-side prediction
   - box collision
@@ -29,14 +31,10 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
   - unobtainable exploded-cop engines
 - **Tests:** 56, all OK on Linux with Python 3.12, including the 2-process game loop at about 61 fps.
 
-### Task 1: Confirm the Windows build on GitHub
-1. Actions tab: the latest **Build** run should be green. Download the **Chopped-windows** artifact.
-2. If it failed, the smoke logs are the **smoke-logs** artifact. The likely causes are the same as before:
-   - a missing hidden import
-   - SDL audio on a headless runner (it should disable itself)
-   - a Windows-only path or socket difference in the tests
-3. By hand on a real PC: run `Chopped.exe --host`, then `Chopped.exe --join 127.0.0.1 --name TWO --fake-lag 150`. With prediction the joiner's own car should feel instant. Compare with `--no-predict`.
-4. Accept the Windows Firewall prompt (Private networks). SmartScreen will warn because the exe is unsigned: click "More info", then "Run anyway".
+### Task 1: Play the exe on a real Windows PC
+1. Download the **Chopped-windows** artifact from the latest green **Build** run (Actions tab). If a future run fails, read the **smoke-logs** artifact.
+2. By hand on a real PC: run `Chopped.exe --host`, then `Chopped.exe --join 127.0.0.1 --name TWO --fake-lag 150`. With prediction the joiner's own car should feel instant. Compare with `--no-predict`.
+3. Accept the Windows Firewall prompt (Private networks). SmartScreen will warn because the exe is unsigned: click "More info", then "Run anyway".
 
 ### Task 2: Real two-PC test
 - Try LAN first, then the internet: UPnP, then a manual forward of UDP 27015, then Tailscale/ZeroTier (the host banner now lists VPN addresses too).
