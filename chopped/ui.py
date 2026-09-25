@@ -128,9 +128,17 @@ class Hud:
             for i, h in enumerate(hands):
                 low.blit(self.bank.icons[h], (7 + i * 14, H - 21))
         names = [PART_DEFS[PART_IDS[h]][0].upper() for h in hands]
-        f.draw(low, " + ".join(names) if names else "EMPTY", 35, H - 21, P["white"] if names else P["metal_l"])
-        if hands:
-            f.draw(low, "G: DROP", 35, H - 14, P["metal_l"])
+        dolly = next((d for d in view.dollies.values() if d[5] == me[0]), None) if me[3] & PR.PF_DOLLY else None
+        if dolly is not None:
+            pygame.draw.rect(low, P["gold"], (5, H - 23, 26, 12), 1)
+            low.blit(self.bank.dolly, (10, H - 21))
+            load = PART_DEFS[PART_IDS[dolly[4]]][0].upper() if dolly[4] != NO_PART else "EMPTY"
+            f.draw(low, "DOLLY: " + load, 35, H - 21, P["white"])
+            f.draw(low, "G: LET GO", 35, H - 14, P["metal_l"])
+        else:
+            f.draw(low, " + ".join(names) if names else "EMPTY", 35, H - 21, P["white"] if names else P["metal_l"])
+            if hands:
+                f.draw(low, "G: DROP", 35, H - 14, P["metal_l"])
         # stamina
         stam = me[11]
         exhausted = me[3] & PR.PF_EXHAUSTED
@@ -206,7 +214,9 @@ class Hud:
             y += 9
         y += 6
         for l in ("WASD MOVE / DRIVE     SHIFT SPRINT     E INTERACT (HOLD FOR TIMED ACTIONS)",
-                  "G DROP HELD PART     F EXIT CAR     SPACE HANDBRAKE     H HORN",
+                  "G DROP HELD PART / LET GO OF THE DOLLY     F EXIT CAR     SPACE HANDBRAKE     H HORN",
+                  "ENGINES ARE TOO HEAVY TO CARRY: USE THE DOLLY IN THE SHOP",
+                  "TUNE-UP BENCH WITH EMPTY HANDS = PARTS COUNTER (NO CREDIT)",
                   "F11 FULLSCREEN",
                   "",
                   "ESC: RESUME        Q: LEAVE TO MAIN MENU"):

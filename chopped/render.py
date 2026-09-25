@@ -134,6 +134,7 @@ class Renderer:
         phase = int(now * 6) % 2
         self._skids(view)
         self._pickups(low, view, now)
+        self._dollies(low, view)
         self._npcs(low, view, now)
         self._cars(low, view, now, dt, phase)
         self._players(low, view, now)
@@ -215,6 +216,18 @@ class Renderer:
             bob = 1 if math.sin(now * 3 + pk[0]) > 0 else 0
             low.fill((20, 18, 26), (sx - 3, sy + 3, 7, 2))
             low.blit(ic, (sx - ic.get_width() // 2, sy - ic.get_height() // 2 - bob))
+
+    def _dollies(self, low, view):
+        for d in view.dollies.values():
+            sx, sy = self.to_screen(d[1], d[2])
+            if not (-12 < sx < W + 12 and -12 < sy < H + 12):
+                continue
+            spr = self.bank.dolly_at(d[3])
+            low.fill((20, 18, 26), (sx - 4, sy + 3, 9, 2))
+            low.blit(spr, (sx - spr.get_width() // 2, sy - spr.get_height() // 2))
+            if d[4] != 255:
+                ic = self.bank.icons[d[4]]
+                low.blit(ic, (sx - ic.get_width() // 2, sy - ic.get_height() // 2 - 1))
 
     def _person_key(self, eid, kind):
         k = self.person_keys.get((eid, kind))

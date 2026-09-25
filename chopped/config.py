@@ -79,7 +79,16 @@ INTERACT_RANGE_CAR = 3.2         # metres from car centre for door stuff
 INTERACT_RANGE_SLOT = 2.4        # metres from a slot anchor for stripping
 INTERACT_RANGE_PICKUP = 1.6
 INTERACT_RANGE_BENCH = 2.2
+INTERACT_RANGE_DOLLY = 1.8
 TAP_HOLD = 0.2                   # holds shorter than this fire on a single tap
+
+# The hand dolly: the only way to move an engine without crushing the car.
+DOLLY_COUNT = 1                  # one hand truck. Co-op means taking turns. And arguing.
+DOLLY_SPEED_MULT = 0.85          # pushing an empty dolly is basically a brisk walk
+DOLLY_LOADED_SPEED_MULT = 0.62   # an engine on a hand truck: slow, heavy, deeply satisfying
+DOLLY_LOAD_TIME = 2.0            # tipping a loose engine onto it
+DOLLY_OFFSET = 1.1               # it rolls along this far in front of you
+DOLLY_RETURN_TIME = 90.0         # left unattended outside the shop this long -> "someone" brings it back
 
 # --------------------------------------------------------------------------
 # Car physics (arcade; tuned by feel, not by Newton)
@@ -224,6 +233,8 @@ CRUSH_DOLLY_FRACTION = 0.5
 SELL_TIME = 1.0
 INSTALL_TIME = 3.0
 PICKUP_TIME = 0.3
+BUY_MARKUP = 1.6                 # the parts counter charges 60% over street value: stealing stays
+                                 # the better deal, buying is for when you want it NOW
 PICKUP_LIFETIME = 600.0          # ten minutes, then the raccoons take it
 PICKUP_SHRINK = 30.0             # last 30 s it visibly shrinks
 MAX_PICKUPS = 90

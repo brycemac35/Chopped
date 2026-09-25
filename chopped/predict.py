@@ -38,7 +38,7 @@ class PredCar(Car):
 class Body:
     """Just enough of a Player for Physics._walk and the collision helpers."""
     __slots__ = ("x", "y", "vx", "vy", "ang", "stamina", "exhausted", "regen_delay",
-                 "sprinting", "moving", "load")
+                 "sprinting", "moving", "load", "mult")
 
     def __init__(self):
         self.x = self.y = self.vx = self.vy = self.ang = 0.0
@@ -47,9 +47,13 @@ class Body:
         self.regen_delay = 0.0
         self.sprinting = self.moving = False
         self.load = 0
+        self.mult = 1.0
 
-    def hands_used(self):
+    def walk_load(self):
         return self.load
+
+    def speed_mult(self):
+        return self.mult
 
 
 def _car_from_row(row, power=100):
@@ -125,7 +129,7 @@ class Predictor(Physics):
             self.pending.popleft()
         old = self.pose()
         old_mode, old_car = self.mode, self.car_id
-        (mode, load, car_id, x, y, vx, vy, ang, w, stamina, regen, power, pull, flags) = snap.me
+        (mode, load, car_id, x, y, vx, vy, ang, w, stamina, regen, mult, power, pull, flags) = snap.me
         row = snap.cars.get(car_id) if mode == ME_DRIVER else None
         if mode == ME_DRIVER and row is None:
             mode = ME_NONE
@@ -153,7 +157,7 @@ class Predictor(Physics):
             b.x, b.y, b.vx, b.vy, b.ang = x, y, vx, vy, ang
             b.stamina, b.regen_delay = stamina, regen
             b.exhausted = bool(flags & SF_EXHAUSTED)
-            b.load = load
+            b.load, b.mult = load, mult
         for _seq, buttons in self.pending:
             self.tick(buttons)
         new = self.pose()

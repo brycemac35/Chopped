@@ -93,6 +93,8 @@ class Audio:
         self.sounds[S.S_DELIVER] = self._mk(self._tone(0.6, lambda t, p: sq([523, 659, 784, 1046][min(3, int(p * 4))], t) * 0.3), 0.6)
         self.sounds[S.S_INSTALL] = self._mk(self._tone(0.4, lambda t, p: sq(220 * (1 + int(p * 3)), t) * 0.3 * (1 - p)), 0.6)
         self.sounds[S.S_YELP] = self._mk(self._tone(0.18, lambda t, p: sq(900 - 500 * p, t) * 0.25), 0.5)
+        # ka-ching... in reverse. The sound of money leaving.
+        self.sounds[S.S_BUY] = self._mk(self._tone(0.35, lambda t, p: sq(1320 if p < 0.4 else 880, t) * 0.35 * (1 - p)), 0.6)
         self.sounds[S.S_IGNITE] = self._mk(self._tone(0.4, lambda t, p: rnd.uniform(-1, 1) * 0.5 * p), 0.6)
         # loops
         self.loops["alarm"] = self._mk(self._tone(0.5, lambda t, p: sq(1100 if p < 0.5 else 750, t) * 0.22), 0.8)

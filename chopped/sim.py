@@ -14,7 +14,7 @@ from . import config as C
 from .config import clamp, lerp, wrap_angle
 from .mapgen import CityMap, GRASS, SIDEWALK
 from .parts import (SLOTS, SLOT_ANCHOR, SLOT_CATEGORY, CATEGORY_SLOTS, WHEEL_SLOTS,
-                    PANEL_SLOTS, STRIP_TIME, DOLLY, Part, part_power,
+                    PANEL_SLOTS, STRIP_TIME, DOLLY, PART_DEFS, Part, part_power,
                     kei_loadout, cop_loadout, personal_loadout)
 
 # ---- enums (ints so they go straight onto the wire) -------------------------
@@ -33,7 +33,7 @@ T_WHITE, T_MONEY, T_BAD, T_INFO, T_COP = range(5)
 # sound ids (client maps these to procedural sfx)
 (S_CRASH, S_CRASH_BIG, S_BOOM, S_SELL, S_PICKUP, S_BREAKIN, S_HOTWIRE, S_STRIP,
  S_HONK, S_ARREST, S_RENT, S_CRUSH, S_DELIVER, S_DROP, S_INSTALL, S_YELP,
- S_IGNITE) = range(17)
+ S_IGNITE, S_BUY) = range(18)
 
 SLOT_LABEL = {
     "Engine": "ENGINE", "Transmission": "GEARBOX", "ECU": "ECU", "Exhaust": "EXHAUST",
@@ -56,6 +56,22 @@ CLOWN_LINES = ["HONK!", "HONK HONK!", "*SAD TROMBONE*", "A CLOWN SQUEAKS ANGRILY
 BAIL_LINES = ["DRIVER: I'M NOT PAID ENOUGH FOR THIS!", "DRIVER: KEEP IT! IT'S LEASED!",
               "DRIVER: I'M CALLING MY INSURANCE (AND MY MOM)", "DRIVER: NOPE. NOPE NOPE NOPE."]
 DIRS = ((1, 0), (-1, 0), (0, 1), (0, -1))
+
+# parts counter: every category's parts, cheapest first
+TIERS = {}
+for _tid, _d in sorted(PART_DEFS.items(), key=lambda kv: kv[1][3]):
+    TIERS.setdefault(_d[1], []).append(_tid)
+
+
+def _next_tier(type_id):
+    """The next pricier part in the same category, or None at the top."""
+    tier = TIERS[PART_DEFS[type_id][1]]
+    i = tier.index(type_id)
+    return tier[i + 1] if i + 1 < len(tier) else None
+
+
+def buy_price(type_id):
+    return int(round(PART_DEFS[type_id][3] * C.BUY_MARKUP))
 
 
 class InputState:
@@ -152,7 +168,7 @@ class Player:
                  "stamina", "exhausted", "regen_delay", "tumble_t", "spin", "spin_rate",
                  "cuffed_t", "arrest_t", "input", "prev_use", "prev_drop", "prev_exit",
                  "hold_key", "hold", "need_release", "prompt", "hold_frac", "sprinting",
-                 "moving", "last_seen", "addr")
+                 "moving", "last_seen", "addr", "dolly")
 
     def __init__(self, pid, name, color):
         self.id = pid
@@ -181,12 +197,26 @@ class Player:
         self.hold_frac = 0.0
         self.sprinting = False
         self.moving = False
+        self.dolly = None             # the Dolly you're pushing (it takes both hands)
 
     def hands_used(self):
+        if self.dolly is not None:
+            return 2
         return sum(p.bulk for p in self.hands)
 
     def can_hold(self, part):
         return part.bulk != DOLLY and self.hands_used() + part.bulk <= 2
+
+    def walk_load(self):
+        """0..2, how hard walking/sprinting is on your stamina."""
+        if self.dolly is not None:
+            return 2 if self.dolly.part is not None else 1
+        return min(2, self.hands_used())
+
+    def speed_mult(self):
+        if self.dolly is not None:
+            return C.DOLLY_LOADED_SPEED_MULT if self.dolly.part is not None else C.DOLLY_SPEED_MULT
+        return C.TWO_HAND_SPEED_MULT if self.hands_used() >= 2 else 1.0
 
 
 class NPC:
@@ -210,6 +240,20 @@ class NPC:
         self.flee_t = 0.0             # > 0: running away from something loud and fast
         self.fx, self.fy = 1.0, 0.0
         self.ttl = 0.0                # > 0: temporary extra (a driver who bailed); gone when it runs out
+
+
+class Dolly:
+    """A hand truck. Carries one dolly-only part (an engine); pushing it takes
+    both hands."""
+    __slots__ = ("id", "x", "y", "ang", "part", "holder", "idle_t")
+
+    def __init__(self, did, x, y):
+        self.id = did
+        self.x, self.y = x, y
+        self.ang = -math.pi / 2
+        self.part = None
+        self.holder = None            # player id
+        self.idle_t = 0.0
 
 
 class Pickup:
@@ -518,7 +562,7 @@ class Physics:
         dx = (1 if b & B_RIGHT else 0) - (1 if b & B_LEFT else 0)
         dy = (1 if b & B_DOWN else 0) - (1 if b & B_UP else 0)
         moving = dx != 0 or dy != 0
-        used = p.hands_used()
+        used = p.walk_load()
         want_sprint = bool(b & B_SPRINT) and moving and not p.exhausted and p.stamina > 0
         if want_sprint:
             p.stamina -= C.STAMINA_SPRINT_DRAIN[min(used, 2)] * dt
@@ -535,9 +579,7 @@ class Physics:
             p.exhausted = True
         elif p.exhausted and p.stamina > C.STAMINA_RECOVER_AT:
             p.exhausted = False
-        spd = C.SPRINT_SPEED if want_sprint else C.WALK_SPEED
-        if used >= 2:
-            spd *= C.TWO_HAND_SPEED_MULT
+        spd = (C.SPRINT_SPEED if want_sprint else C.WALK_SPEED) * p.speed_mult()
         if p.exhausted:
             spd *= C.EXHAUSTED_SPEED_MULT
         if moving:
@@ -624,6 +666,7 @@ class World(Physics):
         self.players = {}
         self.npcs = {}
         self.pickups = {}
+        self.dollies = {}
         self.events = []            # (seq, time, kind, payload)
         self.event_seq = 0
         self.cash = C.START_CASH
@@ -647,6 +690,10 @@ class World(Physics):
         self.scare_accum = 0.0
         self.personal_id = None
         self._spawn_personal(personal_loadout())
+        for k in range(C.DOLLY_COUNT):
+            dx, dy = self.map.dolly_spot
+            d = Dolly(self.new_id(), dx - k * 1.6, dy)
+            self.dollies[d.id] = d
         for _ in range(C.PED_COUNT):
             self._spawn_ped()
         for _ in range(C.MAX_CIVILIAN_CARS):
@@ -659,7 +706,7 @@ class World(Physics):
         while True:
             i = self._next_id
             self._next_id = (self._next_id % 65000) + 1
-            if i not in self.cars and i not in self.npcs and i not in self.pickups:
+            if i not in self.cars and i not in self.npcs and i not in self.pickups and i not in self.dollies:
                 return i
 
     def toast(self, text, color=T_WHITE):
@@ -759,6 +806,7 @@ class World(Physics):
             return
         self._leave_car(p, place=True)
         self._drop_all(p)
+        self._release_dolly(p)
         del self.players[pid]
         self.toast("%s LEFT" % p.name, T_INFO)
 
@@ -775,6 +823,7 @@ class World(Physics):
         p.hands = []
 
     def _enter_car(self, p, car, seat):
+        self._release_dolly(p)        # it'd never fit in a Kei anyway
         if seat == DRIVER:
             car.driver = p.id
         else:
@@ -830,6 +879,7 @@ class World(Physics):
             self.toast("%s WENT THROUGH THE WINDSHIELD" % p.name, T_BAD)
 
     def _tumble(self, p, vx, vy, t):
+        self._release_dolly(p)
         p.state = TUMBLE
         p.tumble_t = max(p.tumble_t, t)
         p.vx, p.vy = vx, vy
@@ -860,6 +910,7 @@ class World(Physics):
         self._sync_occupants()
         for p in self.players.values():
             self._move_player(p, dt)
+        self._update_dollies(dt)
         self._update_npcs(dt)
         self._update_pickups(dt)
         self._fires(dt)
@@ -915,6 +966,10 @@ class World(Physics):
         else:
             self._spawn_personal(personal_loadout())
         self.pickups.clear()
+        for k, d in enumerate(self.dollies.values()):
+            d.holder, d.part, d.idle_t = None, None, 0.0
+            d.x, d.y = self.map.dolly_spot[0] - k * 1.6, self.map.dolly_spot[1]
+            d.ang = -math.pi / 2
         for nid in list(self.npcs):
             n = self.npcs[nid]
             if n.kind != PED or n.ttl > 0:
@@ -931,6 +986,7 @@ class World(Physics):
             p.x, p.y = self.map.player_spawns[i % 4]
             p.hold = 0.0
             p.hold_key = None
+            p.dolly = None
         for _ in range(C.MAX_CIVILIAN_CARS):
             self._spawn_civilian()
         for _ in range(self.traffic_target):
@@ -979,7 +1035,10 @@ class World(Physics):
             return
 
         # ---- on foot --------------------------------------------------------
-        if drop_tap and p.hands:
+        if drop_tap and p.dolly is not None:
+            self._release_dolly(p)
+            self.sfx(S_DROP, p.x, p.y)
+        elif drop_tap and p.hands:
             part = p.hands.pop()
             fx, fy = math.cos(p.ang), math.sin(p.ang)
             self.add_pickup(part, p.x + fx * 0.9, p.y + fy * 0.9, fx * 1.5, fy * 1.5)
@@ -1020,9 +1079,12 @@ class World(Physics):
             cx = clamp(p.x, bx, bx + bw)
             cy = clamp(p.y, by, by + bh)
             if math.hypot(p.x - cx, p.y - cy) < C.INTERACT_RANGE_BENCH:
+                if p.dolly is not None:
+                    return self._dolly_bench(p, p.dolly, is_sell)
                 if not p.hands:
-                    return (None, "SELL BENCH: BRING PARTS HERE" if is_sell else
-                            "TUNE-UP BENCH: BRING PARTS FOR YOUR RIDE", 0, None)
+                    if is_sell:
+                        return (None, "SELL BENCH: BRING PARTS HERE", 0, None)
+                    return self._catalogue_interaction(p)
                 part = p.hands[-1]
                 if is_sell:
                     return (("sell", id(part)), "HOLD E: SELL %s FOR $%d" % (part.name.upper(), part.value),
@@ -1033,6 +1095,15 @@ class World(Physics):
                 verb = "SWAP IN" if replaced else "INSTALL"
                 return (("install", id(part)), "HOLD E: %s %s ON YOUR RIDE" % (verb, part.name.upper()),
                         C.INSTALL_TIME, lambda: self._install(p, part, slot))
+        if p.dolly is not None:
+            return self._dolly_interaction(p, p.dolly)
+        # a dolly to grab
+        dl = self._nearest_dolly(p.x, p.y, C.INTERACT_RANGE_DOLLY)
+        if dl is not None:
+            if p.hands:
+                return (None, "DOLLY: EMPTY YOUR HANDS FIRST (SELL OR DROP)", 0, None)
+            load = " (%s ON IT)" % dl.part.name.upper() if dl.part is not None else ""
+            return (("dolly", dl.id), "E: PUSH THE DOLLY" + load, 0, lambda: self._grab_dolly(p, dl))
         # pickups
         best, bd = None, C.INTERACT_RANGE_PICKUP
         for pk in self.pickups.values():
@@ -1041,6 +1112,8 @@ class World(Physics):
                 best, bd = pk, d
         if best is not None:
             part = best.part
+            if part.bulk == DOLLY:
+                return (None, "%s: TOO HEAVY TO LIFT - FETCH THE DOLLY" % part.name.upper(), 0, None)
             if not p.can_hold(part):
                 return (None, "HANDS FULL - SELL IT OR DROP (G)", 0, None)
             return (("pick", best.id), "E: PICK UP %s ($%d)" % (part.name.upper(), part.value),
@@ -1100,7 +1173,7 @@ class World(Physics):
             return (None, "", 0, None)
         part = car.parts[best]
         if part.bulk == DOLLY:
-            return (None, "%s: DOLLY-ONLY, CAN'T LIFT IT (CRUSH PAYS 50%%)" % part.name.upper(), 0, None)
+            return (None, "%s: TOO HEAVY - FETCH THE DOLLY (OR CRUSH FOR 50%%)" % part.name.upper(), 0, None)
         if not p.can_hold(part):
             return (None, "HANDS FULL - SELL OR DROP (G) FIRST", 0, None)
         cat = SLOT_CATEGORY[best]
@@ -1175,10 +1248,10 @@ class World(Physics):
         self.sfx(S_SELL, p.x, p.y)
         self.toast("SOLD %s: +$%d" % (part.name.upper(), part.value), T_MONEY)
 
-    def _install_target(self, part):
+    def _install_target(self, part, by_dolly=False):
         """Where would this part go on the personal car? (slot, replaced?)"""
         car = self.cars.get(self.personal_id)
-        if car is None or part.bulk == DOLLY:
+        if car is None or (part.bulk == DOLLY) != by_dolly:
             return None, False
         slots = CATEGORY_SLOTS.get(part.category, [])
         for s in slots:
@@ -1201,6 +1274,193 @@ class World(Physics):
             self.add_pickup(old, bx + bw / 2 + self.rng.uniform(-1, 1), by + bh + 1.2)
         self.sfx(S_INSTALL, p.x, p.y)
         self.toast("INSTALLED %s. YOUR RIDE: %d POWER" % (part.name.upper(), car.power()), T_INFO)
+
+
+    # ------------------------------------------------------------------ the hand dolly
+    def _nearest_dolly(self, x, y, reach):
+        best, bd = None, reach
+        for d in self.dollies.values():
+            if d.holder is None:
+                dist = math.hypot(d.x - x, d.y - y)
+                if dist < bd:
+                    best, bd = d, dist
+        return best
+
+    def _grab_dolly(self, p, d):
+        if d.holder is None and not p.hands and p.dolly is None:
+            d.holder = p.id
+            p.dolly = d
+            self.sfx(S_PICKUP, p.x, p.y)
+
+    def _release_dolly(self, p):
+        d = p.dolly
+        if d is not None:
+            d.holder = None
+            d.idle_t = 0.0
+            p.dolly = None
+
+    def _dolly_interaction(self, p, d):
+        """What you can do while pushing the dolly, away from the benches."""
+        # the dolly's nose is what you line up with things
+        if d.part is None:
+            best, bd = None, C.INTERACT_RANGE_DOLLY
+            for pk in self.pickups.values():
+                if pk.part.bulk == DOLLY:
+                    dist = min(math.hypot(pk.x - d.x, pk.y - d.y), math.hypot(pk.x - p.x, pk.y - p.y))
+                    if dist < bd:
+                        best, bd = pk, dist
+            if best is not None:
+                return (("dload", best.id), "HOLD E: LOAD %s ONTO THE DOLLY ($%d)" % (
+                    best.part.name.upper(), best.part.value), C.DOLLY_LOAD_TIME, lambda: self._dolly_load(p, best))
+            car, engine_near = self._engine_car_near(p, d)
+            if car is not None:
+                if car.parts.get("Hood") is not None:
+                    return (None, "HOOD'S STILL ON - LET GO (G) AND STRIP IT FIRST", 0, None)
+                if engine_near:
+                    part = car.parts["Engine"]
+                    return (("dstrip", car.id), "HOLD E: STRIP %s ONTO THE DOLLY - $%d" % (
+                        part.name.upper(), part.value), STRIP_TIME["engine"], lambda: self._dolly_strip(p, car))
+            return (None, "PUSHING THE DOLLY.  G: LET GO", 0, None)
+        return (None, "DOLLY: %s ($%d) - TAKE IT TO SELL OR TUNE-UP.  G: LET GO" % (
+            d.part.name.upper(), d.part.value), 0, None)
+
+    def _engine_car_near(self, p, d):
+        """(delivered car with an engine still in it, is its engine bay in reach?)"""
+        for car in self.cars.values():
+            if car.state != DELIVERED or car.parts.get("Engine") is None:
+                continue
+            if math.hypot(car.x - p.x, car.y - p.y) > C.INTERACT_RANGE_CAR + 2.4:
+                continue
+            ex, ey = car.to_world(*SLOT_ANCHOR["Engine"])
+            reach = min(math.hypot(ex - p.x, ey - p.y), math.hypot(ex - d.x, ey - d.y))
+            return car, reach < C.INTERACT_RANGE_SLOT + 1.2
+        return None, False
+
+    def _dolly_bench(self, p, d, is_sell):
+        if d.part is None:
+            return (None, "THE DOLLY'S EMPTY.  G: LET GO", 0, None)
+        part = d.part
+        if is_sell:
+            return (("dsell", id(part)), "HOLD E: SELL %s FOR $%d" % (part.name.upper(), part.value),
+                    C.SELL_TIME, lambda: self._dolly_sell(p, d))
+        slot, replaced = self._install_target(part, by_dolly=True)
+        if slot is None:
+            return (None, "YOUR RIDE ALREADY HAS A BETTER %s" % part.category.upper(), 0, None)
+        verb = "SWAP IN" if replaced else "INSTALL"
+        return (("dinstall", id(part)), "HOLD E: %s %s ON YOUR RIDE" % (verb, part.name.upper()),
+                C.INSTALL_TIME, lambda: self._dolly_install(p, d, slot))
+
+    def _dolly_load(self, p, pk):
+        d = p.dolly
+        if d is not None and d.part is None and pk.id in self.pickups:
+            d.part = pk.part
+            del self.pickups[pk.id]
+            self.sfx(S_PICKUP, d.x, d.y)
+
+    def _dolly_strip(self, p, car):
+        d = p.dolly
+        part = car.parts.get("Engine")
+        if d is not None and d.part is None and part is not None:
+            car.parts["Engine"] = None
+            d.part = part
+            self.sfx(S_STRIP, car.x, car.y)
+            self.toast("%s WINCHED OUT THE %s" % (p.name, part.name.upper()), T_INFO)
+
+    def _dolly_sell(self, p, d):
+        part = d.part
+        if part is None:
+            return
+        d.part = None
+        self.cash += part.value
+        self.sfx(S_SELL, p.x, p.y)
+        self.toast("SOLD %s: +$%d" % (part.name.upper(), part.value), T_MONEY)
+
+    def _dolly_install(self, p, d, slot):
+        car = self.cars.get(self.personal_id)
+        part = d.part
+        if car is None or part is None:
+            return
+        d.part = car.parts.get(slot)          # the old engine rides the dolly back out
+        car.parts[slot] = part
+        self.sfx(S_INSTALL, p.x, p.y)
+        self.toast("INSTALLED %s. YOUR RIDE: %d POWER" % (part.name.upper(), car.power()), T_INFO)
+
+    def _update_dollies(self, dt):
+        for d in self.dollies.values():
+            p = self.players.get(d.holder) if d.holder is not None else None
+            if p is not None and p.dolly is d and p.state == FOOT:
+                fx, fy = math.cos(p.ang), math.sin(p.ang)
+                x, y = p.x + fx * C.DOLLY_OFFSET, p.y + fy * C.DOLLY_OFFSET
+                if self.map.solid_at(x, y):
+                    x, y = p.x + fx * 0.4, p.y + fy * 0.4     # nose against the wall, not in it
+                d.x, d.y, d.ang = x, y, p.ang
+                d.idle_t = 0.0
+                continue
+            if d.holder is not None:
+                if p is not None and p.dolly is d:
+                    p.dolly = None
+                d.holder = None
+            if self.map.in_garage(d.x, d.y):
+                d.idle_t = 0.0
+            else:
+                d.idle_t += dt
+                if d.idle_t > C.DOLLY_RETURN_TIME:
+                    d.x, d.y = self.map.dolly_spot
+                    d.idle_t = 0.0
+                    self.toast("THE DOLLY FOUND ITS OWN WAY HOME. SPOOKY.", T_INFO)
+
+    # ------------------------------------------------------------------ parts counter
+    def _catalogue_offer(self):
+        """What the parts counter suggests for your ride, as (slot, part id).
+        Missing parts first, then more power (best power per dollar you can
+        actually afford), then bling. If you can't afford anything in that
+        group, it shows the cheapest one, so you know what to save for."""
+        car = self.cars.get(self.personal_id)
+        if car is None:
+            return None
+        missing = [(buy_price(TIERS[SLOT_CATEGORY[s]][0]), s, TIERS[SLOT_CATEGORY[s]][0])
+                   for s in SLOTS if car.parts.get(s) is None]
+        power = []
+        for s in ("Engine", "Transmission", "ECU", "Exhaust"):
+            cur = car.parts[s].type_id if car.parts.get(s) is not None else None
+            nxt = _next_tier(cur) if cur else None
+            if nxt is not None and part_power(nxt) > part_power(cur):
+                power.append((buy_price(nxt), s, nxt, (part_power(nxt) - part_power(cur)) / buy_price(nxt)))
+        bling = [(buy_price(_next_tier(car.parts[s].type_id)), s, _next_tier(car.parts[s].type_id))
+                 for s in SLOTS if car.parts.get(s) is not None and _next_tier(car.parts[s].type_id) is not None
+                 and s not in ("Engine", "Transmission", "ECU", "Exhaust")]
+        for group, rank in ((missing, lambda o: o[0]), (power, lambda o: -o[3]), (bling, lambda o: o[0])):
+            if not group:
+                continue
+            ok = [o for o in group if o[0] <= self.cash]
+            pick = min(ok, key=rank) if ok else min(group, key=lambda o: o[0])
+            return pick[1], pick[2]
+        return None
+
+    def _catalogue_interaction(self, p):
+        offer = self._catalogue_offer()
+        if offer is None:
+            return (None, "PARTS COUNTER: YOUR RIDE IS FULLY LOADED. SHOW-OFF.", 0, None)
+        slot, tid = offer
+        price = buy_price(tid)
+        name = PART_DEFS[tid][0].upper()
+        if self.cash < price:
+            return (None, "PARTS COUNTER: %s $%d - CAN'T AFFORD IT (NO CREDIT)" % (name, price), 0, None)
+        return (("buy", slot, tid), "HOLD E: BUY %s FOR YOUR RIDE - $%d" % (name, price), C.INSTALL_TIME,
+                lambda: self._buy(p, slot, tid, price))
+
+    def _buy(self, p, slot, tid, price):
+        car = self.cars.get(self.personal_id)
+        if car is None or self.cash < price:
+            return
+        self.cash -= price
+        old = car.parts.get(slot)
+        car.parts[slot] = Part(tid, 1.0)
+        if old is not None:
+            bx, by, bw, bh = self.map.tune_bench
+            self.add_pickup(old, bx + bw / 2 + self.rng.uniform(-1, 1), by + bh + 1.2)
+        self.sfx(S_BUY, p.x, p.y)
+        self.toast("BOUGHT %s: -$%d. YOUR RIDE: %d POWER" % (PART_DEFS[tid][0].upper(), price, car.power()), T_INFO)
 
     # ------------------------------------------------------------------ horns
     def _horns(self, dt):
@@ -1740,6 +2000,7 @@ class World(Physics):
 
     def arrest(self, p):
         self._drop_all(p)
+        self._release_dolly(p)        # engine and all, right there for your partner
         p.state = CUFFED
         p.cuffed_t = C.CUFFED_TIME
         p.arrest_t = 0.0

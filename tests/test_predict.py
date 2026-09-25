@@ -101,6 +101,18 @@ class TestPredictionLockstep(unittest.TestCase):
         self.assertEqual(pr.corrections, 0)
         self.assertAlmostEqual(pr.body.stamina, p.stamina, delta=0.01)
 
+    def test_predicted_walk_while_pushing_a_loaded_dolly(self):
+        from chopped.parts import Part
+        w = quiet_world()
+        p = w.add_player("REMOTE")
+        d = next(iter(w.dollies.values()))
+        d.holder, p.dolly, d.part = p.id, d, Part("eng_stock_1_6")
+        script = [S.B_RIGHT | S.B_SPRINT] * 150 + [S.B_DOWN] * 60 + [0] * 20
+        pred, srv, pr = lockstep(w, p.id, script)
+        self.assertLess(worst_gap(pred, srv), 0.01)
+        self.assertEqual(pr.corrections, 0)
+        self.assertLess(p.stamina, 60, "sprinting with an engine is hard work")
+
     def test_misprediction_is_smoothed_not_snapped(self):
         w = quiet_world()
         p = w.add_player("REMOTE")

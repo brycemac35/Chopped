@@ -245,7 +245,7 @@ def lerp_angle(a, b, t):
 class View:
     """What the renderer draws this frame: interpolated copies of snapshot
     entity rows (same field layout as protocol.decode_snapshot)."""
-    __slots__ = ("snap", "cars", "players", "npcs", "pickups", "me", "my_car")
+    __slots__ = ("snap", "cars", "players", "npcs", "pickups", "dollies", "me", "my_car")
 
 
 class Client:
@@ -460,6 +460,7 @@ class Client:
         v.players = self._blend(latest.players, s0.players, s1.players if s1 else None, t, ext, 4, 5, 8, 6, 7)
         v.npcs = self._blend(latest.npcs, s0.npcs, s1.npcs if s1 else None, t, 0.0, 3, 4, 5, None, None)
         v.pickups = self._blend(latest.pickups, s0.pickups, s1.pickups if s1 else None, t, 0.0, 2, 3, None, None, None)
+        v.dollies = self._blend(latest.dollies, s0.dollies, s1.dollies if s1 else None, t, 0.0, 1, 2, 3, None, None)
         v.me = v.players.get(self.pid)
         v.my_car = None
         if v.me is not None and v.me[12]:
@@ -470,6 +471,7 @@ class Client:
                 pr.advance(max(0.0, min(0.1, now - self._last_view)))
             self._last_view = now
         if pr is not None and v.me is not None and self._apply_prediction(v, pr):
+            self._carry_dolly(v)
             return v
         # no prediction for this state (tumbling, cuffed, riding shotgun):
         # pull our own avatar/car forward to the freshest data instead
@@ -486,7 +488,20 @@ class Client:
                 row[7] += row[9] * lat_ext
                 row[8] += row[10] * lat_ext
                 v.cars[row[0]] = v.my_car = row
+        self._carry_dolly(v)
         return v
+
+    def _carry_dolly(self, v):
+        """The dolly you're pushing sticks to your (predicted) hands, not to
+        where the server thought you were 100 ms ago."""
+        me = v.me
+        for eid, row in v.dollies.items():
+            if row[5] == self.pid and me is not None:
+                row = list(row)
+                row[1] = me[4] + math.cos(me[8]) * C.DOLLY_OFFSET
+                row[2] = me[5] + math.sin(me[8]) * C.DOLLY_OFFSET
+                row[3] = me[8]
+                v.dollies[eid] = row
 
     def _apply_prediction(self, v, pr):
         """Swap our own car/avatar in the view for the predicted one."""

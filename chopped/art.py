@@ -305,6 +305,23 @@ def make_person(shirt, skin, hair, frame, extra=None):
 
 
 # ---------------------------------------------------------------------------
+# The hand dolly (10x8, nose facing +x like people). Rotated at draw time.
+# ---------------------------------------------------------------------------
+def make_dolly():
+    s = pygame.Surface((10, 8), pygame.SRCALPHA)
+    f = s.fill
+    f(P["metal_l"], (1, 1, 8, 1))              # rails
+    f(P["metal_l"], (1, 6, 8, 1))
+    f(P["metal"], (2, 2, 6, 4))                # deck
+    f(P["chrome"], (8, 1, 2, 6))               # toe plate
+    f(P["tire"], (5, 0, 3, 1))                 # wheels
+    f(P["tire"], (5, 7, 3, 1))
+    f(P["red"], (0, 1, 1, 1))                  # grips
+    f(P["red"], (0, 6, 1, 1))
+    return _outline(s)
+
+
+# ---------------------------------------------------------------------------
 # Part icons (8x8), unrotated so you can always tell what's on the floor
 # ---------------------------------------------------------------------------
 def make_part_icon(type_id):
@@ -502,11 +519,21 @@ def _render_garage(surf, cmap):
     for k in range(int(gx * S), int((gx + gw) * S), 6):
         surf.fill(P["line_y"], (k, ay - 3, 3, 3))
         surf.fill(P["ink"], (k + 3, ay - 3, 3, 3))
+    # dolly parking spot: dashed box, stencilled label
+    dx, dy = cmap.dolly_spot
+    x0, y0, w, h = int((dx - 1.3) * S), int((dy - 1.3) * S), int(2.6 * S), int(2.6 * S)
+    for k in range(0, w, 3):
+        surf.fill(P["line_y"], (x0 + k, y0, 2, 1))
+        surf.fill(P["line_y"], (x0 + k, y0 + h - 1, 2, 1))
+    for k in range(0, h, 3):
+        surf.fill(P["line_y"], (x0, y0 + k, 1, 2))
+        surf.fill(P["line_y"], (x0 + w - 1, y0 + k, 1, 2))
     # personal bay box
     bx, by, _ = cmap.bay
     pygame.draw.rect(surf, P["white"], (int((bx - 1.8) * S), int((by - 3.2) * S), int(3.6 * S), int(6.4 * S)), 1)
     font = PixelFont()
     font.draw(surf, "YOUR RIDE", int(bx * S), int((by + 3.6) * S), P["white"], None, align="center")
+    font.draw(surf, "DOLLY", int(dx * S), int((dy + 1.7) * S), P["line_y"], None, align="center")
     font.draw(surf, "CHOP SHOP", int((gx + gw / 2) * S), int((gy + gh / 2) * S) - 4,
               shade(P["concrete"], 0.8), None, scale=2, align="center")
     font.draw(surf, "PARK STOLEN CARS INSIDE THE LINE", int((gx + gw / 2) * S), int((gy + gh / 2) * S) + 10,
@@ -555,6 +582,8 @@ class SpriteBank:
         self.person_rot = {}
         self.icons = [make_part_icon(pid) for pid in PART_IDS]
         self.icons_small = [pygame.transform.scale(i, (6, 6)) for i in self.icons]
+        self.dolly = make_dolly()
+        self.dolly_rot = {}
         self.car_shadow = pygame.Surface((14, 24), pygame.SRCALPHA)
         pygame.draw.ellipse(self.car_shadow, (0, 0, 0, 80), (0, 0, 14, 24))
         self.shadow_rot = {}
@@ -573,6 +602,13 @@ class SpriteBank:
         r = self.car_rot.get(rk)
         if r is None:
             r = self.car_rot[rk] = pygame.transform.rotate(base, -step * 360.0 / self.CAR_STEPS)
+        return r
+
+    def dolly_at(self, ang):
+        step = int(round(ang / (2 * math.pi) * 32)) % 32
+        r = self.dolly_rot.get(step)
+        if r is None:
+            r = self.dolly_rot[step] = pygame.transform.rotate(self.dolly, -step * 360.0 / 32)
         return r
 
     def car_shadow_at(self, ang):

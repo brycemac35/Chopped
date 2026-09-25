@@ -30,21 +30,22 @@ SNAP_HDR = struct.Struct("<IIBiHHBBBBHBBI")
 # Your own physics state at full precision, for client-side prediction. The
 # regular entity rows are 1/16 m fixed point; rewinding to a rounded position
 # and replaying 10 inputs on top of it would make your own car shimmer.
-SELF = struct.Struct("<BBHffffffffHbB")
-# mode (0 none / 1 on foot / 2 driving), hands_used, car_id, x, y, vx, vy, ang, w,
-# stamina, regen_delay, power, pull, flags
+SELF = struct.Struct("<BBHfffffffffHbB")
+# mode (0 none / 1 on foot / 2 driving), walk_load, car_id, x, y, vx, vy, ang, w,
+# stamina, regen_delay, speed_mult, power, pull, flags
 ME_NONE, ME_FOOT, ME_DRIVER = 0, 1, 2
 SF_EXHAUSTED = 1
-COUNTS = struct.Struct("<BBBBB")
+COUNTS = struct.Struct("<BBBBBB")
 CAR = struct.Struct("<HBBBBHHHHhhHBBB")
 PLAYER = struct.Struct("<BBBBHHhhHBBBH")
 NPC = struct.Struct("<HBBHHB")
 PICKUP = struct.Struct("<HBHHB")
+DOLLY = struct.Struct("<HHHBBB")        # id, x, y, ang8, part_idx (255 empty), holder pid (0 none)
 EV = struct.Struct("<IB")
 EV_SFX = struct.Struct("<BHH")
 
 CF_ALARM, CF_FIRE, CF_HORN, CF_HANDBRAKE, CF_CONFUSED, CF_WANTED = 1, 2, 4, 8, 16, 32
-PF_SPRINT, PF_EXHAUSTED, PF_MOVING = 1, 2, 4
+PF_SPRINT, PF_EXHAUSTED, PF_MOVING, PF_DOLLY = 1, 2, 4, 8
 
 SLOT_BITS = {s: 1 << i for i, s in enumerate(SLOTS)}
 
@@ -92,11 +93,12 @@ def encode_self(world, me):
         car = world.cars.get(me.car_id)
         if car is not None:
             return SELF.pack(ME_DRIVER, 0, car.id, car.x, car.y, car.vx, car.vy, car.ang, car.w,
-                             0.0, 0.0, min(65535, car.power()), -1 if car.pull < 0 else 1, 0)
+                             0.0, 0.0, 1.0, min(65535, car.power()), -1 if car.pull < 0 else 1, 0)
     if me is not None and me.state == FOOT:
-        return SELF.pack(ME_FOOT, me.hands_used(), 0, me.x, me.y, me.vx, me.vy, me.ang, 0.0,
-                         me.stamina, me.regen_delay, 0, 0, SF_EXHAUSTED if me.exhausted else 0)
-    return SELF.pack(ME_NONE, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0)
+        return SELF.pack(ME_FOOT, me.walk_load(), 0, me.x, me.y, me.vx, me.vy, me.ang, 0.0,
+                         me.stamina, me.regen_delay, me.speed_mult(), 0, 0,
+                         SF_EXHAUSTED if me.exhausted else 0)
+    return SELF.pack(ME_NONE, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0, 0, 0)
 
 
 def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
@@ -137,7 +139,7 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
         h0 = PART_INDEX[p.hands[0].type_id] if len(p.hands) > 0 else NO_PART
         h1 = PART_INDEX[p.hands[1].type_id] if len(p.hands) > 1 else NO_PART
         flags = (PF_SPRINT if p.sprinting else 0) | (PF_EXHAUSTED if p.exhausted else 0) | \
-                (PF_MOVING if p.moving else 0)
+                (PF_MOVING if p.moving else 0) | (PF_DOLLY if p.dolly is not None else 0)
         ang = p.spin if p.state == TUMBLE else p.ang
         players.append(PLAYER.pack(p.id, p.color, p.state, flags, _pos(p.x), _pos(p.y),
                                    _vel(p.vx), _vel(p.vy), _ang(ang), h0, h1,
@@ -157,6 +159,9 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
                                           int(pk.scale() * 255))))
     npcs.sort(key=lambda t: t[0])
     picks.sort(key=lambda t: t[0])
+    dollies = [DOLLY.pack(d.id, _pos(d.x), _pos(d.y), _ang8(d.ang),
+                          PART_INDEX[d.part.type_id] if d.part is not None else NO_PART, d.holder or 0)
+               for d in world.dollies.values()]
     evs = []
     for (seq, _t, kind, payload) in world.events:
         if seq <= ack_event:
@@ -171,8 +176,8 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
     n_np, n_pk = min(len(npcs), 60), min(len(picks), 120)
     while True:
         body = b"".join((head, prompt,
-                         COUNTS.pack(len(cars), len(players), n_np, n_pk, len(evs)),
-                         b"".join(cars), b"".join(players),
+                         COUNTS.pack(len(cars), len(players), n_np, n_pk, len(evs), len(dollies)),
+                         b"".join(cars), b"".join(players), b"".join(dollies),
                          b"".join(t[1] for t in npcs[:n_np]),
                          b"".join(t[1] for t in picks[:n_pk]),
                          b"".join(evs)))
@@ -187,7 +192,7 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
 class Snapshot:
     __slots__ = ("tick", "time", "echo_ms", "pid", "cash", "rent", "debt", "heat", "witness",
                  "cooling", "cops", "gameover", "run", "hold", "nplayers", "prompt", "ack_input",
-                 "me", "cars", "players", "npcs", "pickups", "events", "arrival")
+                 "me", "cars", "players", "npcs", "pickups", "dollies", "events", "arrival")
 
 
 def _text(data, off):
@@ -206,10 +211,10 @@ def decode_snapshot(payload):
     s.hold = hold / 255.0
     off = SNAP_HDR.size
     s.prompt, off = _text(data, off)
-    # (mode, hands_used, car_id, x, y, vx, vy, ang, w, stamina, regen, power, pull, flags)
+    # (mode, walk_load, car_id, x, y, vx, vy, ang, w, stamina, regen, speed_mult, power, pull, flags)
     s.me = SELF.unpack_from(data, off)
     off += SELF.size
-    nc, npl, nn, npk, nev = COUNTS.unpack_from(data, off)
+    nc, npl, nn, npk, nev, ndl = COUNTS.unpack_from(data, off)
     off += COUNTS.size
     s.cars = {}
     for _ in range(nc):
@@ -226,6 +231,12 @@ def decode_snapshot(payload):
         # (id, color, state, flags, x, y, vx, vy, ang, h0, h1, stamina, car_id, name)
         s.players[f[0]] = [f[0], f[1], f[2], f[3], f[4] / 16.0, f[5] / 16.0, f[6] / 64.0, f[7] / 64.0,
                            f[8] / 65536.0 * 2 * math.pi, f[9], f[10], f[11] / 2.55, f[12], name]
+    s.dollies = {}
+    for _ in range(ndl):
+        f = DOLLY.unpack_from(data, off)
+        off += DOLLY.size
+        # (id, x, y, ang, part_idx, holder)
+        s.dollies[f[0]] = [f[0], f[1] / 16.0, f[2] / 16.0, f[3] / 256.0 * 2 * math.pi, f[4], f[5]]
     s.npcs = {}
     for _ in range(nn):
         f = NPC.unpack_from(data, off)
