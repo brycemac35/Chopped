@@ -10,6 +10,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from chopped import config as C
 from chopped import sim as S
+from chopped import vehicles as V
+from chopped.parts import model_loadout
 from chopped import protocol as P
 from chopped.parts import Part, PART_IDS
 from chopped.upnp import UPnP
@@ -53,10 +55,22 @@ class TestMisc(unittest.TestCase):
         p.x, p.y = gx + 14, gy + 14
         p.prompt = "HOLD E: STRIP FRONT BUMPER - AERO BUMPER $999 AND SOME EXTRA WORDS"
         for i in range(16):
+            mid = rng.randrange(len(V.MODELS))
             c = S.Car(w.new_id(), S.CIV, gx + rng.uniform(0, 28), gy + rng.uniform(0, 28), rng.uniform(-3, 3),
-                      S.kei_loadout(rng), color=3)
+                      model_loadout(rng, mid), color=rng.randrange(16), model=mid)
+            w._dress(c)
+            c.livery = rng.randrange(256)
             c.vx = rng.uniform(-40, 40)
             w.cars[c.id] = c
+        # v0.7: a full wanted level plus the patrols, all in sight
+        for i in range(C.MAX_COPS + C.PATROL_COPS):
+            c = S.Car(w.new_id(), S.COP, gx + rng.uniform(0, 28), gy + rng.uniform(0, 28), rng.uniform(-3, 3),
+                      S.cop_loadout(rng))
+            c.vx = rng.uniform(-40, 40)
+            w.cars[c.id] = c
+        # ...and the mod shop open with a full locker (the biggest SELF block there is)
+        w.stash = [Part(rng.choice(PART_IDS), rng.random(), rng.randrange(8)) for _ in range(C.STASH_MAX)]
+        p.menu = True
         for i in range(C.MAX_PICKUPS):
             w.add_pickup(Part(rng.choice(PART_IDS)), gx + rng.uniform(0, 28), gy + rng.uniform(0, 28))
         for i in range(20):
@@ -85,6 +99,10 @@ class TestMisc(unittest.TestCase):
         self.assertIn(civ.id, snap.cars)
         self.assertEqual(len(snap.players), 4)
         self.assertTrue(snap.prompt.startswith("HOLD E: STRIP"))
+        self.assertIsNotNone(snap.menu)
+        self.assertEqual(len(snap.menu["stash"]), C.STASH_MAX)
+        p.menu = False             # (with the locker open, loose parts are what gets shed first)
+        snap = P.decode_snapshot(P.encode_snapshot(w, 1, 0, 0)[P.HDR.size:])
         self.assertGreater(len(snap.pickups), 10)
         car = next(iter(w.cars.values()))
         row = snap.cars[car.id]

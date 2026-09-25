@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from chopped import config as C
 from chopped import sim as S
 from chopped.parts import Part, SLOTS
+from chopped import garage as G
 
 DT = 1.0 / C.SIM_HZ
 
@@ -31,12 +32,26 @@ def face(p, x, y):
     p.ang = p.input.yaw
 
 
+def tap_use(p):
+    i = p.input
+    p.input = S.InputState(i.buttons, i.use_count + 1, i.drop_count, i.exit_count, i.yaw, i.fire_count, i.weapon,
+                           i.menu_seq, i.menu_op, i.menu_arg, i.menu_arg2)
+
+
+def menu(p, op, a=0, b=0):
+    """Send one mod-shop command (the counter moves on, like the real client's)."""
+    i = p.input
+    p.input = S.InputState(i.buttons, i.use_count, i.drop_count, i.exit_count, i.yaw, i.fire_count, i.weapon,
+                           (i.menu_seq + 1) & 255, op, a, b)
+
+
 def quiet_world(seed=4242):
     """A world with no pedestrians or cameras, so heat only moves when a test says so."""
     w = S.World(map_seed=seed, rng_seed=1)
     w.npcs.clear()
     w.map.cameras = []
     w.traffic_target = 0
+    w.patrol_target = 0
     for cid in [c.id for c in w.cars.values() if c.kind == S.TRAFFIC]:
         del w.cars[cid]
     return w
@@ -122,20 +137,27 @@ class TestCoreLoop(unittest.TestCase):
         self.assertEqual(w.cash, cash0 + wheel.value)
         press(p, 0)
         step(w, DT)
-        # --- tune-up bench: install a tuned ECU on the personal car (3 s)
+        # --- tune-up bench = mod shop: walk in with a tuned ECU, bolt it on from the locker
         personal = w.cars[w.personal_id]
         old_ecu = personal.parts["ECU"]
         p.hands = [Part("ecu_tuned", 1.0)]
         tx, ty, tw, th = w.map.tune_bench
         p.x, p.y = tx + tw / 2, ty + th + 1.0
         face(p, tx + tw / 2, ty)
-        n_pick = len(w.pickups)
-        press(p, S.B_USE)
-        step(w, C.INSTALL_TIME + 0.1)
+        w.step(DT)
+        self.assertIn("MOD SHOP", p.prompt)
+        tap_use(p)
+        w.step(DT)
+        self.assertTrue(p.menu)
+        self.assertEqual(p.hands, [], "what you walk in holding goes in the locker")
+        self.assertEqual([q.type_id for q in w.stash], ["ecu_tuned"])
+        menu(p, G.OP_INSTALL, 0, SLOTS.index("ECU"))
+        w.step(DT)
         self.assertEqual(personal.parts["ECU"].type_id, "ecu_tuned")
-        self.assertEqual(p.hands, [])
-        self.assertEqual(len(w.pickups), n_pick + 1, "replaced ECU should drop out")
-        self.assertIn(old_ecu, [pk.part for pk in w.pickups.values()])
+        self.assertIn(old_ecu, w.stash, "the replaced ECU goes in the locker")
+        menu(p, G.OP_CLOSE)
+        w.step(DT)
+        self.assertFalse(p.menu)
         press(p, 0)
         # --- midnight: rent for day 1, then day 2 costs more
         cash0 = w.cash
@@ -292,20 +314,27 @@ class TestCops(unittest.TestCase):
                 spawned.append((w.time, min(math.hypot(q.x - c.x, q.y - c.y) for q in w.players.values())))
             return c
         w.spawn_cop = spy
-        w.heat = 99.0
+        w.heat = C.COP_TIERS[0][0] - 1.0
+        w.unseen_t = 0.0
         step(w, 0.5)
-        self.assertEqual(spawned, [], "no cops below 100")
+        self.assertEqual(spawned, [], "no units below the first wanted level")
+        w.heat = C.COP_TIERS[0][0] + 1.0
+        w.unseen_t = 0.0
+        step(w, 3.0)
+        self.assertEqual(len(spawned), 1, "wanted level 1: one car")
         w.heat = 100.0
         w.unseen_t = 0.0
-        step(w, 1.0)
-        self.assertEqual(len(spawned), 1)
-        step(w, 1.5)
+        step(w, 0.3)
         self.assertEqual(len(spawned), 2)
-        self.assertAlmostEqual(spawned[1][0] - spawned[0][0], C.COP_SPAWN_GAP, delta=0.15)
+        step(w, C.COP_SPAWN_GAP + 0.05)
+        self.assertEqual(len(spawned), 3)
+        self.assertAlmostEqual(spawned[2][0] - spawned[1][0], C.COP_SPAWN_GAP, delta=0.15)
         for _, d in spawned:
             self.assertGreaterEqual(d, C.COP_SPAWN_MIN_DIST)
-        step(w, 3.0)
-        self.assertEqual(len([c for c in w.cars.values() if c.kind == S.COP]), 2, "max 2 cops")
+        for _ in range(8):
+            w.heat = 100.0
+            step(w, 1.0)
+        self.assertEqual(len([c for c in w.cars.values() if c.kind == S.COP]), C.MAX_COPS, "a full wanted level")
         # heat to zero -> cops leave after 3 s
         w.heat = 0.0
         p.x, p.y = w.map.player_spawns[0]

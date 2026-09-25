@@ -38,10 +38,10 @@ class InputState:
     booleans) for one-shot keys so a tap survives a dropped packet: if the
     number changed, it happened. yaw is the first-person view direction."""
     __slots__ = ("buttons", "use_count", "drop_count", "exit_count", "yaw", "fire_count", "weapon",
-                 "menu_seq", "menu_op", "menu_arg")
+                 "menu_seq", "menu_op", "menu_arg", "menu_arg2")
 
     def __init__(self, buttons=0, use_count=0, drop_count=0, exit_count=0, yaw=0.0, fire_count=0, weapon=0,
-                 menu_seq=0, menu_op=0, menu_arg=0):
+                 menu_seq=0, menu_op=0, menu_arg=0, menu_arg2=0):
         self.buttons = buttons
         self.use_count = use_count
         self.drop_count = drop_count
@@ -52,6 +52,7 @@ class InputState:
         self.menu_seq = menu_seq          # mod shop: bumped once per command (like the counters above)
         self.menu_op = menu_op
         self.menu_arg = menu_arg
+        self.menu_arg2 = menu_arg2
 
 
 class Car:
@@ -63,7 +64,7 @@ class Car:
                  "special_fired", "route", "route_prev", "tdir", "node", "blocked_t", "shaken_t",
                  "overtake_t", "hits", "model", "hl", "hw", "bound", "delta", "trunk", "livery", "horn_type",
                  "glow", "nos", "nos_fuel", "boosting", "ejector", "gnome", "grip", "top_mult", "spin_t",
-                 "donut_t", "patrol")
+                 "donut_t", "patrol", "beat", "gun_cd")
 
     def __init__(self, cid, kind, x, y, ang, parts, color=0, model=None):
         self.id = cid
@@ -90,6 +91,8 @@ class Car:
         self.spin_t = 0.0             # > 0: skated over a banana peel, the rear has given up
         self.donut_t = 0.0            # cops only: > 0 = eating. Leave them be.
         self.patrol = False           # cops only: cruising the grid, not (yet) chasing
+        self.beat = False             # cops only: a patrol unit (goes back on patrol instead of home)
+        self.gun_cd = 0.0             # cops only: seconds until they can shoot again
         self.x, self.y, self.ang = x, y, ang
         self.vx = self.vy = self.w = 0.0
         self.state = RUNNING if kind != CIV else LOCKED
@@ -183,7 +186,8 @@ class Player:
                  "hold_key", "hold", "need_release", "prompt", "hold_frac", "sprinting",
                  "moving", "last_seen", "addr", "dolly", "weapon", "arms", "ammo", "gear", "fire_cd",
                  "prev_fire", "z", "vz", "seat_t", "carrying", "carrier", "wriggle", "prev_jump",
-                 "charge_t", "dancing", "chute", "banner", "banner_t", "robbed_from")
+                 "charge_t", "dancing", "chute", "banner", "banner_t", "robbed_from", "menu", "menu_ack",
+                 "trunk_view")
 
     def __init__(self, pid, name, color):
         self.id = pid
@@ -216,7 +220,7 @@ class Player:
         self.weapon = ARM_FISTS
         self.arms = 1 << ARM_FISTS    # bitmask of what you own; everyone owns fists
         self.ammo = [0, 0, 0]         # per ARM_ slot (fists don't need any)
-        self.gear = [0, 0]            # spike strips, roadblocks
+        self.gear = [0, 0, 0, 0]      # spike strips, roadblocks, banana peels, boxes of donuts
         self.fire_cd = 0.0
         self.prev_fire = 0
         self.z = 0.0                  # feet off the ground (v0.7: you can jump now)
@@ -232,6 +236,9 @@ class Player:
         self.banner = 0               # last comedy banner (for the client: YEETED, HUMBLED...)
         self.banner_t = 0.0
         self.robbed_from = {}         # npc id -> dollars you took (they want it back)
+        self.menu = False             # in the mod shop (movement frozen; menu commands run)
+        self.menu_ack = 0             # last mod-shop command we ran (the client waits for this)
+        self.trunk_view = None        # the car whose trunk you're looking into (for the HUD)
 
     def hands_used(self):
         if self.dolly is not None or self.carrying is not None:
@@ -250,10 +257,8 @@ class Player:
         return min(2, self.hands_used())
 
     def owns(self, slot):
-        if slot == ARM_SPIKES:
-            return self.gear[0] > 0
-        if slot == ARM_BLOCK:
-            return self.gear[1] > 0
+        if slot in GEAR_OF_ARM:
+            return self.gear[GEAR_OF_ARM[slot]] > 0
         return bool(self.arms & (1 << slot))
 
     def speed_mult(self):
@@ -333,6 +338,9 @@ class Trap:
 
     def rect(self):
         """Axis-aligned (x, y, w, h): traps only ever go down square to the street grid."""
+        if self.kind in (TRAP_BANANA, TRAP_DONUT):
+            r = C.BANANA_R if self.kind == TRAP_BANANA else C.DONUT_R
+            return (self.x - r, self.y - r, 2 * r, 2 * r)
         long_, short = ((C.SPIKE_LEN, C.SPIKE_WID) if self.kind == TRAP_SPIKES
                         else (C.ROADBLOCK_LEN, C.ROADBLOCK_WID))
         if abs(math.cos(self.ang)) > 0.5:          # traffic runs along x: the trap spans y
@@ -343,7 +351,7 @@ class Trap:
 
 
 class Pickup:
-    __slots__ = ("id", "part", "x", "y", "vx", "vy", "age", "z", "vz", "thrower", "hit")
+    __slots__ = ("id", "part", "x", "y", "vx", "vy", "age", "z", "vz", "thrower", "hit", "fixed")
 
     def __init__(self, pid, part, x, y, vx=0.0, vy=0.0):
         self.id = pid
@@ -354,6 +362,7 @@ class Pickup:
         self.z = self.vz = 0.0        # thrown parts fly (v0.7). A door at 16 m/s is an argument-ender.
         self.thrower = None
         self.hit = set()              # who this throw already bonked
+        self.fixed = False            # a garden gnome in its garden: doesn't expire
 
     def scale(self):
         left = C.PICKUP_LIFETIME - self.age

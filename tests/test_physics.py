@@ -25,6 +25,7 @@ def empty_world():
     w.npcs.clear()
     w.map.cameras = []
     w.traffic_target = 0
+    w.patrol_target = 0
     for cid in list(w.cars):
         del w.cars[cid]
     return w

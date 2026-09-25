@@ -20,7 +20,7 @@ from . import sim as S
 from . import protocol as PR
 from . import fpart as FA
 from .art import P, PixelFont, PLAYER_COLORS, CAR_COLORS, GLYPHS, SKINS, shade
-from .parts import PART_IDS, PART_DEFS, NO_PART
+from .parts import PART_IDS, PART_DEFS, PART_INDEX, NO_PART
 
 W, H = C.LOW_W, C.LOW_H
 BAR_H = 32
@@ -40,7 +40,7 @@ BIG_GOLD = ((255, 236, 120), (240, 200, 70), (220, 170, 50), (190, 140, 40), (15
 BIG_BLUE = ((170, 200, 255), (130, 170, 255), (90, 130, 240), (60, 100, 210), (40, 70, 170))
 
 
-WEAPON_LABELS = ("HANDS", "PISTOL", "SHOTGUN", "SPIKES", "BLOCKS")
+WEAPON_LABELS = ("HANDS", "PISTOL", "SHOTGUN", "SPIKES", "BLOCKS", "BANANAS", "DONUTS")
 
 
 class Pen:
@@ -110,6 +110,7 @@ class DoomHud:
         self.day_banner_until = 0.0
         self.rng = random.Random(3)
         self.icons2 = [pygame.transform.scale(i, (16, 16)) for i in bank.icons]
+        self.icons_small6 = [pygame.transform.scale(i, (12, 12)) for i in bank.icons]
         self.icons6 = {}
         # drift meter: [seconds sideways, score, seconds since it last counted, banner text, banner until]
         self.drift = [0.0, 0.0, 9.0, "", 0.0]
@@ -277,6 +278,25 @@ class DoomHud:
                 pen.fill(shade(FA.GUN_WOOD, 0.7), (cx - 14, py_ + 5 + k * 7, 28, 2))
             self._fist(pen, cx - 44, vh - 6 + int(bob) + int(kick * 12), skin, sleeve, -1)
             self._fist(pen, cx + 26, py_ + 30, skin, sleeve, 1)
+            return
+        if weapon == S.ARM_BANANA:
+            top = vh - 70 + int(bob)
+            pen.poly((250, 220, 70), [(cx - 6, top + 40), (cx + 6, top + 40), (cx + 22, top), (cx + 10, top + 4)])
+            pen.poly((230, 190, 50), [(cx - 6, top + 40), (cx - 22, top + 6), (cx - 12, top + 8)])
+            pen.poly((230, 190, 50), [(cx + 6, top + 40), (cx + 2, top + 2), (cx + 10, top + 6)])
+            pen.fill((110, 80, 40), (cx - 3, top + 38, 6, 8))
+            self._fist(pen, cx, vh - 12 + int(bob), skin, sleeve, 1)
+            return
+        if weapon == S.ARM_DONUT:
+            top = vh - 64 + int(bob)
+            pen.rect((236, 130, 190), (cx - 44, top, 88, 34))
+            pen.rect((250, 250, 245), (cx - 44, top, 88, 8))
+            for k in range(5):
+                pen.circle((190, 120, 70), (cx - 32 + k * 16, top + 20), 6)
+                pen.circle((236, 90, 150), (cx - 32 + k * 16, top + 19), 4)
+            pen.text(self.font, "DONUTS", cx, top + 1, (180, 40, 120), align="center")
+            self._fist(pen, cx - 60, vh - 12 + int(bob), skin, sleeve, -1)
+            self._fist(pen, cx + 60, vh - 12 + int(bob), skin, sleeve, 1)
             return
         if weapon in (S.ARM_SPIKES, S.ARM_BLOCK):
             top = vh - 58 + int(bob)
@@ -464,8 +484,8 @@ class DoomHud:
                 low.blit(self.icons2[hands[0]], (hx + 16, by + 4))
             elif not hands and info.get("weapon", S.ARM_FISTS) != S.ARM_FISTS and snap.arsenal:
                 w = info["weapon"]
-                n = {S.ARM_PISTOL: snap.arsenal[2], S.ARM_SHOTGUN: snap.arsenal[3],
-                     S.ARM_SPIKES: snap.arsenal[4], S.ARM_BLOCK: snap.arsenal[5]}[w]
+                n = snap.arsenal[2] if w == S.ARM_PISTOL else snap.arsenal[3] if w == S.ARM_SHOTGUN \
+                    else snap.arsenal[4 + S.GEAR_OF_ARM[w]]
                 low.fill((92, 90, 96), (hx, by + 2, 52, 20))
                 num = self.big("%d" % n, BIG_RED if n else BIG_BLUE)
                 low.blit(num, (BX + 198 - num.get_width() // 2, by + 3))
@@ -646,10 +666,10 @@ class DoomHud:
         f = self.font
         ars = snap.arsenal
         cur = info.get("weapon", S.ARM_FISTS)
-        for k in range(5):
+        for k in range(S.ARM_COUNT):
             owned = S.arsenal_owns(ars, k)
             col = P["gold"] if k == cur and owned else P["white"] if owned else (70, 68, 76)
-            f.draw(low, str(k + 1), BX // 2 - 28 + k * 14, by + 4, col, scale=1)
+            f.draw(low, str(k + 1), BX // 2 - 30 + k * 10, by + 4, col, scale=1)
         name = S.ARM_NAMES[cur] if S.arsenal_owns(ars, cur) else "FISTS"
         f.draw(low, name, BX // 2, by + 13, P["gold"], align="center")
         f.draw(low, "ARMS", BX // 2, by + 23, P["white"], align="center")
@@ -661,14 +681,25 @@ class DoomHud:
         f = self.font
         x0 = BX + 480
         cx = x0 + (W - x0) // 2
-        ars = snap.arsenal or (0, 1, 0, 0, 0, 0)
-        rows = []
-        if ars[4]:
-            rows.append("SPIKES x%d" % ars[4])
-        if ars[5]:
-            rows.append("BLOCKS x%d" % ars[5])
-        for i, r in enumerate(rows[:2]):
-            f.draw(low, r, cx, by + 4 + i * 8, P["gold"], align="center")
+        me2 = getattr(snap, "me2", None)
+        if me is not None and me[2] == S.DRIVER and me2 is not None and me2[7] & PR.SX_NOS:
+            # nitrous gauge along the top of the panel
+            frac = max(0.0, min(1.0, me2[4] / C.NOS_TANK))
+            low.fill((30, 28, 34), (x0 + 6, by + 1, W - x0 - 12, 3))
+            low.fill((90, 170, 255), (x0 + 6, by + 1, int((W - x0 - 12) * frac), 3))
+        tr = getattr(snap, "trunk", None)
+        if tr is not None and me is not None and me[2] in (S.DRIVER, S.PASSENGER):
+            cid, cap, used, items = tr
+            f.draw(low, "%d/%d" % (used, cap), cx, by + 4, P["gold"], align="center")
+            for k, (tid, style) in enumerate(items[:5]):
+                low.blit(self.icons_small6[PART_INDEX[tid]], (x0 + 6 + k * 14, by + 12))
+            f.draw(low, "TRUNK", cx, by + 23, P["white"], align="center")
+            return
+        ars = snap.arsenal or (0, 1, 0, 0, 0, 0, 0, 0)
+        names = ("SPIKES", "BLOCKS", "BANANA", "DONUTS")
+        rows = ["%s x%d" % (names[k], ars[4 + k]) for k in range(4) if len(ars) > 4 + k and ars[4 + k]]
+        for i, r in enumerate(rows[:3]):
+            f.draw(low, r, cx, by + 2 + i * 7, P["gold"], align="center")
         if not rows:
             f.draw(low, "-", cx, by + 8, (70, 68, 76), align="center")
         f.draw(low, "GEAR", cx, by + 23, P["white"], align="center")

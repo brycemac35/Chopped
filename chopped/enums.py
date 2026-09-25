@@ -33,20 +33,20 @@ BN_NONE, BN_YEETED, BN_HUMBLED, BN_BONKED, BN_HOMERUN, BN_STRIKE, BN_EJECT = ran
 BANNER_TEXT = ("", "YEETED", "HUMBLED", "BONKED", "HOME RUN!", "STRIKE!", "EJECT! EJECT!")
 
 # what's in your hands when you click: keys 1-5
-ARM_FISTS, ARM_PISTOL, ARM_SHOTGUN, ARM_SPIKES, ARM_BLOCK = range(5)
-ARM_NAMES = ("FISTS", "PISTOL", "SHOTGUN", "SPIKE STRIP", "ROADBLOCK")
-TRAP_SPIKES, TRAP_BLOCK = range(2)
+ARM_FISTS, ARM_PISTOL, ARM_SHOTGUN, ARM_SPIKES, ARM_BLOCK, ARM_BANANA, ARM_DONUT = range(7)
+ARM_NAMES = ("FISTS", "PISTOL", "SHOTGUN", "SPIKE STRIP", "ROADBLOCK", "BANANA PEEL", "BOX OF DONUTS")
+ARM_COUNT = len(ARM_NAMES)
+TRAP_SPIKES, TRAP_BLOCK, TRAP_BANANA, TRAP_DONUT = range(4)
+GEAR_OF_ARM = {ARM_SPIKES: 0, ARM_BLOCK: 1, ARM_BANANA: 2, ARM_DONUT: 3}   # index into Player.gear
 
 
 def arsenal_owns(arsenal, slot):
-    """Client-side Player.owns(), from the 6-byte arsenal in the SELF block:
-    (weapon, arms bitmask, pistol ammo, shotgun ammo, spikes, roadblocks)."""
+    """Client-side Player.owns(), from the 8-byte arsenal in the SELF block:
+    (weapon, arms bitmask, pistol ammo, shotgun ammo, spikes, roadblocks, bananas, donuts)."""
     if not arsenal:
         return slot == ARM_FISTS
-    if slot == ARM_SPIKES:
-        return arsenal[4] > 0
-    if slot == ARM_BLOCK:
-        return arsenal[5] > 0
+    if slot in GEAR_OF_ARM:
+        return arsenal[4 + GEAR_OF_ARM[slot]] > 0
     return bool(arsenal[1] & (1 << slot))
 
 
@@ -56,6 +56,8 @@ MARKET = {  # crate -> (label, price)
     "ammo": ("AMMO FOR YOUR GUNS", C.PRICE_AMMO),
     "spikes": ("SPIKE STRIP", C.PRICE_SPIKES),
     "roadblock": ("ROADBLOCK", C.PRICE_ROADBLOCK),
+    "banana": ("BANANA PEEL", C.PRICE_BANANA),
+    "donuts": ("BOX OF DONUTS", C.PRICE_DONUTS),
 }
 
 SLOT_LABEL = {

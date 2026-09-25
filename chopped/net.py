@@ -224,14 +224,14 @@ class Server:
         conn.last_heard = now
         if ptype == P.P_INPUT and len(data) >= off + P.INPUT.size:
             (seq, cms, ack, buttons, use, drop, ex, yaw, fire, weapon,
-             mseq, mop, marg) = P.INPUT.unpack_from(data, off)
+             mseq, mop, marg, marg2) = P.INPUT.unpack_from(data, off)
             if seq <= conn.input_seq:
                 return                     # stale/out-of-order: newer state already applied
             conn.input_seq = seq
             conn.echo_ms = cms
             conn.ack_event = max(conn.ack_event, ack)
             self.world.set_input(conn.pid, InputState(buttons, use, drop, ex, P.unang16(yaw), fire, weapon,
-                                                      mseq, mop, marg))
+                                                      mseq, mop, marg, marg2))
         elif ptype == P.P_LEAVE:
             self._drop(conn, "left")
 
@@ -303,6 +303,7 @@ class Client:
         self.last_input = -1.0
         self.input_seq = 0
         self.inp = InputState()
+        self._decode_warned = False
         self.snaps = deque(maxlen=48)
         self.latest = None
         self.offsets = deque(maxlen=60)
@@ -375,6 +376,10 @@ class Client:
                 try:
                     snap = P.decode_snapshot(data[off:])
                 except Exception:
+                    if not self._decode_warned:  # say so once (it lands in --log): a real bug looks like this
+                        self._decode_warned = True
+                        import traceback
+                        traceback.print_exc()
                     continue                     # mangled packet; UDP gonna UDP
                 self._on_snapshot(snap, now)
             elif ptype == P.P_REJECT:
@@ -412,7 +417,8 @@ class Client:
             self._send(P.header(P.P_INPUT) + P.INPUT.pack(
                 self.input_seq, ms_now(), self.last_event, i.buttons & 0xFFFF,
                 i.use_count & 0xFF, i.drop_count & 0xFF, i.exit_count & 0xFF, y16,
-                i.fire_count & 0xFF, i.weapon & 0xFF, i.menu_seq & 0xFF, i.menu_op & 0xFF, i.menu_arg & 0xFF))
+                i.fire_count & 0xFF, i.weapon & 0xFF, i.menu_seq & 0xFF, i.menu_op & 0xFF, i.menu_arg & 0xFF,
+                i.menu_arg2 & 0xFF))
             if self.predictor is not None:
                 # predict with the yaw exactly as the server will decode it
                 self.predictor.push_input(self.input_seq, i.buttons & 0xFFFF, P.unang16(y16))

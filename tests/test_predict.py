@@ -64,6 +64,7 @@ def quiet_world():
     w.npcs.clear()
     w.map.cameras = []
     w.traffic_target = 0
+    w.patrol_target = 0
     for cid in [c.id for c in w.cars.values() if c.kind != S.PERSONAL]:
         del w.cars[cid]
     return w

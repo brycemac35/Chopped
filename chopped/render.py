@@ -225,6 +225,10 @@ class Renderer:
         for t in getattr(view, "traps", {}).values():
             if t[5] < 0.1 and blink:
                 continue
+            if t[1] in (S.TRAP_BANANA, S.TRAP_DONUT):
+                sx, sy = self.to_screen(t[2], t[3])
+                low.fill((250, 220, 70) if t[1] == S.TRAP_BANANA else (236, 130, 190), (sx - 1, sy - 1, 3, 3))
+                continue
             tr = S.Trap(t[0], t[1], t[2], t[3], t[4]).rect()
             x0, y0 = self.to_screen(tr[0], tr[1])
             w, h = max(1, int(tr[2] * PPM)), max(1, int(tr[3] * PPM))

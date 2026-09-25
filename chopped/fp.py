@@ -84,6 +84,7 @@ class FPRenderer:
         self.sky_h = int(vh * 0.95)   # tall enough to look up into
         self.skies = {k: FA.make_sky(k, 4 * vw, self.sky_h) for k in FA.SKY_KEYS}
         self.hires = None             # the car the chase camera is following: drawn in more detail
+        self.big_heads = False        # F9. You know you want to.
         self._build_static_sprites()
         self.car_cache = {}
         self.person_cache = {}
@@ -191,13 +192,13 @@ class FPRenderer:
          model, livery, extras, extras2) = row[:19]
         idx = int(round(az / (TWO_PI / steps))) % steps
         lights = 0
-        if kind == S.COP:
+        if kind == S.COP and not extras2 & PR.CX_PATROL:
             lights |= self._phase
         if flags & PR.CF_ALARM and self._phase:
             lights |= 2
         if extras & 8:
             lights |= 4                                  # NOS: blue fire out the back
-        key = (kind, color, mask, styles, dmg, lights, idx, model, livery, extras & 8, extras2 & 1, steps, ppm)
+        key = (kind, color, mask, styles, dmg, lights, idx, model, livery, extras & 0xF8, extras2 & 1, steps, ppm)
         spr = self.car_cache.get(key)
         if spr is None:
             if len(self.car_cache) > 1500:
@@ -222,12 +223,14 @@ class FPRenderer:
 
     def _person_sprite(self, shirt, skin, hair, frame, extra, down, az, gun=0):
         idx = int(round(az / (TWO_PI / 8))) % 8
-        key = (shirt, skin, hair, frame, extra, down, idx, gun)
+        key = (shirt, skin, hair, frame, extra, down, idx, gun, self.big_heads)
         spr = self.person_cache.get(key)
         if spr is None:
             if len(self.person_cache) > 2000:
                 self.person_cache.clear()
             boxes = FA.person_boxes(shirt, skin, hair, frame, extra, gun=gun)
+            if self.big_heads:
+                boxes = FA.big_head(boxes)
             if down:
                 boxes = FA.lying(boxes)
             spr = self.person_cache[key] = FA.render_boxes(boxes, idx * TWO_PI / 8, 16)
@@ -524,6 +527,12 @@ class FPRenderer:
         for t in getattr(view, "traps", {}).values():
             if t[5] < 0.1 and int(now * 6) % 2:
                 continue                                        # about to be towed: blink
+            if t[1] in (S.TRAP_BANANA, S.TRAP_DONUT):
+                az = math.atan2(t[3] - cy, t[2] - cx)
+                name = "banana" if t[1] == S.TRAP_BANANA else "donutbox"
+                fn = FA.banana_boxes if t[1] == S.TRAP_BANANA else FA.donut_box_boxes
+                add(t[2], t[3], lambda a=az, nm=name, f=fn: self._model_sprite(nm, f, a, 8, 24))
+                continue
             spikes = t[1] == S.TRAP_SPIKES
             along = 0.0 if abs(math.cos(t[4])) > 0.5 else math.pi / 2   # which way the traffic runs
             length = C.SPIKE_LEN if spikes else C.ROADBLOCK_LEN
@@ -545,6 +554,17 @@ class FPRenderer:
             if row[0] == hide_car:
                 continue
             az = math.atan2(row[8] - cy, row[7] - cx) - row[11]
+            if row[15] == V.SCOOTER and row[12]:
+                # the mobility scooter doesn't hide its rider. That's the whole joke.
+                drv = view.players.get(row[12])
+                if drv is not None:
+                    col = PLAYER_COLORS[drv[1] % 4]
+                    az2 = math.atan2(row[8] - cy, row[7] - cx) - row[11]
+                    add(row[7] - math.cos(row[11]) * 0.2, row[8] - math.sin(row[11]) * 0.2,
+                        lambda s=col, k=SKINS[drv[0] % 4], h=HAIRS[drv[0] % 6], a=az2:
+                        self._person_sprite(s, k, h, 0, None, False, a), z=0.25)
+            if row[1] == S.COP and row[18] & PR.CX_DONUT:
+                add(row[7], row[8], None, z=2.2, tag=("say", "NOM NOM"))
             if row[0] == self.hires:
                 # the chase cam's car: more angles, more pixels (it's right there, being drifted)
                 add(row[7], row[8], lambda r=row, a=az: self._car_sprite(r, a, 64, 20), tag=("smoke", row))
@@ -614,6 +634,12 @@ class FPRenderer:
             sx = vw / 2 + lat / depth * D
             if tag is not None and tag[0] == "boom":
                 self._draw_boom(surf, tag[1], sx, depth, eye, dt)
+                continue
+            if img_fn is None:
+                # floating words over something ("NOM NOM"), if it's not behind a wall
+                col_ = int(sx)
+                if tag is not None and tag[0] == "say" and depth < 50 and 0 <= col_ < vw and depth < zbuf[col_]:
+                    self.font.draw(surf, tag[1], col_, int(hor + (eye - z) * D / depth), P["gold"], align="center")
                 continue
             img, ppm = img_fn()
             if isinstance(img, tuple):                 # (surface, anchor_x, anchor_y)

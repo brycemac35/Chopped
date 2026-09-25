@@ -46,6 +46,7 @@ def quiet_world():
     w.npcs.clear()
     w.map.cameras = []
     w.traffic_target = 0
+    w.patrol_target = 0
     for cid in [c.id for c in w.cars.values() if c.kind == S.TRAFFIC]:
         del w.cars[cid]
     return w
@@ -113,24 +114,22 @@ class TestDolly(unittest.TestCase):
         self.assertEqual(w.cash, cash0 + engine.value)
         self.assertIsNone(d.part)
 
-    def test_install_engine_from_the_dolly_swaps_the_old_one_onto_it(self):
+    def test_dolly_engine_goes_in_the_locker_at_the_mod_shop(self):
         w = quiet_world()
         p = w.add_player("ALICE")
         d = grab(w, p)
         turbo = Part("eng_tuned_2_0t", 1.0)
         d.part = turbo
-        personal = w.cars[w.personal_id]
-        old = personal.parts["Engine"]
         tx, ty, tw, th = w.map.tune_bench
         p.x, p.y = tx + tw / 2, ty + th + 1.2
         face(p, tx + tw / 2, ty)
         w.step(DT)
-        self.assertIn("SWAP IN 2.0 TURBO ENGINE", p.prompt)
-        press(p, S.B_USE)
-        step(w, C.INSTALL_TIME + 0.1)
-        self.assertIs(personal.parts["Engine"], turbo)
-        self.assertIs(d.part, old, "your old engine rides the dolly back out")
-        self.assertGreater(personal.power(), 150)
+        self.assertIn("MOD SHOP", p.prompt)
+        key, _, _, action = w._find_interaction(p)
+        action()
+        self.assertTrue(p.menu)
+        self.assertIn(turbo, w.stash, "the engine goes on the locker shelf")
+        self.assertIsNone(d.part)
 
     def test_loose_engine_needs_the_dolly(self):
         w = quiet_world()
@@ -208,53 +207,6 @@ class TestDolly(unittest.TestCase):
         self.assertTrue(snap.players[p.id][3] & P.PF_DOLLY)
         self.assertAlmostEqual(snap.me[11], C.DOLLY_LOADED_SPEED_MULT, places=5)
         self.assertEqual(snap.me[1], 2)
-
-
-class TestPartsCounter(unittest.TestCase):
-    def _at_counter(self, w, p):
-        tx, ty, tw, th = w.map.tune_bench
-        p.x, p.y = tx + tw / 2, ty + th + 1.2
-        face(p, tx + tw / 2, ty)
-
-    def test_suggests_what_you_can_afford_and_what_to_save_for(self):
-        w = quiet_world()
-        p = w.add_player("ALICE")
-        self._at_counter(w, p)
-        w.cash = 300
-        key, label, _, _ = w._find_interaction(p)
-        self.assertIsNone(key)
-        self.assertIn("CAN'T AFFORD", label)
-        self.assertIn("TUNED EXHAUST $%d" % S.buy_price("exh_tuned"), label, "cheapest power upgrade to save for")
-        w.cash = 5000
-        key, label, _, _ = w._find_interaction(p)
-        self.assertIn("2.0 TURBO ENGINE", label, "best power per dollar when you're flush")
-
-    def test_buying_installs_it_and_the_old_part_drops_out(self):
-        w = quiet_world()
-        p = w.add_player("ALICE")
-        self._at_counter(w, p)
-        w.cash = 5000
-        personal = w.cars[w.personal_id]
-        n_pick = len(w.pickups)
-        press(p, S.B_USE)
-        step(w, C.INSTALL_TIME + 0.1)
-        self.assertEqual(personal.parts["Engine"].type_id, "eng_tuned_2_0t")
-        self.assertEqual(personal.parts["Engine"].condition, 1.0)
-        self.assertEqual(w.cash, 5000 - S.buy_price("eng_tuned_2_0t"))
-        self.assertEqual(len(w.pickups), n_pick + 1, "old engine is on the floor (fetch the dolly)")
-
-    def test_missing_parts_come_first(self):
-        w = quiet_world()
-        p = w.add_player("ALICE")
-        self._at_counter(w, p)
-        w.cash = 5000
-        w.cars[w.personal_id].parts["WheelRL"] = None
-        key, label, _, _ = w._find_interaction(p)
-        self.assertIn("WORN STEELIE", label)
-
-    def test_markup_means_stealing_is_still_cheaper(self):
-        for pid in ("eng_tuned_2_0t", "whl_stock_alloy", "ecu_tuned"):
-            self.assertGreater(S.buy_price(pid), Part(pid, 1.0).value, "buy-then-sell must lose money")
 
 
 if __name__ == "__main__":

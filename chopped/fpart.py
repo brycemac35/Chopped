@@ -327,6 +327,11 @@ def car_boxes(kind, color, mask, styles, damage, lights, model=V.KEI, livery=0, 
     hole = P["ink"]
     b = []
     boxy = model in (V.VAN, V.ICECREAM)
+    glow = (extras >> 4) & 15
+    if glow:
+        # neon underglow: a thin slab of light just under the sills. Tasteful. (It is not tasteful.)
+        gc = CAR_COLORS[(glow - 1) % len(CAR_COLORS)]
+        b.append((-hl - 0.35, hl + 0.35, -hw - 0.4, hw + 0.4, 0.0, 0.02, shade(gc, 1.25)))
     # ---- body sections: nose, middle (the doors are its sides), tail -------------
     hood_on = _bit(mask, "Hood")
     hs = st["Hood"] if hood_on else 0
@@ -669,6 +674,18 @@ def person_boxes(shirt, skin, hair, frame, extra=None, pants=(52, 56, 78), gun=0
     return b
 
 
+def big_head(boxes, k=2.1):
+    """Big-head mode: everything above the shoulders, scaled up around the
+    neck. Purely cosmetic. Deeply important."""
+    out = []
+    for x0, x1, y0, y1, z0, z1, c in boxes:
+        if z0 >= 1.4 and z1 <= 2.1 and abs(y0) < 0.2 and abs(y1) < 0.2:
+            out.append((x0 * k, x1 * k, y0 * k, y1 * k, 1.42 + (z0 - 1.42) * k, 1.42 + (z1 - 1.42) * k, c))
+        else:
+            out.append((x0, x1, y0, y1, z0, z1, c))
+    return out
+
+
 def lying(boxes):
     """Rotate a standing model 90 degrees so it's flat on its back (tumbling)."""
     out = []
@@ -716,8 +733,30 @@ def barrier_boxes(length, lamp=False):
     return b
 
 
+def banana_boxes():
+    """A banana peel: four floppy yellow bits and a brown stalk. Deadly."""
+    yel, dark = (250, 220, 70), (200, 170, 40)
+    return [(-0.08, 0.08, -0.08, 0.08, 0.0, 0.06, dark),
+            (0.08, 0.34, -0.05, 0.05, 0.0, 0.03, yel), (-0.34, -0.08, -0.05, 0.05, 0.0, 0.03, yel),
+            (-0.05, 0.05, 0.08, 0.32, 0.0, 0.03, yel), (-0.05, 0.05, -0.32, -0.08, 0.0, 0.03, yel),
+            (-0.03, 0.03, -0.03, 0.03, 0.06, 0.14, (110, 80, 40))]
+
+
+def donut_box_boxes():
+    """A box of donuts, lid open. Cops can smell it from 35 m."""
+    pink = (236, 130, 190)
+    b = [(-0.25, 0.25, -0.35, 0.35, 0.0, 0.1, {"*": pink, "+z": (250, 250, 245)}),
+         (-0.27, -0.23, -0.35, 0.35, 0.1, 0.4, pink)]                                     # the lid, up
+    for x in (-0.1, 0.1):
+        for y in (-0.2, 0.0, 0.2):
+            b.append((x - 0.07, x + 0.07, y - 0.07, y + 0.07, 0.1, 0.15, {"*": (190, 120, 70),
+                                                                        "+z": (236, 90, 150)}))
+    return b
+
+
 CRATE_BANDS = {"pistol": (60, 60, 70), "shotgun": GUN_WOOD, "ammo": (200, 170, 60),
-               "spikes": (230, 190, 40), "roadblock": BARRIER_ORANGE}
+               "spikes": (230, 190, 40), "roadblock": BARRIER_ORANGE, "banana": (250, 220, 70),
+               "donuts": (236, 130, 190)}
 
 
 def crate_boxes(item):
@@ -735,6 +774,11 @@ def crate_boxes(item):
     elif item == "ammo":
         for k, y in enumerate((-0.2, 0.0, 0.2)):
             b.append((-0.1, 0.1, y - 0.07, y + 0.07, 0.75, 0.9 + 0.04 * k, (60, 90, 50)))
+    elif item == "banana":
+        b.extend((x0, x1, y0, y1, z0 + 0.75, z1 + 0.75, c) for x0, x1, y0, y1, z0, z1, c in banana_boxes())
+    elif item == "donuts":
+        b.extend((x0 * 0.9, x1 * 0.9, y0 * 0.9, y1 * 0.9, z0 + 0.75, z1 + 0.75, c)
+                 for x0, x1, y0, y1, z0, z1, c in donut_box_boxes())
     elif item == "spikes":
         for y in (-0.25, -0.08, 0.09, 0.26):
             b.append((-0.3, 0.3, y - 0.06, y + 0.06, 0.75, 0.8, (26, 24, 30)))

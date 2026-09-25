@@ -67,10 +67,14 @@ class CityMap:
         self.solid = bytearray(1 if t in SOLID_TYPES else 0 for t in self.tiles)
         self.opaque = bytearray(1 if t in OPAQUE_TYPES else 0 for t in self.tiles)
         self._merge_solids()
+        self.grass_tiles = []         # (v0.7: where the garden gnomes live)
         for ty in range(n):
             for tx in range(n):
-                if self.tiles[ty * n + tx] == SIDEWALK:
+                t = self.tiles[ty * n + tx]
+                if t == SIDEWALK:
                     self.sidewalk_tiles.append((tx, ty))
+                elif t == GRASS:
+                    self.grass_tiles.append((tx, ty))
         self._flow_cache = {}
 
     # ------------------------------------------------------------------ blocks
@@ -150,7 +154,7 @@ class CityMap:
         self.dolly_spot = (gx + gw - 2.5, gy + 4.5)
         # the black market: a row of crates along the west wall. Don't ask where they came from.
         self.market = [(gx + 1.0, gy + 5.0 + k * 1.9, item)
-                       for k, item in enumerate(("pistol", "shotgun", "ammo", "spikes", "roadblock"))]
+                       for k, item in enumerate(("pistol", "shotgun", "ammo", "spikes", "roadblock", "banana", "donuts"))]
         self.sell_bench = (gx + 5.0, gy, 6.0, 1.6)
         self.tune_bench = (gx + gw - 11.0, gy, 6.0, 1.6)
         self.static_rects.append(self.sell_bench)

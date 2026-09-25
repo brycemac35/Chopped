@@ -13,22 +13,21 @@ import random
 from . import config as C
 from .config import clamp, lerp, wrap_angle
 from .mapgen import CityMap, GRASS, SIDEWALK
-from .parts import (SLOTS, SLOT_CATEGORY, CATEGORY_SLOTS, WHEEL_SLOTS,
-                    PANEL_SLOTS, STRIP_TIME, DOLLY, PART_DEFS, Part, part_power,
+from .parts import (SLOTS, SLOT_CATEGORY, WHEEL_SLOTS, PANEL_SLOTS, STRIP_TIME, DOLLY, Part,
                     kei_loadout, cop_loadout, personal_loadout, model_loadout, roll_trunk)
 from . import vehicles as V
 from .brawl import Brawl
+from .garage import Garage
 from .enums import *  # noqa: F401,F403
 from .lines import *  # noqa: F401,F403
 from .entities import *  # noqa: F401,F403
-from .entities import _next_tier  # noqa: F401
 from .physics import *  # noqa: F401,F403
 
 DIRS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 _REEXPORTS = (kei_loadout,)   # tests (and old habits) reach for S.kei_loadout
 
 
-class World(Physics, Brawl):
+class World(Physics, Brawl, Garage):
     def __init__(self, map_seed=None, rng_seed=None):
         if map_seed is None:
             map_seed = random.randrange(1, 2 ** 31)
@@ -44,6 +43,7 @@ class World(Physics, Brawl):
         self.pickups = {}
         self.dollies = {}
         self.traps = {}
+        self.stash = []             # the parts locker in the shop (mod shop feeds from it)
         self.extra_rects = []       # roadblocks, as solid rects (rebuilt when traps change)
         self.give_loadout = False   # --selftest: everyone joins armed, so the bot exercises the guns
         self.events = []            # (seq, time, kind, payload)
@@ -68,6 +68,9 @@ class World(Physics, Brawl):
         self._rects = []            # scratch list for collision queries (no per-tick allocs)
         self.traffic_t = 0.0
         self.traffic_target = C.TRAFFIC_COUNT    # tests set 0 for a city with no surprises
+        self.patrol_target = C.PATROL_COPS       # (and this: patrol cars that are always about)
+        self.patrol_t = 2.0
+        self.wanted_level = 0
         self.scare_accum = 0.0
         self.personal_id = None
         self._spawn_personal(personal_loadout())
@@ -81,6 +84,9 @@ class World(Physics, Brawl):
             self._spawn_civilian(ignore_players=True)
         for _ in range(self.traffic_target):
             self._spawn_traffic(ignore_players=True)
+        self.gnome_t = 0.0
+        for _ in range(C.GNOME_COUNT):
+            self._spawn_gnome()
 
     # ------------------------------------------------------------------ ids/events
     def new_id(self):
@@ -157,6 +163,20 @@ class World(Physics, Brawl):
             car.glow = r.randrange(1, 9)
         car.refresh()
 
+    def _spawn_gnome(self):
+        """Garden gnomes, standing guard on the grass. Steal them. Sell them
+        ($60), throw them (they squeak), or bolt one to your bonnet."""
+        tiles = self.map.grass_tiles or self.map.sidewalk_tiles
+        for _ in range(20):
+            tx, ty = self.rng.choice(tiles)
+            x, y = (tx + 0.5) * C.TILE_M, (ty + 0.5) * C.TILE_M
+            if any(p.x - 30 < x < p.x + 30 and p.y - 30 < y < p.y + 30 for p in self.players.values()):
+                continue
+            pk = self.add_pickup(Part("gnome", self.rng.uniform(0.7, 1.0)), x, y)
+            pk.fixed = True
+            return pk
+        return None
+
     def _spawn_ped(self):
         tx, ty = self.rng.choice(self.map.sidewalk_tiles)
         n = NPC(self.new_id(), PED, (tx + 0.5) * C.TILE_M, (ty + 0.5) * C.TILE_M)
@@ -207,7 +227,7 @@ class World(Physics, Brawl):
         if self.give_loadout:
             p.arms |= (1 << ARM_PISTOL) | (1 << ARM_SHOTGUN)
             p.ammo = [0, C.MAX_AMMO, C.MAX_AMMO]
-            p.gear = [C.MAX_TRAPS_EACH, C.MAX_TRAPS_EACH]
+            p.gear = [C.MAX_TRAPS_EACH] * 4
         self.players[pid] = p
         self.toast("%s JOINED THE CREW" % p.name, T_INFO)
         return p
@@ -232,6 +252,17 @@ class World(Physics, Brawl):
         p = self.players.get(pid)
         if p:
             p.input = inp
+
+    def _icecream_lure(self, n):
+        """An ice cream van playing its tune, slow or parked: peds within earshot
+        wander over and queue. People in a queue are not looking at crimes."""
+        best, bd = None, C.ICECREAM_LURE
+        for car in self.cars.values():
+            if car.model == V.ICECREAM and (car.driver is not None or car.kind == TRAFFIC) and car.speed() < 6.0:
+                d = math.hypot(car.x - n.x, car.y - n.y)
+                if d < bd:
+                    best, bd = car, d
+        n.lure = (best.x, best.y) if best is not None else None
 
     def _drop_all(self, p):
         for i, part in enumerate(p.hands):
@@ -305,6 +336,18 @@ class World(Physics, Brawl):
                          car.vy * 0.6 + self.rng.uniform(-3, 3), t)
             self.toast("%s WENT THROUGH THE WINDSHIELD" % p.name, T_BAD)
 
+    def _eject_seat(self, p, car):
+        """F at speed, ejector seat fitted: straight up through the roof,
+        parachute out, gently down. The car carries on without you."""
+        self._leave_car(p, place=False)
+        p.x, p.y = car.x, car.y
+        self._tumble(p, car.vx * 0.35, car.vy * 0.35, 0.5)
+        p.z, p.vz = 1.6, C.EJECT_SPEED
+        p.chute = True
+        self._banner(p, BN_EJECT)
+        self.sfx(S_EJECT, car.x, car.y)
+        self.toast("%s PULLED THE EJECTOR SEAT. WHY WAS THERE AN EJECTOR SEAT." % p.name, T_INFO)
+
     def _tumble(self, p, vx, vy, t):
         self._release_dolly(p)
         p.state = TUMBLE
@@ -349,6 +392,7 @@ class World(Physics, Brawl):
         self._arrests(dt)
         self._traffic(dt)
         self._traffic_fleet(dt)
+        self._patrol_fleet(dt)
 
     # ------------------------------------------------------------------ economy
     def rent_due(self):
@@ -412,6 +456,9 @@ class World(Physics, Brawl):
             self._spawn_personal(personal_loadout())
         self.pickups.clear()
         self.traps.clear()
+        if self.stash:
+            self.toast("THE LANDLORD SOLD YOUR PARTS LOCKER ON MARKETPLACE.", T_BAD)
+        self.stash = []
         self.extra_rects = []
         for k, d in enumerate(self.dollies.values()):
             d.holder, d.part, d.idle_t = None, None, 0.0
@@ -434,7 +481,7 @@ class World(Physics, Brawl):
             p.hold = 0.0
             p.hold_key = None
             p.dolly = None
-            p.arms, p.ammo, p.gear, p.weapon = 1 << ARM_FISTS, [0, 0, 0], [0, 0], ARM_FISTS
+            p.arms, p.ammo, p.gear, p.weapon = 1 << ARM_FISTS, [0, 0, 0], [0, 0, 0, 0], ARM_FISTS
         for _ in range(C.MAX_CIVILIAN_CARS):
             self._spawn_civilian()
         for _ in range(self.traffic_target):
@@ -487,6 +534,9 @@ class World(Physics, Brawl):
             if car is None:
                 p.state, p.car_id = FOOT, None
                 return
+            if exit_tap and p.state == DRIVER and car.ejector and car.speed() >= C.EJECT_MIN_SPEED:
+                self._eject_seat(p, car)
+                return
             if exit_tap or (use_tap and car.state == DELIVERED):
                 self._leave_car(p, place=True)
                 return
@@ -502,6 +552,14 @@ class World(Physics, Brawl):
             return
 
         # ---- on foot --------------------------------------------------------
+        p.trunk_view = None
+        if p.menu:
+            if p.state != FOOT or not self.map.in_garage(p.x, p.y):
+                p.menu = False
+            else:
+                self._modshop_input(p, inp)
+                p.prompt = "MOD SHOP"
+                return
         p.ang = inp.yaw               # you face wherever your mouse points
         p.weapon = inp.weapon if (0 <= inp.weapon <= ARM_BLOCK and p.owns(inp.weapon)) else ARM_FISTS
         if p.weapon in (ARM_PISTOL, ARM_SHOTGUN) and not p.hands and p.dolly is None:
@@ -577,22 +635,18 @@ class World(Physics, Brawl):
             cx = clamp(ax, bx, bx + bw)
             cy = clamp(ay, by, by + bh)
             if math.hypot(ax - cx, ay - cy) < C.INTERACT_RANGE_BENCH:
+                if not is_sell:
+                    # the mod shop. Anything you're holding goes in the locker on the way in.
+                    held = p.hands or (p.dolly is not None and p.dolly.part is not None)
+                    return (("modshop",), "E: MOD SHOP" + (" (WHAT YOU'RE HOLDING GOES IN THE LOCKER)" if held else ""),
+                            0, lambda: self._open_modshop(p))
                 if p.dolly is not None:
                     return self._dolly_bench(p, p.dolly, is_sell)
                 if not p.hands:
-                    if is_sell:
-                        return (None, "SELL BENCH: BRING PARTS HERE", 0, None)
-                    return self._catalogue_interaction(p)
+                    return (None, "SELL BENCH: BRING PARTS HERE (OR SELL FROM THE LOCKER IN THE MOD SHOP)", 0, None)
                 part = p.hands[-1]
-                if is_sell:
-                    return (("sell", id(part)), "HOLD E: SELL %s FOR $%d" % (part.name.upper(), part.value),
-                            C.SELL_TIME, lambda: self._sell(p))
-                slot, replaced = self._install_target(part)
-                if slot is None:
-                    return (None, "YOUR RIDE ALREADY HAS A BETTER %s" % part.category.upper(), 0, None)
-                verb = "SWAP IN" if replaced else "INSTALL"
-                return (("install", id(part)), "HOLD E: %s %s ON YOUR RIDE" % (verb, part.name.upper()),
-                        C.INSTALL_TIME, lambda: self._install(p, part, slot))
+                return (("sell", id(part)), "HOLD E: SELL %s FOR $%d" % (part.name.upper(), part.value),
+                        C.SELL_TIME, lambda: self._sell(p))
         market = self._market_interaction(p, ax, ay)
         if market is not None:
             return market
@@ -644,6 +698,14 @@ class World(Physics, Brawl):
         car = best
         if car is None or bd > C.CAR_AIM_RANGE + (0.8 if car.state == DELIVERED else 0):
             return (None, "", 0, None)
+        # the back of the car: the trunk (a delivered car's only if there's something in it,
+        # otherwise the back is for stripping the bumper)
+        c_, s_ = math.cos(car.ang), math.sin(car.ang)
+        if (ax - car.x) * c_ + (ay - car.y) * s_ < -car.hl * 0.45 and car.kind != TRAFFIC and \
+                (car.state != DELIVERED or car.trunk or p.hands):
+            tr = self._trunk_interaction(p, car)
+            if tr is not None:
+                return tr
         if car.kind == TRAFFIC:
             if car.speed() > C.CARJACK_MAX_SPEED:
                 return (None, "IT'S MOVING. STOP IT FIRST: STAND IN THE ROAD, SPIKES, A ROADBLOCK...", 0, None)
@@ -752,6 +814,7 @@ class World(Physics, Brawl):
         self.sfx(S_STRIP, car.x, car.y)
 
     def _crush(self, car, pay):
+        self._spill_trunk(car)
         self._earn(pay)
         self.sfx(S_CRUSH, car.x, car.y)
         self.toast("CRUSHED THE SHELL: +$%d" % pay, T_MONEY)
@@ -766,6 +829,11 @@ class World(Physics, Brawl):
             p.hands.append(pk.part)
             del self.pickups[pk.id]
             self.sfx(S_PICKUP, p.x, p.y)
+            if pk.fixed:
+                # somebody's garden gnome. The city takes this VERY seriously.
+                self._crime(C.GNOME_HEAT)
+                self.sfx(S_GNOME, p.x, p.y)
+                self.toast("%s STOLE A GARDEN GNOME. +%d HEAT. MONSTER." % (p.name, C.GNOME_HEAT), T_BAD)
 
     def _sell(self, p):
         if not p.hands:
@@ -774,36 +842,6 @@ class World(Physics, Brawl):
         self._earn(part.value, 1)
         self.sfx(S_SELL, p.x, p.y)
         self.toast("SOLD %s: +$%d" % (part.name.upper(), part.value), T_MONEY)
-
-    def _install_target(self, part, by_dolly=False):
-        """Where would this part go on the personal car? (slot, replaced?)"""
-        car = self.cars.get(self.personal_id)
-        if car is None or (part.bulk == DOLLY) != by_dolly:
-            return None, False
-        slots = CATEGORY_SLOTS.get(part.category, [])
-        if not slots:
-            return None, False            # a gnome is not a car part. (The mod shop disagrees.)
-        for s in slots:
-            if car.parts.get(s) is None:
-                return s, False
-        worst = min(slots, key=lambda s: car.parts[s].value)
-        if car.parts[worst].value < part.value:
-            return worst, True
-        return None, False
-
-    def _install(self, p, part, slot):
-        car = self.cars.get(self.personal_id)
-        if car is None or part not in p.hands:
-            return
-        old = car.parts.get(slot)
-        p.hands.remove(part)
-        car.parts[slot] = part
-        if old is not None:
-            bx, by, bw, bh = self.map.tune_bench
-            self.add_pickup(old, bx + bw / 2 + self.rng.uniform(-1, 1), by + bh + 1.2)
-        self.sfx(S_INSTALL, p.x, p.y)
-        self.toast("INSTALLED %s. YOUR RIDE: %d POWER" % (part.name.upper(), car.power()), T_INFO)
-
 
     # ------------------------------------------------------------------ the hand dolly
     def _nearest_dolly(self, x, y, reach):
@@ -830,6 +868,13 @@ class World(Physics, Brawl):
 
     def _dolly_interaction(self, p, d):
         """What you can do while pushing the dolly, away from the benches."""
+        for car in self.cars.values():
+            if V.model(car.model).bed and box_distance(car, d.x, d.y) < 1.2:
+                bx, by = car.to_world(-car.hl, 0.0)
+                if (bx - d.x) ** 2 + (by - d.y) ** 2 < 4.0:
+                    got = self._trunk_dolly(p, d, car)
+                    if got is not None:
+                        return got
         # the dolly's nose is what you line up with things
         if d.part is None:
             best, bd = None, C.INTERACT_RANGE_DOLLY
@@ -869,15 +914,8 @@ class World(Physics, Brawl):
         if d.part is None:
             return (None, "THE DOLLY'S EMPTY.  G: LET GO", 0, None)
         part = d.part
-        if is_sell:
-            return (("dsell", id(part)), "HOLD E: SELL %s FOR $%d" % (part.name.upper(), part.value),
-                    C.SELL_TIME, lambda: self._dolly_sell(p, d))
-        slot, replaced = self._install_target(part, by_dolly=True)
-        if slot is None:
-            return (None, "YOUR RIDE ALREADY HAS A BETTER %s" % part.category.upper(), 0, None)
-        verb = "SWAP IN" if replaced else "INSTALL"
-        return (("dinstall", id(part)), "HOLD E: %s %s ON YOUR RIDE" % (verb, part.name.upper()),
-                C.INSTALL_TIME, lambda: self._dolly_install(p, d, slot))
+        return (("dsell", id(part)), "HOLD E: SELL %s FOR $%d" % (part.name.upper(), part.value),
+                C.SELL_TIME, lambda: self._dolly_sell(p, d))
 
     def _dolly_load(self, p, pk):
         d = p.dolly
@@ -904,16 +942,6 @@ class World(Physics, Brawl):
         self.sfx(S_SELL, p.x, p.y)
         self.toast("SOLD %s: +$%d" % (part.name.upper(), part.value), T_MONEY)
 
-    def _dolly_install(self, p, d, slot):
-        car = self.cars.get(self.personal_id)
-        part = d.part
-        if car is None or part is None:
-            return
-        d.part = car.parts.get(slot)          # the old engine rides the dolly back out
-        car.parts[slot] = part
-        self.sfx(S_INSTALL, p.x, p.y)
-        self.toast("INSTALLED %s. YOUR RIDE: %d POWER" % (part.name.upper(), car.power()), T_INFO)
-
     def _update_dollies(self, dt):
         for d in self.dollies.values():
             p = self.players.get(d.holder) if d.holder is not None else None
@@ -937,60 +965,6 @@ class World(Physics, Brawl):
                     d.x, d.y = self.map.dolly_spot
                     d.idle_t = 0.0
                     self.toast("THE DOLLY FOUND ITS OWN WAY HOME. SPOOKY.", T_INFO)
-
-    # ------------------------------------------------------------------ parts counter
-    def _catalogue_offer(self):
-        """What the parts counter suggests for your ride, as (slot, part id).
-        Missing parts first, then more power (best power per dollar you can
-        actually afford), then bling. If you can't afford anything in that
-        group, it shows the cheapest one, so you know what to save for."""
-        car = self.cars.get(self.personal_id)
-        if car is None:
-            return None
-        missing = [(buy_price(TIERS[SLOT_CATEGORY[s]][0]), s, TIERS[SLOT_CATEGORY[s]][0])
-                   for s in SLOTS if car.parts.get(s) is None]
-        power = []
-        for s in ("Engine", "Transmission", "ECU", "Exhaust"):
-            cur = car.parts[s].type_id if car.parts.get(s) is not None else None
-            nxt = _next_tier(cur) if cur else None
-            if nxt is not None and part_power(nxt) > part_power(cur):
-                power.append((buy_price(nxt), s, nxt, (part_power(nxt) - part_power(cur)) / buy_price(nxt)))
-        bling = [(buy_price(_next_tier(car.parts[s].type_id)), s, _next_tier(car.parts[s].type_id))
-                 for s in SLOTS if car.parts.get(s) is not None and _next_tier(car.parts[s].type_id) is not None
-                 and s not in ("Engine", "Transmission", "ECU", "Exhaust")]
-        for group, rank in ((missing, lambda o: o[0]), (power, lambda o: -o[3]), (bling, lambda o: o[0])):
-            if not group:
-                continue
-            ok = [o for o in group if o[0] <= self.cash]
-            pick = min(ok, key=rank) if ok else min(group, key=lambda o: o[0])
-            return pick[1], pick[2]
-        return None
-
-    def _catalogue_interaction(self, p):
-        offer = self._catalogue_offer()
-        if offer is None:
-            return (None, "PARTS COUNTER: YOUR RIDE IS FULLY LOADED. SHOW-OFF.", 0, None)
-        slot, tid = offer
-        price = buy_price(tid)
-        name = PART_DEFS[tid][0].upper()
-        if self.cash < price:
-            return (None, "PARTS COUNTER: %s $%d - CAN'T AFFORD IT (NO CREDIT)" % (name, price), 0, None)
-        return (("buy", slot, tid), "HOLD E: BUY %s FOR YOUR RIDE - $%d" % (name, price), C.INSTALL_TIME,
-                lambda: self._buy(p, slot, tid, price))
-
-    def _buy(self, p, slot, tid, price):
-        car = self.cars.get(self.personal_id)
-        if car is None or self.cash < price:
-            return
-        self.cash -= price
-        old = car.parts.get(slot)
-        car.parts[slot] = Part(tid, 1.0)
-        if old is not None:
-            bx, by, bw, bh = self.map.tune_bench
-            self.add_pickup(old, bx + bw / 2 + self.rng.uniform(-1, 1), by + bh + 1.2)
-        self.sfx(S_BUY, p.x, p.y)
-        self.toast("BOUGHT %s: -$%d. YOUR RIDE: %d POWER" % (PART_DEFS[tid][0].upper(), price, car.power()), T_INFO)
-
 
     # ------------------------------------------------------------------ violence
     def _crime(self, heat):
@@ -1037,7 +1011,8 @@ class World(Physics, Brawl):
             self._shoot(p, w)
         else:
             p.fire_cd = 0.5
-            self._place_trap(p, TRAP_SPIKES if w == ARM_SPIKES else TRAP_BLOCK)
+            self._place_trap(p, {ARM_SPIKES: TRAP_SPIKES, ARM_BLOCK: TRAP_BLOCK, ARM_BANANA: TRAP_BANANA,
+                                 ARM_DONUT: TRAP_DONUT}[w])
 
     def _punch(self, p):
         best, bd = None, None
@@ -1237,7 +1212,8 @@ class World(Physics, Brawl):
             return (None, "BLACK MARKET: YOU'VE GOT A SHOTGUN. AMMO'S NEXT DOOR.", 0, None)
         if best == "ammo" and not (p.arms & ((1 << ARM_PISTOL) | (1 << ARM_SHOTGUN))):
             return (None, "BLACK MARKET: AMMO. BUY A GUN FIRST, GENIUS.", 0, None)
-        if best in ("spikes", "roadblock") and p.gear[0 if best == "spikes" else 1] >= C.MAX_TRAPS_EACH:
+        gear = {"spikes": 0, "roadblock": 1, "banana": 2, "donuts": 3}.get(best)
+        if gear is not None and p.gear[gear] >= C.MAX_TRAPS_EACH:
             return (None, "BLACK MARKET: YOU CAN'T CARRY MORE OF THOSE", 0, None)
         if self.cash < price:
             return (None, "BLACK MARKET: %s $%d - CAN'T AFFORD IT" % (label, price), 0, None)
@@ -1265,15 +1241,21 @@ class World(Physics, Brawl):
         elif item == "spikes":
             p.gear[0] += 1
             tip = "PRESS 4, CLICK TO LAY IT ACROSS THE ROAD"
-        else:
+        elif item == "roadblock":
             p.gear[1] += 1
             tip = "PRESS 5, CLICK TO BLOCK THE ROAD"
+        elif item == "banana":
+            p.gear[2] += 1
+            tip = "PRESS 6, CLICK TO DROP IT. WATCH YOUR STEP."
+        else:
+            p.gear[3] += 1
+            tip = "PRESS 7, CLICK TO THROW. COPS CAN'T RESIST."
         self.sfx(S_BUY, p.x, p.y)
         self.toast("BOUGHT %s: -$%d. %s" % (MARKET[item][0].split(" (")[0], price, tip), T_INFO)
 
     # ------------------------------------------------------------------ traps
     def _place_trap(self, p, kind):
-        slot = 0 if kind == TRAP_SPIKES else 1
+        slot = kind                   # TRAP_* and Player.gear share an order
         if p.gear[slot] <= 0:
             return
         if len(self.traps) >= C.MAX_TRAPS:
@@ -1281,8 +1263,13 @@ class World(Physics, Brawl):
             return
         # square to the street, and centred on the road it's dropped on
         ang = round(p.ang / (math.pi / 2)) * (math.pi / 2)
-        x = p.x + math.cos(p.ang) * C.TRAP_PLACE_DIST
-        y = p.y + math.sin(p.ang) * C.TRAP_PLACE_DIST
+        dist = {TRAP_BANANA: C.BANANA_PLACE_DIST, TRAP_DONUT: C.DONUT_THROW_DIST}.get(kind, C.TRAP_PLACE_DIST)
+        x = p.x + math.cos(p.ang) * dist
+        y = p.y + math.sin(p.ang) * dist
+        if kind == TRAP_DONUT:
+            # thrown: it lands where the street lets it
+            d = self.map.ray_clear(p.x, p.y, p.ang, dist, step=0.25)
+            x, y = p.x + math.cos(p.ang) * max(0.5, d - 0.5), p.y + math.sin(p.ang) * max(0.5, d - 0.5)
         if self.map.solid_at(x, y):
             self.toast("CAN'T PUT IT THERE", T_INFO)
             return
@@ -1301,8 +1288,12 @@ class World(Physics, Brawl):
         self.sfx(S_TRAP, x, y)
         if kind == TRAP_SPIKES:
             self.toast("SPIKE STRIP DOWN. TYRES BEWARE.", T_INFO)
-        else:
+        elif kind == TRAP_BLOCK:
             self.toast("ROADBLOCK UP. NOBODY'S GETTING THROUGH HERE.", T_INFO)
+        elif kind == TRAP_DONUT:
+            t.uses = C.DONUT_COPS
+            self.sfx(S_WHOOSH, p.x, p.y)
+            self.toast("A BOX OF DONUTS LANDS IN THE STREET. SOMEWHERE, A SIREN SLOWS DOWN.", T_INFO)
 
     def _rebuild_trap_rects(self):
         self.extra_rects = [t.rect() for t in self.traps.values() if t.kind == TRAP_BLOCK]
@@ -1335,11 +1326,17 @@ class World(Physics, Brawl):
                                     self.toast("SPIKED A COP CAR. BEAUTIFUL.", T_COP)
                 if len(t.hit) >= t.uses and t.age < C.TRAP_LIFETIME - 1.0:
                     t.age = C.TRAP_LIFETIME - 1.0          # worn out: gone in a second
+            elif t.kind == TRAP_BANANA:
+                if self._banana(t):
+                    dead.append(t.id)
+            elif t.kind == TRAP_DONUT:
+                if t.uses <= 0:
+                    dead.append(t.id)
             else:
                 # anything that ploughs into a roadblock hard enough turns it into kindling
                 for car in self.cars.values():
-                    if car.impact_dv >= C.ROADBLOCK_BREAK_DV and \
-                            obb_rect_contact(car.x, car.y, car.ang, (rx - 0.3, ry - 0.3, rw + 0.6, rh + 0.6)):
+                    if car.impact_dv >= C.ROADBLOCK_BREAK_DV and obb_rect_contact(
+                            car.x, car.y, car.ang, (rx - 0.3, ry - 0.3, rw + 0.6, rh + 0.6), car.hl, car.hw):
                         dead.append(t.id)
                         self.sfx(S_CRASH_BIG, t.x, t.y)
                         self.toast("THE ROADBLOCK IS NOW MATCHSTICKS", T_INFO)
@@ -1348,6 +1345,37 @@ class World(Physics, Brawl):
             for tid in dead:
                 self.traps.pop(tid, None)
             self._rebuild_trap_rects()
+
+    def _banana(self, t):
+        """A banana peel on the road. Returns True once somebody's found it."""
+        r = C.BANANA_R
+        for car in self.cars.values():
+            if car.speed() < 3 or abs(car.x - t.x) > car.bound + r or abs(car.y - t.y) > car.bound + r:
+                continue
+            if box_distance(car, t.x, t.y) < r:
+                car.spin_t = C.BANANA_SPIN_TIME
+                car.w += C.BANANA_SPIN_KICK * self.rng.choice((-1, 1))
+                self.sfx(S_SLIP, t.x, t.y)
+                self.toast("SKRRRRT! %s" % ("A COP CAR HIT A BANANA PEEL. JUSTICE IS BLIND."
+                                           if car.kind == COP else "BANANA PEEL. OLDEST TRICK IN THE BOOK."), T_INFO)
+                return True
+        for p in self.players.values():
+            if p.state == FOOT and p.z < 0.3 and (p.x - t.x) ** 2 + (p.y - t.y) ** 2 < (r + 0.3) ** 2 \
+                    and math.hypot(p.vx, p.vy) > 1.0:
+                self._hurt_player(p, p.vx * 0.8, p.vy * 0.8, C.BANANA_SLIP_TUMBLE, BN_HUMBLED, vz=3.0)
+                self.sfx(S_SLIP, t.x, t.y)
+                self.toast("%s SLIPPED ON A BANANA PEEL. A CLASSIC." % p.name, T_WHITE)
+                return True
+        for n in self.npcs.values():
+            if n.tumble_t <= 0 and n.carried_by is None and (n.x - t.x) ** 2 + (n.y - t.y) ** 2 < (r + 0.3) ** 2 \
+                    and math.hypot(n.vx, n.vy) > 0.5:
+                self._knock_down_npc(n, n.vx, n.vy, C.BANANA_SLIP_TUMBLE * 1.5, vz=3.0)
+                self.sfx(S_SLIP, t.x, t.y)
+                if n.complain_cd <= 0:
+                    n.complain_cd = 3.0
+                    self.toast("PEDESTRIAN: WHO LEAVES A BANANA ON THE SIDEWALK?!", T_WHITE)
+                return True
+        return False
 
     # ------------------------------------------------------------------ horns
     def _horns(self, dt):
@@ -1367,6 +1395,7 @@ class World(Physics, Brawl):
     # ------------------------------------------------------------------ cop AI
     def _cop_ai(self, cop, dt):
         cop.horn = False
+        cop.gun_cd -= dt
         if cop.fire_t > 0:
             cop.throttle, cop.steer, cop.handbrake = 0.0, 0.0, False
             return
@@ -1374,13 +1403,42 @@ class World(Physics, Brawl):
             # donuts. Professional, taxpayer-funded donuts.
             cop.throttle, cop.steer, cop.handbrake = 0.8, 1.0, True
             return
+        if cop.donut_t > 0:
+            # actual donuts. Do not disturb.
+            cop.donut_t -= dt
+            vf = cop.vx * math.cos(cop.ang) + cop.vy * math.sin(cop.ang)
+            cop.throttle, cop.steer, cop.handbrake = (-1.0 if vf > 0.5 else 0.0), 0.0, True
+            return
         spd = cop.speed()
-        target = None
-        bd = 1e9
-        for t in self.targets:
-            d = math.hypot(t[0] - cop.x, t[1] - cop.y)
-            if d < bd:
-                target, bd = t, d
+        box = self._donut_for(cop)
+        if box is not None:
+            d = math.hypot(box.x - cop.x, box.y - cop.y)
+            if d < 4.5 and spd < 4.0:
+                cop.donut_t = C.DONUT_EAT_TIME
+                box.uses -= 1
+                self.sfx(S_MUNCH, cop.x, cop.y)
+                self.toast("A COP PULLED OVER FOR DONUTS. OFFICER IS ON A BREAK.", T_COP)
+                return
+            target = (box.x, box.y, 0.0, 0.0, False, box)
+        else:
+            target = None
+            bd = 1e9
+            for t in self.targets:
+                d = math.hypot(t[0] - cop.x, t[1] - cop.y)
+                if d < bd:
+                    target, bd = t, d
+            if cop.patrol:
+                seen = target is not None and self.heat > 0 and bd < C.WITNESS_RANGE_COP and \
+                    self.map.los(cop.x, cop.y, target[0], target[1])
+                if not seen:
+                    self._traffic_ai(cop, dt)      # just doing laps. Totally not looking for you.
+                    return
+                cop.patrol = False
+                self.toast("A PATROL CAR SPOTTED YOU! LIGHTS ON!", T_COP)
+            if target is not None and not target[4] and bd < C.COP_GUN_RANGE and self.heat >= C.COP_SHOOT_HEAT \
+                    and cop.gun_cd <= 0 and self.map.los(cop.x, cop.y, target[0], target[1]):
+                cop.gun_cd = C.COP_GUN_COOLDOWN
+                self._cop_shoot(cop, target[5], bd)
         if target is None:
             if cop.last_target is None:
                 cop.throttle, cop.steer, cop.handbrake = 0.0, 0.0, False
@@ -1456,6 +1514,63 @@ class World(Physics, Brawl):
                 cop.steer = -cop.steer    # reversing with opposite lock swings the nose round
         else:
             cop.stuck_t = 0.0
+
+    def _donut_for(self, cop):
+        """The nearest box of donuts this cop can smell, if any."""
+        best, bd = None, C.DONUT_LURE_RADIUS
+        for t in self.traps.values():
+            if t.kind == TRAP_DONUT and t.uses > 0:
+                d = math.hypot(t.x - cop.x, t.y - cop.y)
+                if d < bd:
+                    best, bd = t, d
+        return best
+
+    def _cop_shoot(self, cop, q, d):
+        """High heat: the police have stopped asking nicely."""
+        a = math.atan2(q.y - cop.y, q.x - cop.x)
+        self.sfx(S_PISTOL, cop.x, cop.y)
+        if self.rng.random() < C.COP_GUN_ACCURACY and q.state == FOOT:
+            self.tracer(ARM_PISTOL, cop.x, cop.y, q.x, q.y)
+            self._hurt_player(q, math.cos(a) * 7, math.sin(a) * 7, C.SHOT_PLAYER_TUMBLE, BN_HUMBLED)
+            self.toast("THE POLICE SHOT %s. STAY DOWN!" % q.name, T_COP)
+        else:
+            miss = a + self.rng.uniform(-0.3, 0.3)
+            self.tracer(ARM_PISTOL, cop.x, cop.y, cop.x + math.cos(miss) * (d + 5), cop.y + math.sin(miss) * (d + 5))
+
+    def _patrol_fleet(self, dt):
+        """PATROL_COPS cruisers are always somewhere nearby, doing laps."""
+        beat = [c for c in self.cars.values() if c.kind == COP and c.beat]
+        if self.players:
+            for car in beat:
+                if car.patrol and min(math.hypot(p.x - car.x, p.y - car.y)
+                                      for p in self.players.values()) > C.PATROL_RECYCLE_DIST:
+                    del self.cars[car.id]
+                    beat.remove(car)
+                    break
+        if len(beat) >= self.patrol_target or not self.players:
+            return
+        self.patrol_t -= dt
+        if self.patrol_t <= 0:
+            self.patrol_t = 3.0
+            car = self._spawn_traffic(kind=COP, dist=C.PATROL_SPAWN_DIST)
+            if car is not None:
+                car.patrol = car.beat = True
+
+    def _back_on_patrol(self, car):
+        """Heat's gone: a patrol unit rejoins the grid wherever it happens to be."""
+        car.patrol = True
+        car.last_target = None
+        T = C.TILE_M
+        i = int(round((car.x / T - C.ROAD_TILES / 2.0) / C.PITCH))
+        j = int(round((car.y / T - C.ROAD_TILES / 2.0) / C.PITCH))
+        fx, fy = math.cos(car.ang), math.sin(car.ang)
+        for d in sorted(DIRS, key=lambda d: -(d[0] * fx + d[1] * fy)):
+            ni, nj = i + d[0], j + d[1]
+            if self.map.node_ok(ni, nj):
+                car.tdir, car.node = d, (ni, nj)
+                car.route = [self._lane_point(ni, nj, d, -8.0)]
+                car.route_prev = (car.x, car.y)
+                return
 
     # ------------------------------------------------------------------ car physics
     def _physics_cars(self, dt):
@@ -1567,6 +1682,8 @@ class World(Physics, Brawl):
         if p.state in (DRIVER, PASSENGER, CARRIED):
             return                     # (carried: _update_carries puts you on a shoulder)
         b = p.input.buttons
+        if p.menu:
+            b = 0                      # browsing spoilers, not walking
         if p.state == TUMBLE:
             p.tumble_t -= dt
             p.spin += p.spin_rate * dt
@@ -1595,9 +1712,14 @@ class World(Physics, Brawl):
             if hit is not None and p.state != TUMBLE:
                 rel, cvx, cvy, nx, ny = hit
                 if rel > C.BODY_HIT_SPEED:
+                    self._drop_carry(p, throw=False)
                     self._tumble(p, cvx * 0.8 + nx * 3, cvy * 0.8 + ny * 3,
                                  lerp(1.2, 2.8, clamp(rel / 30.0, 0, 1)))
                     self.sfx(S_YELP, p.x, p.y)
+                    if rel > C.YEET_SPEED:
+                        p.vz = min(9.0, rel * 0.3)            # up and over the bonnet
+                        p.z = 0.05
+                        self._banner(p, BN_YEETED)
 
     # ------------------------------------------------------------------ NPCs
     def _update_npcs(self, dt):
@@ -1652,8 +1774,20 @@ class World(Physics, Brawl):
                 n.spin = 0.0
                 if n.flee_t <= 0:
                     n.turn_t = 0.0        # pick a fresh stroll direction
+            elif n.kind == PED and n.lure is not None:
+                lx, ly = n.lure
+                dx, dy = lx - n.x, ly - n.y
+                d = math.hypot(dx, dy) or 1.0
+                n.vx, n.vy = ((dx / d * C.PED_SPEED, dy / d * C.PED_SPEED) if d > 3.5 else (0.0, 0.0))
+                n.spin = 0.0
+                n.turn_t -= dt
+                if n.turn_t <= 0:
+                    n.turn_t = 1.0
+                    self._icecream_lure(n)
             elif n.kind == PED:
                 n.turn_t -= dt
+                if int(n.turn_t * 4) != int((n.turn_t + dt) * 4):
+                    self._icecream_lure(n)               # (~4 times a second, cheaply)
                 nxp = n.x + n.dirx * 1.2
                 nyp = n.y + n.diry * 1.2
                 t = m.tile_at(nxp, nyp)
@@ -1722,9 +1856,16 @@ class World(Physics, Brawl):
     # ------------------------------------------------------------------ pickups
     def _update_pickups(self, dt):
         self._fly_pickups(dt)
+        self.gnome_t -= dt
+        if self.gnome_t <= 0:
+            self.gnome_t = C.GNOME_RESPAWN
+            if sum(1 for q in self.pickups.values() if q.fixed) < C.GNOME_COUNT:
+                self._spawn_gnome()
         dead = []
         m = self.map
         for pk in self.pickups.values():
+            if pk.fixed:
+                continue                  # garden gnomes are forever (until stolen)
             pk.age += dt
             if pk.age >= C.PICKUP_LIFETIME:
                 dead.append(pk.id)
@@ -1759,6 +1900,7 @@ class World(Physics, Brawl):
                     self._explode(car)
 
     def _explode(self, car):
+        self._spill_trunk(car, speed=9.0)
         self.sfx(S_BOOM, car.x, car.y)
         self._scare(car.x, car.y, C.PED_FLEE_CRASH_RADIUS * 1.5)
         self.toast("KA-BOOM! COP CAR PARTS EVERYWHERE!", T_COP)
@@ -1852,7 +1994,7 @@ class World(Physics, Brawl):
             return W_NONE, 0.0
         los = self.map.los
         best_kind, best = W_NONE, 0.0
-        cops = [c for c in self.cars.values() if c.kind == COP and c.fire_t <= 0]
+        cops = [c for c in self.cars.values() if c.kind == COP and c.fire_t <= 0 and c.donut_t <= 0]
         for cop in cops:
             for t in self.targets:
                 dx, dy = t[0] - cop.x, t[1] - cop.y
@@ -1861,8 +2003,8 @@ class World(Physics, Brawl):
         r2o = C.WITNESS_RANGE_OWNER ** 2
         r2p = C.WITNESS_RANGE_PED ** 2
         for n in self.npcs.values():
-            if n.tumble_t > 0 or n.kind == CLOWN:
-                continue
+            if n.tumble_t > 0 or n.kind == CLOWN or n.lure is not None or n.laugh_t > 0 or n.carried_by is not None:
+                continue              # (queueing for ice cream / laughing at your dance / over your shoulder)
             r2 = r2o if n.kind == OWNER else r2p
             for t in self.targets:
                 dx, dy = t[0] - n.x, t[1] - n.y
@@ -1880,30 +2022,43 @@ class World(Physics, Brawl):
 
     # ------------------------------------------------------------------ cops lifecycle
     def _cops_lifecycle(self, dt):
+        """A wanted level, GTA-style: more heat, more units (v0.7: up to 5, plus
+        the patrols). Units keep coming until heat is 0, then go home -- or,
+        if they're a patrol car, back to doing laps."""
         cops = [c for c in self.cars.values() if c.kind == COP]
+        units = [c for c in cops if not c.beat]
         self.cop_spawn_t -= dt
-        if self.heat >= C.HEAT_MAX - 1e-6:
-            if not self.dispatched:
-                self.toast("HEAT MAXED! DISPATCH IS SENDING UNITS", T_COP)
-            self.dispatched = True
-        elif self.heat <= 0:
-            self.dispatched = False
-        # once dispatched, units keep coming (2 s apart, max 2) until heat is 0
-        if self.dispatched and len(cops) < C.MAX_COPS and self.cop_spawn_t <= 0:
+        want = 0
+        if self.heat > 0:
+            for level, n in C.COP_TIERS:
+                if self.heat >= level:
+                    want = n
+            want = max(want, self.wanted_level if self.dispatched else 0)
+        if want > self.wanted_level:
+            self.toast("WANTED LEVEL %d: %s" % (want, "DISPATCH IS SENDING UNITS" if want > 1 else
+                                                "A CAR IS ON ITS WAY"), T_COP)
+        self.wanted_level = want
+        self.dispatched = want > 0
+        # units come 2 s apart until there are enough for this heat
+        if want and len(units) < min(want, C.MAX_COPS) and self.cop_spawn_t <= 0:
             if self.spawn_cop():
                 self.cop_spawn_t = C.COP_SPAWN_GAP
         if self.heat <= 0:
             self.heat_zero_t += dt
-            calm = [c for c in cops if c.fire_t <= 0]
+            calm = [c for c in cops if c.fire_t <= 0 and not c.patrol]
             if self.heat_zero_t >= C.COP_DESPAWN_AT_ZERO and calm:
                 for c in calm:
-                    del self.cars[c.id]
+                    if c.beat:
+                        self._back_on_patrol(c)
+                    else:
+                        del self.cars[c.id]
                 self.toast("THE COPS LOST INTEREST. DONUT BREAK.", T_COP)
         else:
             self.heat_zero_t = 0.0
 
     def _arrests(self, dt):
-        cops = [c for c in self.cars.values() if c.kind == COP and c.fire_t <= 0]
+        cops = [c for c in self.cars.values() if c.kind == COP and c.fire_t <= 0 and c.donut_t <= 0
+                and not c.patrol]
         for p in self.players.values():
             if p.state not in (FOOT, TUMBLE) or not cops or self.heat <= 0 or self.map.in_garage(p.x, p.y):
                 p.arrest_t = 0.0
@@ -2003,7 +2158,7 @@ class World(Physics, Brawl):
         lo = C.TRAFFIC_LANE_OFFSET
         return cx + d[0] * along - d[1] * lo, cy + d[1] * along + d[0] * lo
 
-    def _spawn_traffic(self, ignore_players=False):
+    def _spawn_traffic(self, ignore_players=False, kind=TRAFFIC, dist=None):
         m = self.map
         for _ in range(40):
             i, j = self.rng.randrange(C.BLOCKS + 1), self.rng.randrange(C.BLOCKS + 1)
@@ -2017,14 +2172,18 @@ class World(Physics, Brawl):
             x, y = ax + (bx - ax) * t, ay + (by - ay) * t
             if self.players and not ignore_players:
                 near = min(math.hypot(p.x - x, p.y - y) for p in self.players.values())
-                if near < C.TRAFFIC_SPAWN_MIN_DIST or near > C.TRAFFIC_RECYCLE_DIST - 25.0:
+                lo, hi = dist or (C.TRAFFIC_SPAWN_MIN_DIST, C.TRAFFIC_RECYCLE_DIST - 25.0)
+                if near < lo or near > hi:
                     continue
             if any(abs(c.x - x) < 9.0 and abs(c.y - y) < 9.0 for c in self.cars.values()):
                 continue
-            mid = V.pick_model(self.rng, traffic=True)
-            car = Car(self.new_id(), TRAFFIC, x, y, math.atan2(d[1], d[0]), model_loadout(self.rng, mid),
-                      color=self.rng.randrange(1, len(V.PAINT_NAMES)), model=mid)
-            self._dress(car)
+            if kind == COP:
+                car = Car(self.new_id(), COP, x, y, math.atan2(d[1], d[0]), cop_loadout(self.rng))
+            else:
+                mid = V.pick_model(self.rng, traffic=True)
+                car = Car(self.new_id(), TRAFFIC, x, y, math.atan2(d[1], d[0]), model_loadout(self.rng, mid),
+                          color=self.rng.randrange(1, len(V.PAINT_NAMES)), model=mid)
+                self._dress(car)
             car.pull = self.rng.choice((-1.0, 1.0))
             car.vx, car.vy = d[0] * C.TRAFFIC_SPEED * 0.8, d[1] * C.TRAFFIC_SPEED * 0.8
             car.tdir, car.node = d, (i, j)
@@ -2140,7 +2299,10 @@ class World(Physics, Brawl):
             car.throttle, car.steer = 0.0, 0.0
             return
         if car.missing_wheels() >= 2:
-            self._traffic_bail(car)             # riding on rims: the driver's done
+            if car.kind == TRAFFIC:
+                self._traffic_bail(car)         # riding on rims: the driver's done
+            else:
+                car.throttle, car.steer = 0.0, 0.0   # a patrol car on rims: radioing for a tow
             return
         if car.shaken_t > 0:
             # somebody hit them. They sit there. They honk. It's what we'd all do.

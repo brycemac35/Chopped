@@ -46,6 +46,7 @@ def world(traffic=False):
     w = S.World(map_seed=4242, rng_seed=1)
     w.npcs.clear()
     w.map.cameras = []
+    w.patrol_target = 0
     if not traffic:
         w.traffic_target = 0
         for cid in [c.id for c in w.cars.values() if c.kind == S.TRAFFIC]:
@@ -115,17 +116,20 @@ class TestFistsAndRobbing(unittest.TestCase):
         w.step(DT)
         self.assertEqual(b.state, S.TUMBLE)
 
-    def test_hands_full_means_no_fighting(self):
+    def test_hands_full_click_throws_it(self):
         w = world()
         p = w.add_player("BRYCE")
         p.x, p.y = street(w)
-        n = ped(w, p.x + 1.2, p.y)
-        p.hands = [Part("door_stock")]
+        n = ped(w, p.x + 5.0, p.y)
+        door = Part("door_stock")
+        p.hands = [door]
         face(p, n.x, n.y)
         click(p)
         w.step(DT)
-        self.assertEqual(n.tumble_t, 0.0)
-
+        self.assertEqual(p.hands, [], "click with full hands: it leaves them")
+        step(w, 0.5)
+        self.assertGreater(n.tumble_t, 0, "a door to the chest")
+        self.assertTrue(any(pk.part is door for pk in w.pickups.values()), "and it's on the floor now")
 
 class TestGuns(unittest.TestCase):
     def test_buy_a_pistol_at_the_black_market(self):
@@ -328,14 +332,14 @@ class TestProtocol(unittest.TestCase):
         w = world()
         p = w.add_player("BRYCE")
         armed(p, shotgun=True)
-        p.gear = [2, 1]
+        p.gear = [2, 1, 0, 0]
         p.weapon = S.ARM_SHOTGUN
         p.x, p.y = street(w)
         p.ang = 0.0
         w._place_trap(p, S.TRAP_SPIKES)
         w.tracer(S.ARM_PISTOL, p.x, p.y, p.x + 10, p.y + 1)
         snap = P.decode_snapshot(P.encode_snapshot(w, p.id, 0, 0)[P.HDR.size:])
-        self.assertEqual(snap.arsenal, (S.ARM_SHOTGUN, p.arms, 24, 10, 1, 1))
+        self.assertEqual(snap.arsenal, (S.ARM_SHOTGUN, p.arms, 24, 10, 1, 1, 0, 0))
         self.assertEqual(len(snap.traps), 1)
         self.assertEqual(snap.players[p.id][14], S.ARM_SHOTGUN)
         shots = [e for e in snap.events if e[1] == 2]

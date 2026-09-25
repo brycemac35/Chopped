@@ -12,8 +12,9 @@ import struct
 import zlib
 
 from . import config as C
-from .parts import SLOTS, PART_INDEX, NO_PART
-from .sim import COP, TRAFFIC, TUMBLE, FOOT, DRIVER
+from .parts import SLOTS, PART_INDEX, PART_IDS, NO_PART
+from .garage import encode_menu, decode_menu
+from .sim import COP, TRAFFIC, TUMBLE, FOOT, DRIVER, PASSENGER
 from . import vehicles as V
 
 MAGIC = b"CH"
@@ -22,9 +23,9 @@ P_JOIN, P_WELCOME, P_REJECT, P_INPUT, P_SNAPSHOT, P_LEAVE, P_SHUTDOWN = range(1,
 HDR = struct.Struct("<2sBB")
 JOIN = struct.Struct("<IB")               # nonce, is_local
 WELCOME = struct.Struct("<BII")           # pid, map_seed, nonce
-INPUT = struct.Struct("<IIIHBBBHBBBBB")   # seq, client_ms, ack_event, buttons (16 bits), use, drop, exit,
+INPUT = struct.Struct("<IIIHBBBHBBBBBB")  # seq, client_ms, ack_event, buttons (16 bits), use, drop, exit,
                                           # yaw16, fire (click counter), weapon slot,
-                                          # mod-shop command: counter, op, arg
+                                          # mod-shop command: counter, op, arg, arg2
 
 SNAP_HDR = struct.Struct("<IIBiHHBBBBHBBIHI")
 # tick, echo_ms, your_pid, cash, day_left_ds, debt_ds, heat, witness(|128 cooling),
@@ -43,6 +44,9 @@ SELF_EXTRA = struct.Struct("<fffffffB")
 # driving: steer angle, grip, mass, top-speed multiplier, NOS fuel, banana spin left, inertia, flags (1 = NOS fitted)
 # on foot: height, vertical speed, 0, 0, 0, 0, 0, flags
 ME_NONE, ME_FOOT, ME_DRIVER = 0, 1, 2
+# ...then 8 bytes of arsenal, then a byte saying which optional blocks follow:
+SB_TRUNK, SB_MENU = 1, 2
+TRUNK_HDR = struct.Struct("<HBBB")      # car id, capacity, used, item count; then (part, style) per item
 SF_EXHAUSTED = 1
 SX_NOS = 1
 COUNTS = struct.Struct("<BBBBBBB")
@@ -122,10 +126,26 @@ def encode_text(s, maxlen=80):
 # ---------------------------------------------------------------------------
 def encode_self(world, me):
     """The SELF block: exactly what the client's Predictor needs to rewind to,
-    plus your arsenal (only you need to know how many bullets you've got)."""
-    arsenal = (me.weapon, me.arms, min(255, me.ammo[1]), min(255, me.ammo[2]), me.gear[0], me.gear[1]) \
-        if me is not None else (0, 1, 0, 0, 0, 0)
-    return _encode_motion(world, me) + _encode_extra(world, me) + bytes(arsenal)
+    plus your arsenal (only you need to know how many bullets you've got), plus
+    (v0.7) the trunk you're looking into and, in the mod shop, the menu."""
+    arsenal = (me.weapon, me.arms, min(255, me.ammo[1]), min(255, me.ammo[2])) + \
+        tuple(min(255, g) for g in (list(me.gear) + [0, 0, 0, 0])[:4]) if me is not None else (0, 1, 0, 0, 0, 0, 0, 0)
+    out = [_encode_motion(world, me), _encode_extra(world, me), bytes(arsenal)]
+    blocks = 0
+    tail = []
+    if me is not None:
+        tcar = world.cars.get(me.car_id) if me.state in (DRIVER, PASSENGER) else world.cars.get(me.trunk_view)
+        if tcar is not None:
+            blocks |= SB_TRUNK
+            items = tcar.trunk[:12]
+            tail.append(TRUNK_HDR.pack(tcar.id, V.model(tcar.model).trunk, tcar.trunk_used(), len(items)) +
+                        b"".join(bytes((PART_INDEX[q.type_id], q.style & 255)) for q in items))
+        if me.menu:
+            blocks |= SB_MENU
+            tail.append(encode_menu(world, me))
+    out.append(bytes((blocks,)))
+    out.extend(tail)
+    return b"".join(out)
 
 
 def _encode_extra(world, me):
@@ -160,7 +180,7 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
     tuck in their private prompt text and prediction state."""
     me = world.players.get(pid)
     px, py = (me.x, me.y) if me else world.map.garage_center
-    cops = sum(1 for c in world.cars.values() if c.kind == COP)
+    cops = sum(1 for c in world.cars.values() if c.kind == COP and not c.patrol)   # (chasing, not cruising)
     wit = world.witness | (128 if world.witness_rate <= 0 and world.heat > 0 and
                            world.unseen_t >= C.HEAT_COOL_DELAY else 0)
     head = SNAP_HDR.pack(
@@ -250,7 +270,7 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
         else:
             w, x0, y0, x1, y1 = payload
             evs.append(EV.pack(seq, 2) + EV_SHOT.pack(w, _pos(x0), _pos(y0), _pos(x1), _pos(y1)))
-        if len(evs) >= 10:
+        if len(evs) >= C.EVENTS_PER_SNAPSHOT:
             break
 
     n_np, n_pk = min(len(npcs), 60), min(len(picks), 120)
@@ -273,7 +293,7 @@ class Snapshot:
     __slots__ = ("tick", "time", "echo_ms", "pid", "cash", "rent", "debt", "heat", "witness",
                  "cooling", "cops", "gameover", "run", "hold", "nplayers", "prompt", "ack_input", "day",
                  "rent_due",
-                 "me", "me2", "arsenal", "cars", "players", "npcs", "pickups", "dollies", "traps", "events", "arrival")
+                 "me", "me2", "arsenal", "trunk", "menu", "cars", "players", "npcs", "pickups", "dollies", "traps", "events", "arrival")
 
 
 def _text(data, off):
@@ -297,9 +317,20 @@ def decode_snapshot(payload):
     off += SELF_MOTION.size
     s.me2 = SELF_EXTRA.unpack_from(data, off)
     off += SELF_EXTRA.size
-    # (weapon, arms bitmask, pistol ammo, shotgun ammo, spike strips, roadblocks)
-    s.arsenal = tuple(data[off:off + 6])
-    off += 6
+    # (weapon, arms bitmask, pistol ammo, shotgun ammo, spike strips, roadblocks, bananas, donuts)
+    s.arsenal = tuple(data[off:off + 8])
+    off += 8
+    blocks = data[off]
+    off += 1
+    s.trunk = s.menu = None
+    if blocks & SB_TRUNK:
+        cid, cap, used, n = TRUNK_HDR.unpack_from(data, off)
+        off += TRUNK_HDR.size
+        items = [(PART_IDS[data[off + 2 * k]], data[off + 2 * k + 1]) for k in range(n)]
+        off += 2 * n
+        s.trunk = (cid, cap, used, items)
+    if blocks & SB_MENU:
+        s.menu, off = decode_menu(data, off)
     nc, npl, nn, npk, nev, ndl, ntr = COUNTS.unpack_from(data, off)
     off += COUNTS.size
     s.cars = {}

@@ -597,7 +597,7 @@ class SpriteBank:
         (cid, kind, color, state, flags, mask, styles, x, y, vx, vy, _a, drv, psg, dmg,
          model, livery, extras, extras2) = row[:19]
         lights = (phase if kind == COP else 0) | (2 if flags & 1 and phase else 0) | (4 if extras & 8 else 0)
-        key = (kind, color, mask, styles, dmg, lights, model, livery, extras & 8, extras2 & 1)
+        key = (kind, color, mask, styles, dmg, lights, model, livery, extras & 0xF8, extras2 & 1)
         base = self.cars.get(key)
         if base is None:
             if len(self.cars) > 400:

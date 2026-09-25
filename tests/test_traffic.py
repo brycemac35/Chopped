@@ -29,6 +29,7 @@ def lone_traffic_car(w):
     w.npcs.clear()
     w.map.cameras = []
     w.traffic_target = 0
+    w.patrol_target = 0
     for c in traffic(w):
         del w.cars[c.id]
     shop_i = C.BLOCKS // 2
@@ -159,6 +160,7 @@ class TestFleeingPedestrians(unittest.TestCase):
     def test_speeding_car_sends_pedestrian_diving(self):
         w = S.World(map_seed=99, rng_seed=5)
         w.traffic_target = 0
+        w.patrol_target = 0
         for c in traffic(w):
             del w.cars[c.id]
         ped = self._ped_on_sidewalk(w)

@@ -13,6 +13,7 @@ import pygame
 
 from . import config as C
 from . import sim as S
+from . import protocol as PR
 from . import vehicles as V
 from . import art
 from .art import P, PixelFont
@@ -22,6 +23,7 @@ from .net import Server, Client, get_lan_ips
 from .render import Renderer
 from .fp import FPRenderer
 from .doomhud import DoomHud, VIEW_H
+from .modshop import ModShop
 from .ui import Menu
 from .upnp import UPnP
 
@@ -82,7 +84,7 @@ class Bot:
             if r.random() < 0.35:
                 self.fire += 1                 # trigger discipline: none
             if r.random() < 0.1:
-                self.weapon = r.randrange(5)   # the server ignores what it doesn't own
+                self.weapon = r.randrange(S.ARM_COUNT)   # the server ignores what it doesn't own
             self.turn = r.choice((0.0, 0.0, -2.0, 2.0))
         return self.buttons, self.use, self.drop, self.exit, self.yaw, self.fire, self.weapon
 
@@ -126,6 +128,8 @@ class App:
         self.yaw = 0.0                 # where you're looking (first person); sent with every input
         self.pitch = 0.0               # looking up/down, in pixels of horizon shift (client-only)
         self.chase = False             # V: third-person chase camera when driving
+        self.modshop = ModShop(self.font)
+        self.horn_heard = None
         self.cam_yaw = None            # the chase camera's own, lagging, heading
         self.cam_orbit = 0.0           # mouse-look around the car in chase view
         self.orbit_idle = 0.0
@@ -231,7 +235,7 @@ class App:
     def _grab_mouse(self, on):
         """Mouse look: hide + grab the cursor (SDL then gives relative motion).
         Released whenever a menu is up, so the cursor isn't held hostage."""
-        on = bool(on) and not self.selftest and self.state == "play" and not self.paused
+        on = bool(on) and not self.selftest and self.state == "play" and not self.paused and not self.modshop.open
         if on == self.mouse_grabbed:
             return
         self.mouse_grabbed = on
@@ -293,6 +297,9 @@ class App:
             elif self.state == "connecting":
                 if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
                     self.leave("CANCELLED")
+            elif self.state == "play" and self.modshop.open and not self.paused and \
+                    ev.type in (pygame.KEYDOWN, pygame.MOUSEWHEEL) and self.modshop.handle(ev):
+                pass                               # the mod shop ate it
             elif self.state == "play" and ev.type == pygame.MOUSEBUTTONDOWN and not self.paused:
                 if not self.mouse_grabbed:
                     self._grab_mouse(True)      # clicked back into the window; that click isn't a punch
@@ -315,6 +322,10 @@ class App:
                         self.exit_c += 1
                     elif ev.key == pygame.K_TAB:
                         self.fp_mode = not self.fp_mode
+                    elif ev.key == pygame.K_F9 and self.fp is not None:
+                        self.fp.big_heads = not self.fp.big_heads
+                        self.hud.add_toast("BIG HEAD MODE: %s" % ("ON. OBVIOUSLY." if self.fp.big_heads else "OFF"),
+                                           S.T_INFO, time.perf_counter())
                     elif ev.key == pygame.K_v:
                         self.chase = not self.chase
                         self.cam_yaw = None
@@ -323,7 +334,7 @@ class App:
                                                S.T_INFO, time.perf_counter())
                     elif ev.key in (pygame.K_LCTRL, pygame.K_RCTRL):
                         self._fire()
-                    elif pygame.K_1 <= ev.key <= pygame.K_5:
+                    elif pygame.K_1 <= ev.key <= pygame.K_7:
                         self._select_weapon(ev.key - pygame.K_1)
                     elif ev.key == pygame.K_q:
                         self._cycle_weapon(1)
@@ -346,8 +357,8 @@ class App:
 
     def _cycle_weapon(self, step):
         ars = self._arsenal()
-        for k in range(1, 6):
-            slot = (self.weapon + step * k) % 5
+        for k in range(1, S.ARM_COUNT + 1):
+            slot = (self.weapon + step * k) % S.ARM_COUNT
             if S.arsenal_owns(ars, slot):
                 self.weapon = slot
                 return
@@ -376,8 +387,10 @@ class App:
             self.weapon = w
             return S.InputState(b, u, d, e, yaw, f, w)
         weapon = self._held_weapon()
-        if self.paused:
-            return S.InputState(0, self.use_c, self.drop_c, self.exit_c, self.yaw, self.fire_c, weapon)
+        mseq, mop, ma, mb = self.modshop.next_command()
+        if self.paused or self.modshop.open:
+            return S.InputState(0, self.use_c, self.drop_c, self.exit_c, self.yaw, self.fire_c, weapon,
+                                mseq, mop, ma, mb)
         me = view.me if view is not None else None
         in_car = me is not None and me[2] in (S.DRIVER, S.PASSENGER)
         k = pygame.key.get_pressed()
@@ -409,7 +422,8 @@ class App:
             turn = (1 if k[pygame.K_RIGHT] else 0) - (1 if k[pygame.K_LEFT] else 0)
             self.yaw = (self.yaw + turn * C.FP_TURN_SPEED * dt + rel * C.MOUSE_SENS) % (2 * math.pi)
             self._look_updown(rely)
-        return S.InputState(b, self.use_c, self.drop_c, self.exit_c, self.yaw, self.fire_c, weapon)
+        return S.InputState(b, self.use_c, self.drop_c, self.exit_c, self.yaw, self.fire_c, weapon,
+                            mseq, mop, ma, mb)
 
     def _look_updown(self, rely):
         lim = VIEW_H * C.PITCH_LIMIT
@@ -468,6 +482,11 @@ class App:
             self.leave(c.error or "DISCONNECTED")
             return
         self.snapshots_seen = c.latest.tick if c.latest else 0
+        if c.latest is not None:
+            was = self.modshop.open
+            self.modshop.sync(getattr(c.latest, "menu", None))
+            if self.modshop.open != was:
+                self._grab_mouse(not self.modshop.open)
         if c.latest:
             self.max_players_seen = max(self.max_players_seen, c.latest.nplayers)
 
@@ -521,6 +540,12 @@ class App:
             low.blit(self.hud._panel(300, 8 * len(lines) + 4, 170), (W // 2 - 150, 64))
             for i, (l, col) in enumerate(lines):
                 self.font.draw(low, l, W // 2, 67 + i * 8, col, align="center")
+        if self.modshop.open:
+            self.modshop.draw(low, view.snap.cash, now)
+            if self.modshop.hover_horn != self.horn_heard:
+                self.horn_heard = self.modshop.hover_horn
+                if self.horn_heard is not None:
+                    self.audio.play_horn(self.horn_heard)       # try before you buy
         if self.paused:
             self.hud.draw_pause(low, info)
         self._audio_loops(view)
@@ -606,22 +631,28 @@ class App:
             a.set_loop("engine", 0.35, min(9, int(spd / 5)))
         else:
             a.set_loop("engine", 0)
-        alarm = horn = siren = fire = 0.0
+        alarm = horn = siren = fire = jingle = 0.0
+        horn_type = 0
         for c in view.cars.values():
             d = math.hypot(c[7] - mx, c[8] - my)
             v = max(0.0, 1.0 - d / 60.0)
             if c[4] & 1:
                 alarm = max(alarm, v)
-            if c[4] & 4:
-                horn = max(horn, v)
-            if c[1] == S.COP:
+            if c[4] & 4 and v > horn:
+                horn, horn_type = v, c[17] & 7
+            if c[1] == S.COP and not c[18] & PR.CX_PATROL:
                 siren = max(siren, max(0.0, 1.0 - d / 120.0))
             if c[4] & 2:
                 fire = max(fire, v)
+            if c[15] == V.ICECREAM and (c[12] or c[1] == S.TRAFFIC):
+                jingle = max(jingle, max(0.0, 1.0 - d / 50.0))    # it never stops. It never, ever stops.
         a.set_loop("alarm", alarm * 0.5)
-        a.set_loop("horn", horn * 0.7)
+        a.set_loop("horn", horn * 0.7, horn_type)
         a.set_loop("siren", siren * 0.5)
         a.set_loop("fire", fire * 0.8)
+        a.set_loop("jingle", jingle * 0.5)
+        mine = view.my_car
+        a.set_loop("nos", 0.6 if (mine is not None and me[2] == S.DRIVER and mine[17] & 8) else 0.0)
 
     def _present(self):
         sw, sh = self.screen.get_size()

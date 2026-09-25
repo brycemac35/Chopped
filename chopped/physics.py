@@ -240,7 +240,7 @@ class Physics:
         # ---- weight transfer from the pedals (throttle squats the rear, brakes dive the nose)
         g = C.GRAVITY
         wf = 0.6 if mdl.fwd else C.FRONT_WEIGHT
-        long_acc = (drive - (brake if vf > 0 else -brake)) / M
+        long_acc = clamp((drive - (brake if vf > 0 else -brake)) / M, -C.TRANSFER_MAX_G * g, C.TRANSFER_MAX_G * g)
         shift = M * long_acc * mdl.cg_h / (a + b) * C.WEIGHT_TRANSFER
         fz_f = max(0.15 * M * g, M * g * wf - shift)
         fz_r = max(0.15 * M * g, M * g * (1.0 - wf) + shift)

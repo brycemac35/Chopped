@@ -60,6 +60,7 @@ PREDICT_MAX_REPLAY = 90          # ticks of unacknowledged input we keep (1.5 s 
 PREDICT_OBSTACLE_RANGE = 14.0    # other cars this close are simulated as things to bump into
 MAX_PLAYERS = 4
 MAX_PACKET = 1150                # stay under typical MTU minus VPN/PPPoE overhead
+EVENTS_PER_SNAPSHOT = 6          # toasts/sounds per packet; the rest ride the next one (they're resent till acked)
 EVENT_KEEP_S = 4.0               # unacked events retried for this long, then we give up
 NET_CULL_RADIUS = 95.0           # peds/pickups farther than this aren't sent to you
 
@@ -83,7 +84,7 @@ JUMP_SPEED = 6.2                 # m/s straight up: ~0.9 m of air. Doomguy could
 JUMP_GRAVITY = 21.0              # snappier than real gravity; floaty jumps feel like the moon
 JUMP_STAMINA = 5.0               # per jump (bunny-hopping from the cops is a valid strategy)
 AIR_CONTROL = 3.0                # 1/s: how much you can steer mid-air (ground is 16)
-HURDLE_HEIGHT = 0.7              # over this, you clear a roadblock (it's 1 m; you tuck your knees)
+HURDLE_HEIGHT = 0.45             # over this, you clear a roadblock (it's 1 m; you tuck your knees)
 CAR_ROOF_Z = 1.6                 # people higher than this fly over cars instead of into them
 CHUTE_SINK = 2.2                 # m/s: parachute descent (ejector seat)
 INTERACT_RANGE_CAR = 3.2         # metres from car centre for door stuff
@@ -138,16 +139,19 @@ WHEELSPIN_AT = 0.8               # throttle using more than this share of rear g
 WHEELSPIN_LOSS = 1.8             # ...and lateral grip drops this fast past that point (power oversteer)
 HANDBRAKE_MU = 0.55              # locked rear tyres slide at this share of grip: yank it, the tail comes out
 HANDBRAKE_DRIVE = 0.35           # (RWD) how much engine still gets through a locked rear. Clutch kick!
-WEIGHT_TRANSFER = 1.0            # 1 = real; lift off mid-corner and feel the nose tuck in
+WEIGHT_TRANSFER = 0.5            # 1 = real. Half: you feel the nose dip and the tail squat, but a
+                                 # turbo launch doesn't lift the front off the road (arcade tyres
+                                 # pull ~2 g, and real physics at 2 g is a wheelie)
+TRANSFER_MAX_G = 1.0             # ...and never more than 1 g's worth of it
 FRONT_WEIGHT = 0.52              # share of weight on the front axle (FWD vans: 0.6)
 AXLE_FRAC = 0.63                 # axles sit at this share of the half-length from the middle
 STEER_LOCK_LOW = 0.72            # rad of front-wheel angle at parking speed (generous: arcade)...
 STEER_LOCK_HIGH = 0.12           # ...shrinking to this at 35 m/s, so keyboard taps don't spin you
 STEER_LOCK_SPEED = 35.0
 STEER_RATE = 4.2                 # rad/s the wheel turns: full lock in about a seventh of a second
-STEER_ALIGN = 0.85               # hands off the keys: the fronts follow the car's actual direction
+STEER_ALIGN = 1.0                # hands off the keys: the fronts follow the car's actual direction
                                  # (caster). That's what lets a keyboard catch a slide.
-STEER_ALIGN_MAX = 0.9            # ...up to ~50 degrees of self-countersteer, like a proper drift car
+STEER_ALIGN_MAX = 1.0            # ...up to ~57 degrees of self-countersteer, like a proper drift car
 SLIDE_DRAG = 0.9                 # sideways is slow: scrub this share of excess slide energy (per s)
 GRASS_GRIP_MULT = 0.55           # parks are for drifting
 GRASS_DRAG = 3.0
@@ -167,6 +171,29 @@ NOS_REFILL = 0.25                # s of boost regained per second (fills in 16 s
 
 LIVERY_CHANCE = 0.3              # v0.7: stripes, flames, polka dots... 30% of the city dresses up
 CIV_GLOW_CHANCE = 0.06           # neon underglow on a parked car: someone's pride and joy. Now yours.
+
+# --------------------------------------------------------------------------
+# v0.7 ridiculous features
+# --------------------------------------------------------------------------
+EJECT_MIN_SPEED = 12.0           # m/s: below this, F just opens the door like a normal person
+EJECT_SPEED = 15.0               # m/s straight up. About six metres. Then the parachute.
+YEET_SPEED = 15.0                # m/s: a car hitting you harder than this sends you airborne
+GNOME_COUNT = 12                 # garden gnomes about the city
+GNOME_RESPAWN = 30.0             # s between replacement gnomes (gardeners are resilient)
+GNOME_HEAT = 3.0                 # heat for pinching one. It's the principle of the thing.
+ICECREAM_LURE = 25.0             # m: peds this close to a slow ice cream van go and queue for it
+
+# --------------------------------------------------------------------------
+# v0.7 mod shop and parts locker (garage.py)
+# --------------------------------------------------------------------------
+STASH_MAX = 40                   # parts the locker holds; overflow gets shoved out onto the floor
+PRICE_PAINT = 150                # a respray: cheaper than a new car, pricier than a spray can
+PRICE_LIVERY = 250               # stripes, flames, polka dots...
+HORN_PRICES = [0, 120, 200, 150, 180, 250, 300]   # stock, clown, cucaracha, fart, goat, air, ice cream
+PRICE_GLOW = 300                 # neon underglow: the car's personality, made of light
+PRICE_NOS = 900                  # nitrous: expensive, because it's the most fun thing in the game
+PRICE_EJECTOR = 600              # an ejector seat. In a Kei. For reasons.
+PRICE_GNOME_MOUNT = 80           # the gnome ornament, if you didn't bring your own gnome
 
 # --------------------------------------------------------------------------
 # v0.7 slapstick: throwing, carrying, bowling, fighting back (brawl.py)
@@ -248,7 +275,15 @@ WITNESS_CHECK_HZ = 10            # LOS raycasts are the expensive bit; 10 Hz is 
 # --------------------------------------------------------------------------
 # Cops
 # --------------------------------------------------------------------------
-MAX_COPS = 2
+MAX_COPS = 5                     # dispatched units at 100% heat (v0.7, Bryce: "more plentiful"; was 2)
+COP_TIERS = ((25.0, 1), (50.0, 2), (75.0, 3), (99.9, 5))   # heat -> units on the way (a wanted level)
+PATROL_COPS = 2                  # cruisers that are ALWAYS out there, doing laps, being witnesses
+PATROL_SPAWN_DIST = (60.0, 130.0)   # they turn up this far from the crew, never on top of you
+PATROL_RECYCLE_DIST = 170.0
+COP_SHOOT_HEAT = 75.0            # at this heat, cops shoot at crooks on foot...
+COP_GUN_RANGE = 26.0             # ...from this close...
+COP_GUN_COOLDOWN = 1.6           # ...this often...
+COP_GUN_ACCURACY = 0.28          # ...and hit about this often (it knocks you flat, the cuffs do the rest)
 COP_SPAWN_GAP = 2.0
 COP_REINFORCE_DELAY = 9.0        # after you blow one up, dispatch takes a moment to stop crying
 COP_SPAWN_MIN_DIST = 45.0
@@ -344,6 +379,8 @@ PRICE_SHOTGUN = 800
 PRICE_AMMO = 60                  # tops up whatever guns you own
 PRICE_SPIKES = 120
 PRICE_ROADBLOCK = 200
+PRICE_BANANA = 40                # a banana peel. Cars spin out, people fall over. Classic.
+PRICE_DONUTS = 30                # a box of donuts: throw it and every cop nearby takes a break
 PISTOL_AMMO = 24
 SHOTGUN_AMMO = 10
 MAX_AMMO = 99
@@ -354,6 +391,15 @@ SPIKE_LEN, SPIKE_WID = 6.0, 0.7  # half a road: spikes shred the lane they're in
 SPIKE_USES = 3                   # cars it can shred before the strip is scrap
 ROADBLOCK_LEN, ROADBLOCK_WID = 11.0, 1.0   # the whole road: traffic stops dead and honks
 ROADBLOCK_BREAK_DV = 11.0        # hit it this hard and it's matchwood (same as the eject threshold)
+BANANA_PLACE_DIST = 2.0          # m ahead of you a peel lands (drop it and step back)
+BANANA_R = 0.45                  # m: tread on this and you're on your back
+BANANA_SLIP_TUMBLE = 1.4         # s on the floor after a peel
+BANANA_SPIN_KICK = 2.6           # rad/s of instant yaw for a car that finds one
+DONUT_THROW_DIST = 12.0          # m you can lob a box of donuts
+DONUT_R = 0.5
+DONUT_LURE_RADIUS = 35.0         # cops this close smell them. They cannot help themselves.
+DONUT_EAT_TIME = 8.0             # s a cop spends on a box (not looking at anything else)
+DONUT_COPS = 2                   # cops per box (they share. Barely.)
 TRAP_LIFETIME = 150.0
 MAX_TRAPS = 12
 CARJACK_TIME = 1.5               # yank the door, yank the driver
