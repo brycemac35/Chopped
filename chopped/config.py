@@ -249,6 +249,18 @@ MAX_PICKUPS = 90
 
 TOAST_TIME = 3.5
 
+# --------------------------------------------------------------------------
+# First-person view (the Doom-style one)
+# --------------------------------------------------------------------------
+FP_FOV = 90.0                    # degrees across. Doom's number, and it keeps side streets in view
+FP_EYE = 1.6                     # metres: standing eye height
+FP_EYE_CAR = 1.2                 # sitting in a Kei, knees round your ears
+FP_FLOOR_DIST = 70.0             # metres of textured street before it fades to haze
+FP_SPRITE_DIST = 95.0            # beyond this, cars and people aren't drawn (matches the net cull)
+FP_TURN_SPEED = 2.8              # rad/s turning with the arrow keys
+MOUSE_SENS = 0.0032              # rad per mouse pixel
+FP_BOB = 0.06                    # metres of head bob when walking (Doom had lots; this has some)
+
 
 def rent_for_day(day):
     return RENT_BASE + RENT_PER_DAY * (max(1, day) - 1)

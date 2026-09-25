@@ -19,7 +19,9 @@ from .audio import Audio
 from .mapgen import CityMap
 from .net import Server, Client, get_lan_ips
 from .render import Renderer
-from .ui import Hud, Menu
+from .fp import FPRenderer
+from .doomhud import DoomHud, VIEW_H
+from .ui import Menu
 from .upnp import UPnP
 
 W, H = C.LOW_W, C.LOW_H
@@ -108,6 +110,12 @@ class App:
         self.lan_ip, self.other_ips = ips[0], ips[1:3]
         self.use_c = self.drop_c = self.exit_c = 0
         self.bot = Bot() if self.selftest else None
+        self.yaw = 0.0                 # where you're looking (first person); sent with every input
+        self.fp_mode = True            # Tab flips to the top-down automap
+        self.fp = None
+        self.last_state = None
+        self.last_car_ang = 0.0
+        self.mouse_grabbed = False
         self.frames = 0
         self.frames_in_play = 0
         self.snapshots_seen = 0
@@ -173,9 +181,11 @@ class App:
             self.upnp = None
         self.audio.stop_all()
         self.renderer = None
+        self.fp = None
         self.hud = None
         self.paused = False
         self.state = "menu"
+        self._grab_mouse(False)
         if msg:
             self.menu.set_error(msg)
             if self.selftest:
@@ -185,8 +195,32 @@ class App:
         cm = self.client.map
         surf = self.menu_surf if cm.seed == self.menu_seed else None
         self.renderer = Renderer(cm, surf)
-        self.hud = Hud(self.font, self.renderer.bank, self.renderer.minimap)
+        self.fp = FPRenderer(cm, self.renderer.map_surf, W, VIEW_H)
+        self.hud = DoomHud(self.font, self.renderer.bank, self.renderer.minimap)
+        me = self.client.latest.players.get(self.client.pid) if self.client.latest else None
+        if me is not None:
+            self.yaw = self._facing_shop(me[4], me[5])
         self.state = "play"
+        self._grab_mouse(True)
+
+    def _facing_shop(self, x, y):
+        """Spawn looking at the benches, so the first thing you see is the job."""
+        bx, by, bw, bh = self.client.map.sell_bench
+        return math.atan2(by - y, bx + bw / 2 - x)
+
+    def _grab_mouse(self, on):
+        """Mouse look: hide + grab the cursor (SDL then gives relative motion).
+        Released whenever a menu is up, so the cursor isn't held hostage."""
+        on = bool(on) and not self.selftest and self.state == "play" and not self.paused
+        if on == self.mouse_grabbed:
+            return
+        self.mouse_grabbed = on
+        try:
+            pygame.event.set_grab(on)
+            pygame.mouse.set_visible(not on)
+            pygame.mouse.get_rel()
+        except pygame.error:
+            pass
 
     # ------------------------------------------------------------------ main loop
     def run(self, max_frames=None, max_seconds=None):
@@ -239,9 +273,12 @@ class App:
             elif self.state == "connecting":
                 if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
                     self.leave("CANCELLED")
+            elif self.state == "play" and ev.type == pygame.MOUSEBUTTONDOWN and not self.paused:
+                self._grab_mouse(True)          # clicked back into the window
             elif self.state == "play" and ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_ESCAPE:
                     self.paused = not self.paused
+                    self._grab_mouse(not self.paused)
                 elif self.paused and ev.key == pygame.K_q:
                     self.leave("YOU LEFT THE CREW")
                 elif not self.paused:
@@ -251,6 +288,8 @@ class App:
                         self.drop_c += 1
                     elif ev.key == pygame.K_f:
                         self.exit_c += 1
+                    elif ev.key == pygame.K_TAB:
+                        self.fp_mode = not self.fp_mode
 
     def toggle_fullscreen(self):
         self.fullscreen = not self.fullscreen
@@ -265,18 +304,28 @@ class App:
             b, u, d, e, yaw = self.bot.step(dt, view)
             return S.InputState(b, u, d, e, yaw)
         if self.paused:
-            return S.InputState(0, self.use_c, self.drop_c, self.exit_c)
+            return S.InputState(0, self.use_c, self.drop_c, self.exit_c, self.yaw)
+        me = view.me if view is not None else None
+        in_car = me is not None and me[2] in (S.DRIVER, S.PASSENGER)
         k = pygame.key.get_pressed()
         b = 0
         if k[pygame.K_w] or k[pygame.K_UP]: b |= S.B_UP
         if k[pygame.K_s] or k[pygame.K_DOWN]: b |= S.B_DOWN
-        if k[pygame.K_a] or k[pygame.K_LEFT]: b |= S.B_LEFT
-        if k[pygame.K_d] or k[pygame.K_RIGHT]: b |= S.B_RIGHT
+        if k[pygame.K_a]: b |= S.B_LEFT
+        if k[pygame.K_d]: b |= S.B_RIGHT
         if k[pygame.K_e]: b |= S.B_USE
         if k[pygame.K_LSHIFT] or k[pygame.K_RSHIFT]: b |= S.B_SPRINT
         if k[pygame.K_SPACE]: b |= S.B_HANDBRAKE
         if k[pygame.K_h]: b |= S.B_HORN
-        return S.InputState(b, self.use_c, self.drop_c, self.exit_c)
+        rel = pygame.mouse.get_rel()[0] if self.mouse_grabbed else 0
+        if in_car:
+            # arrows steer too; the view is welded to the car
+            if k[pygame.K_LEFT]: b |= S.B_LEFT
+            if k[pygame.K_RIGHT]: b |= S.B_RIGHT
+        else:
+            turn = (1 if k[pygame.K_RIGHT] else 0) - (1 if k[pygame.K_LEFT] else 0)
+            self.yaw = (self.yaw + turn * C.FP_TURN_SPEED * dt + rel * C.MOUSE_SENS) % (2 * math.pi)
+        return S.InputState(b, self.use_c, self.drop_c, self.exit_c, self.yaw)
 
     def _update(self, now, dt):
         if self.state == "connecting":
@@ -290,7 +339,16 @@ class App:
             return
         c = self.client
         view = c.view(now)
+        if view is not None and view.me is not None:
+            me = view.me
+            if me[2] in (S.DRIVER, S.PASSENGER) and view.my_car is not None:
+                self.last_car_ang = view.my_car[11]
+            elif self.last_state in (S.DRIVER, S.PASSENGER) and me[2] == S.FOOT:
+                self.yaw = self.last_car_ang % (2 * math.pi)     # step out looking where you were driving
+            self.last_state = me[2]
         c.inp = self._gather_input(dt, view)
+        if self.bot is not None:
+            self.yaw = c.inp.yaw
         c.update(now)
         if c.state in ("failed", "closed"):
             self.leave(c.error or "DISCONNECTED")
@@ -331,18 +389,51 @@ class App:
             else:
                 sid, x, y = payload
                 r.on_sfx(sid, x, y, me[4], me[5])
+                self.fp.on_sfx(sid, x, y, me[4], me[5], view.my_car)
                 self.audio.play(sid, math.hypot(x - me[4], y - me[5]))
-        r.draw(low, view, now, dt)
-        info = {"lines": self._info_lines(), "help_until": self.hud.help_until, "paused": self.paused}
+        if self.fp_mode:
+            self._draw_fp(low, view, now, dt)
+        else:
+            r.draw(low.subsurface((0, 0, W, VIEW_H)), view, now, dt)
+        info = {"lines": self._info_lines(), "help_until": self.hud.help_until, "paused": self.paused,
+                "fp": self.fp_mode, "yaw": self.yaw, "garage": self.client.map.garage_center,
+                "in_garage": self.client.map.in_garage(me[4], me[5])}
         self.hud.draw(low, view, now, info)
         if self.server and now < self.host_banner_until and not self.paused:
             lines = self._host_lines()
-            low.blit(self.hud._panel((0, 0, 300, 8 * len(lines) + 4), 170), (W // 2 - 150, 64))
+            low.blit(self.hud._panel(300, 8 * len(lines) + 4, 170), (W // 2 - 150, 64))
             for i, (l, col) in enumerate(lines):
                 self.font.draw(low, l, W // 2, 67 + i * 8, col, align="center")
         if self.paused:
             self.hud.draw_pause(low, info)
         self._audio_loops(view)
+
+    def _draw_fp(self, low, view, now, dt):
+        me = view.me
+        car = view.my_car
+        state = me[2]
+        hide = None
+        if state in (S.DRIVER, S.PASSENGER) and car is not None:
+            a = car[11]
+            cam = (car[7] + math.cos(a) * 0.3, car[8] + math.sin(a) * 0.3, a, C.FP_EYE_CAR)
+            hide = car[0]
+            moving = 0.0
+        elif state == S.TUMBLE:
+            cam = (me[4], me[5], me[8], 0.5)
+            moving = 0.0
+        else:
+            spd = math.hypot(me[6], me[7])
+            moving = min(1.0, spd / C.WALK_SPEED)
+            bob = abs(math.sin(now * 9.0)) * C.FP_BOB * moving
+            cam = (me[4], me[5], self.yaw, (C.FP_EYE if state != S.CUFFED else 1.3) + bob)
+        self.fp.car_emitters(view, dt)
+        surf = self.fp.draw(view, cam, self.client.pid, now, dt, view.snap.rent, self.renderer.bank, hide)
+        steer = 0.0
+        if self.client.inp is not None:
+            b = self.client.inp.buttons
+            steer = (1.0 if b & S.B_RIGHT else 0.0) - (1.0 if b & S.B_LEFT else 0.0)
+        self.hud.draw_overlay(surf, view, now, moving, steer)
+        low.blit(surf, (0, 0))
 
     def _host_lines(self):
         lines = [("YOU ARE HOSTING - TELL YOUR CREW:", P["gold"]),
