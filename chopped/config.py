@@ -178,6 +178,26 @@ ABANDON_DIST = 110.0
 PED_COUNT = 26
 PED_SPEED = 1.4
 PED_TUMBLE = 2.6
+PED_FLEE_SPEED = 5.0             # panic jog: faster than walking, slower than you. They'll live.
+PED_FLEE_TIME = 3.0              # how long a scare lasts before they go back to their podcast
+PED_FLEE_CAR_SPEED = 14.0        # a car coming at them faster than this (~50 km/h)...
+PED_FLEE_RADIUS = 12.0           # ...from this close sends them running
+PED_FLEE_CRASH_RADIUS = 18.0     # crashes and explosions scatter everyone this close
+PED_FLEE_CHASE_RADIUS = 22.0     # with cops rolling, anyone this near a wanted target bolts
+
+# Moving traffic. Not witnesses (heat stays exactly as tuned) and not
+# stealable while someone's driving it -- they're rolling obstacles, crash
+# fodder and a reason to keep your eyes on the road.
+TRAFFIC_COUNT = 8                # enough to T-bone, not enough to gridlock a 444 m city
+TRAFFIC_SPEED = 12.0             # m/s (~43 km/h). Commuting, not fleeing.
+TRAFFIC_TURN_SPEED = 6.0         # slow for corners so they don't end up in a cafe
+TRAFFIC_LANE_OFFSET = 1.6        # m right of the centre line. Parked cars sit at 4.2, so they fit past.
+TRAFFIC_SPAWN_MIN_DIST = 70.0    # never pop in where anyone could see it happen
+TRAFFIC_RECYCLE_DIST = 140.0     # drifted this far from every player -> respawn somewhere useful
+TRAFFIC_HONK_AFTER = 1.5         # blocked this long -> lean on the horn (doesn't confuse cops)
+TRAFFIC_OVERTAKE_AFTER = 2.5     # stuck behind a stopped car this long -> swing out and pass
+TRAFFIC_SHAKEN_TIME = 2.0        # after a bump they sit there, stunned, honking
+TRAFFIC_RESPAWN_DELAY = 1.0      # replacements appear off-screen, so there's no need to be coy
 CLOWN_CHANCE = 0.12
 CLOWN_COUNT = 4
 CLOWN_LIFETIME = 40.0

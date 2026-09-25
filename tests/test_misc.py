@@ -64,12 +64,25 @@ class TestMisc(unittest.TestCase):
             w.npcs[n.id] = n
         for i in range(30):
             w.toast("A VERY LONG TOAST MESSAGE NUMBER %d THAT GOES ON AND ON AND ON" % i)
-        pkt = P.encode_snapshot(w, 1, 12345, 0)
+        # rush hour: every traffic car within sight of this player
+        for c in w.cars.values():
+            if c.kind == S.TRAFFIC:
+                c.x, c.y = gx + rng.uniform(0, 28), gy + rng.uniform(0, 28)
+        pkt = P.encode_snapshot(w, 1, 12345, 0, 987654)
         self.assertLessEqual(len(pkt), C.MAX_PACKET)
         snap = P.decode_snapshot(pkt[P.HDR.size:])
         self.assertEqual(snap.pid, 1)
         self.assertEqual(snap.cash, w.cash)
-        self.assertEqual(len(snap.cars), len(w.cars), "cars are never culled")
+        self.assertEqual(snap.ack_input, 987654)
+        self.assertEqual(len(snap.cars), len(w.cars), "nearby cars are all sent")
+        # far-off traffic is culled, stealable cars never are
+        far = next(c for c in w.cars.values() if c.kind == S.TRAFFIC)
+        far.x, far.y = 5.0, 5.0
+        civ = next(c for c in w.cars.values() if c.kind == S.CIV)
+        civ.x, civ.y = 440.0, 440.0
+        snap = P.decode_snapshot(P.encode_snapshot(w, 1, 0, 0)[P.HDR.size:])
+        self.assertNotIn(far.id, snap.cars)
+        self.assertIn(civ.id, snap.cars)
         self.assertEqual(len(snap.players), 4)
         self.assertTrue(snap.prompt.startswith("HOLD E: STRIP"))
         self.assertGreater(len(snap.pickups), 10)

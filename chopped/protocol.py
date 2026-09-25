@@ -13,7 +13,7 @@ import zlib
 
 from . import config as C
 from .parts import SLOTS, PART_INDEX, NO_PART, part_tuned
-from .sim import COP, TUMBLE, CUFFED, FOOT, DRIVER
+from .sim import COP, TRAFFIC, TUMBLE, CUFFED, FOOT, DRIVER
 
 MAGIC = b"CH"
 P_JOIN, P_WELCOME, P_REJECT, P_INPUT, P_SNAPSHOT, P_LEAVE, P_SHUTDOWN = range(1, 8)
@@ -115,8 +115,11 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
         max(0, ack_input) & 0xFFFFFFFF)
     prompt = encode_text(me.prompt if me else "") + encode_self(world, me)
 
+    r2 = C.NET_CULL_RADIUS ** 2
     cars = []
     for car in world.cars.values():
+        if car.kind == TRAFFIC and (car.x - px) ** 2 + (car.y - py) ** 2 > r2:
+            continue          # far-off traffic is scenery; everything stealable is always sent
         mask = tuned = 0
         for s, part in car.parts.items():
             if part is not None:
@@ -139,12 +142,11 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
         players.append(PLAYER.pack(p.id, p.color, p.state, flags, _pos(p.x), _pos(p.y),
                                    _vel(p.vx), _vel(p.vy), _ang(ang), h0, h1,
                                    int(p.stamina * 2.55), p.car_id or 0) + encode_text(p.name, 12))
-    r2 = C.NET_CULL_RADIUS ** 2
     npcs = []
     for n in world.npcs.values():
         d2 = (n.x - px) ** 2 + (n.y - py) ** 2
         if d2 < r2:
-            state = 1 if n.tumble_t > 0 else 0
+            state = 1 if n.tumble_t > 0 else 2 if n.flee_t > 0 else 0
             npcs.append((d2, NPC.pack(n.id, n.kind, state, _pos(n.x), _pos(n.y),
                                       _ang8(n.spin if state else n.ang))))
     picks = []

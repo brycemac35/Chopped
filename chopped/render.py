@@ -231,15 +231,19 @@ class Renderer:
 
     def _npcs(self, low, view, now):
         frame = int(now * 6) % 2
+        panic = int(now * 14) % 2
         for n in view.npcs.values():
             sx, sy = self.to_screen(n[3], n[4])
             if not (-10 < sx < W + 10 and -10 < sy < H + 10):
                 continue
             shirt, skin, hair, extra = self._person_key(n[0], n[1])
-            spr = self.bank.person((shirt, skin, hair, frame if n[2] == 0 else 0, extra), n[5])
+            fr = frame if n[2] == 0 else panic if n[2] == 2 else 0
+            spr = self.bank.person((shirt, skin, hair, fr, extra), n[5])
             low.blit(spr, (sx - spr.get_width() // 2, sy - spr.get_height() // 2))
             if n[1] == S.OWNER and frame:
                 self.font.draw(low, "!", sx, sy - 10, P["danger"], align="center")
+            elif n[2] == 2 and panic and (n[0] + int(now * 2)) % 3 == 0:
+                self.font.draw(low, "!!", sx, sy - 10, P["white"], align="center")
 
     def _cars(self, low, view, now, dt, phase):
         bank = self.bank

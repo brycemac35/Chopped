@@ -76,9 +76,14 @@ class TestNetwork(unittest.TestCase):
         sa = ticks_a[sb.tick]
         for kind in ("cars", "players"):
             ea, eb = getattr(sa, kind), getattr(sb, kind)
-            self.assertEqual(set(ea), set(eb))
+            if kind == "cars":
+                # far-off traffic is culled per player, so only stealable cars must match
+                self.assertEqual({k for k, r in ea.items() if r[1] != S.TRAFFIC},
+                                 {k for k, r in eb.items() if r[1] != S.TRAFFIC})
+            else:
+                self.assertEqual(set(ea), set(eb))
             ix = 7 if kind == "cars" else 4
-            for eid in ea:
+            for eid in set(ea) & set(eb):
                 self.assertAlmostEqual(ea[eid][ix], eb[eid][ix], delta=0.07)
                 self.assertAlmostEqual(ea[eid][ix + 1], eb[eid][ix + 1], delta=0.07)
         self.assertEqual(sa.cash, sb.cash)

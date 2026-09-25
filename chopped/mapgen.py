@@ -249,6 +249,19 @@ class CityMap:
         m, k = n * T, 40.0
         self.edge_rects = [(-k, -k, m + 2 * k, k), (-k, m, m + 2 * k, k), (-k, 0.0, k, m), (m, 0.0, k, m)]
 
+    # ------------------------------------------------------------------ roads (for traffic)
+    @staticmethod
+    def road_centre(k):
+        """Centre line (metres) of the k-th road band, k = 0..BLOCKS."""
+        return (k * C.PITCH + C.ROAD_TILES / 2.0) * C.TILE_M
+
+    def node_pos(self, i, j):
+        return self.road_centre(i), self.road_centre(j)
+
+    @staticmethod
+    def node_ok(i, j):
+        return 0 <= i <= C.BLOCKS and 0 <= j <= C.BLOCKS
+
     # ------------------------------------------------------------------ queries
     def tile(self, tx, ty):
         if 0 <= tx < self.n and 0 <= ty < self.n:

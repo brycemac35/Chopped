@@ -156,8 +156,8 @@ class Hud:
                 low.fill((255, 60, 60) if flash else (80, 120, 255), (px - 1, py - 1, 3, 3))
             elif c[1] == S.PERSONAL:
                 low.fill((150, 222, 64), (px - 1, py - 1, 2, 2))
-            elif c[3] == S.DELIVERED:
-                continue
+            elif c[3] == S.DELIVERED or c[1] == S.TRAFFIC:
+                continue          # the minimap shows things worth stealing, not rush hour
             elif c[4] & PR.CF_WANTED:
                 low.fill(P["gold"] if flash else P["white"], (px - 1, py - 1, 2, 2))
             else:

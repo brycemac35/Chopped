@@ -12,7 +12,7 @@ import pygame
 from . import config as C
 from . import mapgen as M
 from .parts import SLOT_INDEX, PART_IDS, PART_DEFS
-from .sim import PERSONAL, COP
+from .sim import PERSONAL, COP, TRAFFIC
 
 # ---------------------------------------------------------------------------
 # Palette (~40 colours). Reuse these; resist the urge to invent new greys.
@@ -167,6 +167,8 @@ def make_car(kind, color_idx, mask, tuned, damage, phase, seed):
     # windshield, roof, rear window, trunk
     f(P["glass"], (2, 7, 8, 2))
     f(shade(P["glass"], 1.15), (3, 7, 3, 1))
+    if kind == TRAFFIC:                             # somebody's at the wheel: hands off
+        f(HAIRS[seed % len(HAIRS)], (3, 8, 2, 1))
     roof = P["white"] if kind == COP else shade(body, 0.92)
     f(roof, (2, 9, 8, 6))
     f(P["glass_d"], (2, 15, 8, 2))
@@ -558,7 +560,8 @@ class SpriteBank:
         self.shadow_rot = {}
 
     def car(self, kind, color, mask, tuned, damage, phase, seed, ang):
-        key = (kind, color, mask, tuned, damage, phase if kind == COP else 0, seed if damage else 0)
+        key = (kind, color, mask, tuned, damage, phase if kind == COP else 0,
+               seed if (damage or kind == TRAFFIC) else 0)
         base = self.cars.get(key)
         if base is None:
             if len(self.cars) > 400:

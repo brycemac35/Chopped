@@ -29,6 +29,9 @@ def quiet_world(seed=4242):
     w = S.World(map_seed=seed, rng_seed=1)
     w.npcs.clear()
     w.map.cameras = []
+    w.traffic_target = 0
+    for cid in [c.id for c in w.cars.values() if c.kind == S.TRAFFIC]:
+        del w.cars[cid]
     return w
 
 

@@ -19,7 +19,7 @@ from .parts import (SLOTS, SLOT_ANCHOR, SLOT_CATEGORY, CATEGORY_SLOTS, WHEEL_SLO
 
 # ---- enums (ints so they go straight onto the wire) -------------------------
 FOOT, DRIVER, PASSENGER, TUMBLE, CUFFED = range(5)
-CIV, PERSONAL, COP = range(3)
+CIV, PERSONAL, COP, TRAFFIC = range(4)
 LOCKED, BROKEN_IN, RUNNING, DELIVERED = range(4)
 PED, CLOWN, OWNER = range(3)
 W_NONE, W_COP, W_PED, W_OWNER, W_CAMERA = range(5)
@@ -53,6 +53,9 @@ OWNER_YELLS = [
     "OWNER: THAT'S A 2004! IT'S A CLASSIC!",
 ]
 CLOWN_LINES = ["HONK!", "HONK HONK!", "*SAD TROMBONE*", "A CLOWN SQUEAKS ANGRILY"]
+BAIL_LINES = ["DRIVER: I'M NOT PAID ENOUGH FOR THIS!", "DRIVER: KEEP IT! IT'S LEASED!",
+              "DRIVER: I'M CALLING MY INSURANCE (AND MY MOM)", "DRIVER: NOPE. NOPE NOPE NOPE."]
+DIRS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 
 
 class InputState:
@@ -73,7 +76,8 @@ class Car:
                  "handbrake", "throttle", "steer", "crash_cd", "impact_dv", "impact_nx",
                  "impact_ny", "damage", "pull", "mass", "inertia", "confused_t", "confuse_cd",
                  "stuck_t", "rev_t", "abandon_t", "flow_key", "flow_t", "last_target",
-                 "special_fired")
+                 "special_fired", "route", "route_prev", "tdir", "node", "blocked_t", "shaken_t",
+                 "overtake_t")
 
     def __init__(self, cid, kind, x, y, ang, parts, color=0):
         self.id = cid
@@ -109,6 +113,14 @@ class Car:
         self.flow_key = None
         self.flow_t = 0.0
         self.last_target = None
+        # traffic brain: waypoints, current direction, the intersection it's heading for
+        self.route = []
+        self.route_prev = None        # last waypoint passed: the lane runs from there to route[0]
+        self.tdir = (1, 0)
+        self.node = (0, 0)
+        self.blocked_t = 0.0
+        self.shaken_t = 0.0
+        self.overtake_t = 0.0
 
     def power(self):
         # Sum of every part's power. Worn engine alone = 45 = sad trombone.
@@ -179,7 +191,7 @@ class Player:
 
 class NPC:
     __slots__ = ("id", "kind", "x", "y", "vx", "vy", "ang", "tumble_t", "life_t", "dirx", "diry",
-                 "turn_t", "target", "yell_t", "complain_cd", "spin")
+                 "turn_t", "target", "yell_t", "complain_cd", "spin", "flee_t", "fx", "fy", "ttl")
 
     def __init__(self, nid, kind, x, y):
         self.id = nid
@@ -195,6 +207,9 @@ class NPC:
         self.yell_t = 2.0
         self.complain_cd = 0.0
         self.spin = 0.0
+        self.flee_t = 0.0             # > 0: running away from something loud and fast
+        self.fx, self.fy = 1.0, 0.0
+        self.ttl = 0.0                # > 0: temporary extra (a driver who bailed); gone when it runs out
 
 
 class Pickup:
@@ -361,7 +376,7 @@ class Physics:
         rx, ry = -fy, fx
         vf = car.vx * fx + car.vy * fy
         vr = car.vx * rx + car.vy * ry
-        driven = car.driver is not None or car.kind == COP
+        driven = car.driver is not None or car.kind == COP or car.kind == TRAFFIC
         mw = car.missing_wheels()
         on_grass = self.map.tile_at(car.x, car.y) == 3  # GRASS
         if car.kind == COP:
@@ -627,12 +642,17 @@ class World(Physics):
         self.witness_accum = 0.0
         self.targets = []           # wanted targets: (x, y, vx, vy, is_car, ref)
         self._rects = []            # scratch list for collision queries (no per-tick allocs)
+        self.traffic_t = 0.0
+        self.traffic_target = C.TRAFFIC_COUNT    # tests set 0 for a city with no surprises
+        self.scare_accum = 0.0
         self.personal_id = None
         self._spawn_personal(personal_loadout())
         for _ in range(C.PED_COUNT):
             self._spawn_ped()
         for _ in range(C.MAX_CIVILIAN_CARS):
             self._spawn_civilian(ignore_players=True)
+        for _ in range(self.traffic_target):
+            self._spawn_traffic(ignore_players=True)
 
     # ------------------------------------------------------------------ ids/events
     def new_id(self):
@@ -830,9 +850,11 @@ class World(Physics):
             car.horn = False          # re-latched every tick by whoever is leaning on it
         for p in self.players.values():
             self._update_player_input(p, dt)
-        for car in self.cars.values():
+        for car in list(self.cars.values()):
             if car.kind == COP:
                 self._cop_ai(car, dt)
+            elif car.kind == TRAFFIC:
+                self._traffic_ai(car, dt)
         self._horns(dt)
         self._physics_cars(dt)
         self._sync_occupants()
@@ -846,6 +868,7 @@ class World(Physics):
         self._cops_lifecycle(dt)
         self._arrests(dt)
         self._traffic(dt)
+        self._traffic_fleet(dt)
 
     # ------------------------------------------------------------------ economy
     def _economy(self, dt):
@@ -894,10 +917,10 @@ class World(Physics):
         self.pickups.clear()
         for nid in list(self.npcs):
             n = self.npcs[nid]
-            if n.kind != PED:
+            if n.kind != PED or n.ttl > 0:
                 del self.npcs[nid]
             else:
-                n.tumble_t = 0.0
+                n.tumble_t = n.flee_t = 0.0
         for i, p in enumerate(self.players.values()):
             p.state = FOOT
             p.hands = []
@@ -910,6 +933,8 @@ class World(Physics):
             p.hold_key = None
         for _ in range(C.MAX_CIVILIAN_CARS):
             self._spawn_civilian()
+        for _ in range(self.traffic_target):
+            self._spawn_traffic()
         self.civ_respawn_t = None
         self.toast("RUN %d: NEW LEASE, SAME BAD DECISIONS. $%d IN THE TIN." % (self.run, C.START_CASH), T_INFO)
 
@@ -1023,8 +1048,8 @@ class World(Physics):
         # cars
         best, bd = None, 99.0
         for car in self.cars.values():
-            if car.kind == COP:
-                continue
+            if car.kind == COP or car.kind == TRAFFIC:
+                continue              # you can't steal a car someone is driving. Yet.
             d = math.hypot(car.x - p.x, car.y - p.y)
             if d < bd:
                 best, bd = car, d
@@ -1184,8 +1209,8 @@ class World(Physics):
             c.confuse_cd -= dt
             c.confused_t -= dt
         for car in self.cars.values():
-            if not car.horn or car.kind == COP:
-                continue
+            if not car.horn or car.driver is None:
+                continue              # traffic honking at you is just rude, not a tactic
             for cop in cops:
                 if cop.confuse_cd <= 0 and math.hypot(cop.x - car.x, cop.y - car.y) < C.HORN_CONFUSE_RANGE:
                     cop.confused_t = C.HORN_CONFUSE_TIME
@@ -1335,13 +1360,19 @@ class World(Physics):
             side, wheels = ["DoorL"], ["WheelFL", "WheelRL"]
         else:
             side, wheels = ["DoorR"], ["WheelFR", "WheelRR"]
+        if dv >= C.CRASH_EJECT_DV:
+            self._scare(car.x, car.y, C.PED_FLEE_CRASH_RADIUS)
         if dv < C.CRASH_EJECT_DV:
             if self.rng.random() < C.CRASH_PANEL_CHANCE:
                 self._knock_panels(car, side, 1)
+            if car.kind == TRAFFIC:
+                car.shaken_t = C.TRAFFIC_SHAKEN_TIME
         else:
             self._knock_panels(car, side, self.rng.randint(1, 3))
             if car.occupants():
                 self.eject(car, dv)
+            if car.kind == TRAFFIC:
+                self._traffic_bail(car)
         if dv >= C.CRASH_WHEEL_DV:
             ws = [w for w in wheels if car.parts.get(w) is not None]
             self.rng.shuffle(ws)
@@ -1417,8 +1448,17 @@ class World(Physics):
     def _update_npcs(self, dt):
         dead = []
         m = self.map
+        self.scare_accum += dt
+        if self.scare_accum >= 1.0 / C.WITNESS_CHECK_HZ:
+            self.scare_accum = 0.0
+            self._scare_scan()
         for n in self.npcs.values():
             n.complain_cd -= dt
+            if n.ttl > 0:
+                n.ttl -= dt
+                if n.ttl <= 0:
+                    dead.append(n.id)     # rounded a corner and kept running. Forever.
+                    continue
             if n.kind != PED:
                 n.life_t += dt
                 if n.kind == CLOWN and n.life_t > C.CLOWN_LIFETIME:
@@ -1430,6 +1470,12 @@ class World(Physics):
                 dec = math.exp(-2.5 * dt)
                 n.vx *= dec
                 n.vy *= dec
+            elif n.kind == PED and n.flee_t > 0:
+                n.flee_t -= dt
+                n.vx, n.vy = self._flee_velocity(n)
+                n.spin = 0.0
+                if n.flee_t <= 0:
+                    n.turn_t = 0.0        # pick a fresh stroll direction
             elif n.kind == PED:
                 n.turn_t -= dt
                 nxp = n.x + n.dirx * 1.2
@@ -1438,9 +1484,12 @@ class World(Physics):
                 if t not in (SIDEWALK, GRASS) or n.turn_t <= 0:
                     opts = [(1, 0), (-1, 0), (0, 1), (0, -1)]
                     self.rng.shuffle(opts)
-                    for ddx, ddy in opts:
-                        if m.tile_at(n.x + ddx * 2.5, n.y + ddy * 2.5) in (SIDEWALK, GRASS):
-                            n.dirx, n.diry = ddx, ddy
+                    # (look further out too: a ped who panicked into the road wants the kerb back)
+                    for reach in (2.5, 6.0, 10.0):
+                        hit = next(((ddx, ddy) for ddx, ddy in opts
+                                    if m.tile_at(n.x + ddx * reach, n.y + ddy * reach) in (SIDEWALK, GRASS)), None)
+                        if hit:
+                            n.dirx, n.diry = hit
                             break
                     n.turn_t = self.rng.uniform(3, 9)
                 n.vx, n.vy = n.dirx * C.PED_SPEED, n.diry * C.PED_SPEED
@@ -1534,6 +1583,7 @@ class World(Physics):
 
     def _explode(self, car):
         self.sfx(S_BOOM, car.x, car.y)
+        self._scare(car.x, car.y, C.PED_FLEE_CRASH_RADIUS * 1.5)
         self.toast("KA-BOOM! COP CAR PARTS EVERYWHERE!", T_COP)
         for slot, part in car.parts.items():
             if part is None:
@@ -1697,7 +1747,295 @@ class World(Physics):
         self.sfx(S_ARREST, p.x, p.y)
         self.toast("%s GOT BUSTED! PARTS DROPPED AT THE SCENE." % p.name, T_COP)
 
-    # ------------------------------------------------------------------ traffic
+
+    # ------------------------------------------------------------------ panicking pedestrians
+    def _scare(self, x, y, radius):
+        """Everyone within radius of (x, y) runs directly away from it."""
+        r2 = radius * radius
+        for n in self.npcs.values():
+            if n.kind == PED and n.tumble_t <= 0:
+                dx, dy = n.x - x, n.y - y
+                if dx * dx + dy * dy < r2:
+                    self._flee(n, dx, dy)
+
+    def _flee(self, n, dx, dy):
+        d = math.hypot(dx, dy)
+        if d < 1e-3:
+            a = self.rng.uniform(0, 2 * math.pi)
+            dx, dy, d = math.cos(a), math.sin(a), 1.0
+        n.flee_t = C.PED_FLEE_TIME
+        n.fx, n.fy = dx / d, dy / d
+
+    def _flee_velocity(self, n):
+        """Run along (fx, fy), but swerve round walls rather than into them:
+        panic is not the same as stupidity. Mostly."""
+        solid = self.map.solid_at
+        for turn in (0.0, 0.6, -0.6, 1.2, -1.2, 1.9, -1.9):
+            c, s = math.cos(turn), math.sin(turn)
+            fx, fy = n.fx * c - n.fy * s, n.fx * s + n.fy * c
+            if not solid(n.x + fx * 1.5, n.y + fy * 1.5):
+                if turn:
+                    n.fx, n.fy = fx, fy
+                return fx * C.PED_FLEE_SPEED, fy * C.PED_FLEE_SPEED
+        n.fx, n.fy = -n.fx, -n.fy
+        return 0.0, 0.0
+
+    def _scare_scan(self):
+        """10 Hz: cars bearing down fast, and (with cops rolling) anyone near the
+        chase, send pedestrians running. Owners stay angry, clowns stay clowns."""
+        fast = [c for c in self.cars.values() if c.vx * c.vx + c.vy * c.vy > C.PED_FLEE_CAR_SPEED ** 2]
+        chase = []
+        if self.dispatched and any(c.kind == COP for c in self.cars.values()):
+            chase = [(t[0], t[1]) for t in self.targets]
+        if not fast and not chase:
+            return
+        rf2 = C.PED_FLEE_RADIUS ** 2
+        rc2 = C.PED_FLEE_CHASE_RADIUS ** 2
+        for n in self.npcs.values():
+            if n.kind != PED or n.tumble_t > 0 or n.flee_t > 1.0:
+                continue
+            for c in fast:
+                dx, dy = n.x - c.x, n.y - c.y
+                if dx * dx + dy * dy < rf2 and c.vx * dx + c.vy * dy > 0:
+                    # dive sideways out of its path, not straight down the road ahead of it
+                    sp = math.hypot(c.vx, c.vy)
+                    side = 1.0 if (-c.vy * dx + c.vx * dy) >= 0 else -1.0
+                    self._flee(n, -c.vy / sp * side + dx * 0.02, c.vx / sp * side + dy * 0.02)
+                    break
+            else:
+                for tx, ty in chase:
+                    dx, dy = n.x - tx, n.y - ty
+                    if dx * dx + dy * dy < rc2:
+                        self._flee(n, dx, dy)
+                        break
+
+    # ------------------------------------------------------------------ moving traffic
+    def _lane_point(self, i, j, d, along):
+        """A point on the right-hand lane through intersection (i, j) heading d,
+        `along` metres past the intersection centre (negative = before it)."""
+        cx, cy = self.map.node_pos(i, j)
+        lo = C.TRAFFIC_LANE_OFFSET
+        return cx + d[0] * along - d[1] * lo, cy + d[1] * along + d[0] * lo
+
+    def _spawn_traffic(self, ignore_players=False):
+        m = self.map
+        for _ in range(40):
+            i, j = self.rng.randrange(C.BLOCKS + 1), self.rng.randrange(C.BLOCKS + 1)
+            d = self.rng.choice(DIRS)
+            pi, pj = i - d[0], j - d[1]            # the intersection it's coming from
+            if not m.node_ok(pi, pj):
+                continue
+            ax, ay = self._lane_point(pi, pj, d, 0.0)
+            bx, by = self._lane_point(i, j, d, 0.0)
+            t = self.rng.uniform(0.3, 0.7)          # mid-block, well clear of both junctions
+            x, y = ax + (bx - ax) * t, ay + (by - ay) * t
+            if self.players and not ignore_players:
+                near = min(math.hypot(p.x - x, p.y - y) for p in self.players.values())
+                if near < C.TRAFFIC_SPAWN_MIN_DIST or near > C.TRAFFIC_RECYCLE_DIST - 25.0:
+                    continue
+            if any(abs(c.x - x) < 9.0 and abs(c.y - y) < 9.0 for c in self.cars.values()):
+                continue
+            car = Car(self.new_id(), TRAFFIC, x, y, math.atan2(d[1], d[0]), kei_loadout(self.rng),
+                      color=self.rng.randrange(1, 9))
+            car.pull = self.rng.choice((-1.0, 1.0))
+            car.vx, car.vy = d[0] * C.TRAFFIC_SPEED * 0.8, d[1] * C.TRAFFIC_SPEED * 0.8
+            car.tdir, car.node = d, (i, j)
+            car.route = [self._lane_point(i, j, d, -8.0)]
+            car.route_prev = self._lane_point(pi, pj, d, 8.0)
+            self.cars[car.id] = car
+            return car
+        return None
+
+    def _traffic_plan(self, car):
+        """Append the next junction's manoeuvre to the route: maybe a turn
+        (mostly straight on), the exit, and the approach to the one after."""
+        i, j = car.node
+        d = car.tdir
+        opts = [(d2, 4 if d2 == d else 2) for d2 in DIRS
+                if d2 != (-d[0], -d[1]) and self.map.node_ok(i + d2[0], j + d2[1])]
+        if not opts:
+            opts = [((-d[0], -d[1]), 1)]
+        total = sum(wt for _, wt in opts)
+        r = self.rng.random() * total
+        d2 = opts[-1][0]
+        for cand, wt in opts:
+            r -= wt
+            if r <= 0:
+                d2 = cand
+                break
+        route = car.route
+        if d2 != d:
+            # where the two lanes cross: go there, then swing onto the new one
+            cx, cy = self.map.node_pos(i, j)
+            lo = C.TRAFFIC_LANE_OFFSET
+            route.append((cx - (d[1] + d2[1]) * lo, cy + (d[0] + d2[0]) * lo))
+        route.append(self._lane_point(i, j, d2, 8.0))
+        ni, nj = i + d2[0], j + d2[1]
+        route.append(self._lane_point(ni, nj, d2, -8.0))
+        car.node, car.tdir = (ni, nj), d2
+
+    def _pursuit_point(self, car, reach):
+        """Pure pursuit: the point `reach` metres further along the lane from
+        wherever the car is now. Aiming at the far waypoint instead would let
+        a car that's drifted wide take a whole block to get back in lane."""
+        route = car.route
+        ax, ay = car.route_prev if car.route_prev is not None else (car.x, car.y)
+        bx, by = route[0]
+        sx, sy = bx - ax, by - ay
+        seg2 = sx * sx + sy * sy
+        t = clamp(((car.x - ax) * sx + (car.y - ay) * sy) / seg2, 0.0, 1.0) if seg2 > 1e-6 else 1.0
+        qx, qy = ax + sx * t, ay + sy * t
+        left = reach
+        pts = route[:3]
+        for nx, ny in pts:
+            d = math.hypot(nx - qx, ny - qy)
+            if d >= left:
+                k = left / d
+                return qx + (nx - qx) * k, qy + (ny - qy) * k
+            left -= d
+            qx, qy = nx, ny
+        return qx, qy
+
+    def _traffic_blocker(self, car, fx, fy, spd):
+        """First thing in the lane ahead: a car, a player or a pedestrian."""
+        # once stopped for something, keep "seeing" it a bit further out, or the
+        # car creeps forward, re-spots it, brakes, creeps... like a nervous learner
+        look = 4.0 + spd * 0.9 + (3.5 if car.blocked_t > 0 else 0.0)
+        passing = car.overtake_t > 0
+        car_w = 1.4 if passing else 2.2
+        for other in self.cars.values():
+            if other is car:
+                continue
+            dx, dy = other.x - car.x, other.y - car.y
+            f = dx * fx + dy * fy
+            if 0.5 < f < look + 2.4:
+                # oncoming cars only count if they're properly in our lane
+                w = 1.5 if math.cos(other.ang - car.ang) < -0.8 else car_w
+                if abs(-dx * fy + dy * fx) < w:
+                    return other
+        for p in self.players.values():
+            if p.state in (FOOT, TUMBLE, CUFFED):
+                dx, dy = p.x - car.x, p.y - car.y
+                f = dx * fx + dy * fy
+                if 0.5 < f < look + 2.4 and abs(-dx * fy + dy * fx) < 1.8:
+                    return p
+        for n in self.npcs.values():
+            dx, dy = n.x - car.x, n.y - car.y
+            f = dx * fx + dy * fy
+            if 0.5 < f < look + 2.4 and abs(-dx * fy + dy * fx) < 1.6:
+                return n
+        return None
+
+    def _traffic_ai(self, car, dt):
+        fx, fy = math.cos(car.ang), math.sin(car.ang)
+        vf = car.vx * fx + car.vy * fy
+        spd = abs(vf)
+        car.handbrake = False
+        if car.fire_t > 0:
+            car.throttle, car.steer = 0.0, 0.0
+            return
+        if car.shaken_t > 0:
+            # somebody hit them. They sit there. They honk. It's what we'd all do.
+            car.shaken_t -= dt
+            car.throttle, car.steer = (-1.0 if vf > 0.5 else 0.0), 0.0
+            car.handbrake = vf <= 0.5
+            car.horn = True
+            return
+        if car.rev_t > 0:
+            car.rev_t -= dt
+            car.throttle = -1.0
+            return
+        route = car.route
+        while route:
+            wx, wy = route[0]
+            dx, dy = wx - car.x, wy - car.y
+            d = math.hypot(dx, dy)
+            if d < 3.0 or (d < 7.0 and dx * fx + dy * fy < 0):
+                car.route_prev = route.pop(0)
+                continue
+            break
+        if len(route) < 2:
+            self._traffic_plan(car)
+        wx, wy = route[0]
+        # slow down for a bend at the next waypoint
+        target = C.TRAFFIC_SPEED
+        ax, ay = wx - car.x, wy - car.y
+        bx, by = route[1][0] - wx, route[1][1] - wy
+        bend = abs(wrap_angle(math.atan2(by, bx) - math.atan2(ay, ax)))
+        if bend > 0.5:
+            target = lerp(C.TRAFFIC_TURN_SPEED, C.TRAFFIC_SPEED, clamp((math.hypot(ax, ay) - 4.0) / 18.0, 0, 1))
+        wx, wy = self._pursuit_point(car, 5.0 + spd * 0.4)
+        if car.overtake_t > 0:
+            car.overtake_t -= dt
+            wx, wy = wx + fy * 3.4, wy - fx * 3.4     # aim into the other lane
+            target = min(target, 8.0)
+        diff = wrap_angle(math.atan2(wy - car.y, wx - car.x) - car.ang)
+        steer = clamp(diff * 2.5, -1.0, 1.0)
+        blocker = self._traffic_blocker(car, fx, fy, spd)
+        if blocker is not None:
+            car.blocked_t += dt
+            throttle = -1.0 if vf > 0.5 else 0.0
+            car.handbrake = vf <= 0.5
+            if car.blocked_t > C.TRAFFIC_HONK_AFTER:
+                car.horn = True
+            if math.hypot(blocker.vx, blocker.vy) < 1.0 and car.blocked_t > C.TRAFFIC_OVERTAKE_AFTER:
+                # a stalled car or someone loitering in the road: swing out and go round
+                car.overtake_t = 3.5
+                car.blocked_t = 0.0
+        else:
+            car.blocked_t = 0.0
+            throttle = clamp((target - vf) * 0.6, -1.0, 1.0)
+        car.steer = steer
+        car.throttle = throttle
+        # wedged against something (spun into a wall): reverse out with opposite lock
+        if throttle > 0.3 and spd < 0.8:
+            car.stuck_t += dt
+            if car.stuck_t > 1.2:
+                car.stuck_t = 0.0
+                car.rev_t = 1.0
+                car.steer = -steer
+        else:
+            car.stuck_t = 0.0
+
+    def _traffic_bail(self, car):
+        """A hard enough hit and the driver has had enough: they grab the keys,
+        lock it and run. What's left is an ordinary parked car -- break in the
+        usual way (and yes, the alarm still goes off)."""
+        car.kind = CIV
+        car.state = LOCKED
+        car.route = []
+        car.throttle = car.steer = 0.0
+        car.handbrake = car.horn = False
+        car.special = None
+        x, y = car.to_world(0.0, -2.2)
+        if self.map.solid_at(x, y):
+            x, y = car.to_world(0.0, 2.2)
+        n = NPC(self.new_id(), PED, x, y)
+        n.ttl = 40.0
+        self.npcs[n.id] = n
+        self._flee(n, x - car.x, y - car.y)
+        n.flee_t = C.PED_FLEE_TIME * 2
+        self.toast(self.rng.choice(BAIL_LINES), T_WHITE)
+
+    def _traffic_fleet(self, dt):
+        """Keep TRAFFIC_COUNT cars on the road near the players: cars that
+        drift far from everyone (or get hopelessly wedged out of sight) are
+        quietly recycled to somewhere more useful."""
+        traffic = [c for c in self.cars.values() if c.kind == TRAFFIC]
+        if self.players:
+            for car in traffic:
+                near = min(math.hypot(p.x - car.x, p.y - car.y) for p in self.players.values())
+                if near > C.TRAFFIC_RECYCLE_DIST or (near > 60.0 and car.blocked_t > 10.0):
+                    del self.cars[car.id]
+        count = sum(1 for c in self.cars.values() if c.kind == TRAFFIC)
+        if count >= self.traffic_target:
+            self.traffic_t = C.TRAFFIC_RESPAWN_DELAY
+            return
+        self.traffic_t -= dt
+        if self.traffic_t <= 0:
+            self.traffic_t = 0.5 if self._spawn_traffic() is None else C.TRAFFIC_RESPAWN_DELAY / 4
+
+    # ------------------------------------------------------------------ parked civilian cars
     def _traffic(self, dt):
         civs = [c for c in self.cars.values() if c.kind == CIV and c.state != DELIVERED]
         # tow abandoned stolen cars so the city doesn't run dry
