@@ -10,7 +10,10 @@ them for parts, sell the parts, and pay the rent. Or bolt the good bits onto
 your own ride in a GTA-style mod shop. Punch people (some punch back), rob
 people, buy guns, spike strips and banana peels off the crates in the back of
 the shop, throw car doors at pedestrians, pick your mate up and bowl him into
-a bus queue. If you fall behind on rent, the landlord takes the shop.
+a bus queue. Get caught on foot and an officer cuffs you and drags you to the
+precinct lockup, where you'll have to punch your way out. Drift a supercharged
+V8, do donuts in a 4x4, listen to a rice rocket's VTEC kick in. If you fall
+behind on rent, the landlord takes the shop.
 
 - Pure Python 3.12 + pygame-ce. **No asset files**: every texture, sprite, font glyph, sound effect and the music are generated when the game starts. (The exe icon too, at build time.)
 - Host-authoritative networking over plain stdlib UDP (no networking library), with client-side prediction so joining players don't feel their ping.
@@ -28,7 +31,7 @@ GitHub builds it for you on every push, on a real Windows machine:
 
 The run also tests the game on Windows and Linux and smoke-tests the exe itself: a headless bot session, then a host exe and a client exe playing together over UDP. If any of that fails, the run goes red and no exe is uploaded.
 
-To get a public download link, push a version tag (`git tag v0.7.0 && git push origin v0.7.0`). The workflow then publishes `Chopped.exe` as a **GitHub Release**.
+To get a public download link, push a version tag (`git tag v0.8.0 && git push origin v0.8.0`). The workflow then publishes `Chopped.exe` as a **GitHub Release**.
 
 > **SmartScreen:** the exe isn't code-signed, so Windows may say "Windows protected your PC". Click **More info**, then **Run anyway**.
 
@@ -66,7 +69,7 @@ Command-line shortcuts:
 | Key | On foot | In a car |
 |---|---|---|
 | **Mouse** / **arrows** | Look around, up and down too | Look around (in chase cam: swing the camera round) |
-| **W S** / **up down** | Forward / back | Throttle / brake-reverse |
+| **W S** / **up down** | Forward / back | Throttle / brake-reverse. **Both at once: burnout** (brake stand; steer for donuts) |
 | **A D** | Strafe | Steer |
 | **Space** | Jump (clear a roadblock, if you tuck your knees) | Handbrake: lock the rear wheels and drift |
 | **Shift** | Sprint (uses stamina) | NOS boost, if your ride has it fitted |
@@ -78,15 +81,16 @@ Command-line shortcuts:
 | **F** | - | Get out. At speed, with an ejector seat fitted: up through the roof |
 | **H** | - | Horn. Cops within 40 m spin donuts for 3 s |
 | **V** | - | Cockpit / 3rd-person chase camera |
+| **X** | - | Hydraulic hop, if your ride has hydraulics fitted |
 | **Tab** | Automap: the top-down view of the city | |
 | **M** | Music on/off | |
 | **F9** | Big head mode (just for you) | |
 | **Esc** | Pause overlay: players, host IP, ping, all the controls. Releases the mouse. **Q** leaves | |
 | **F11** | Toggle fullscreen | |
 
-Being carried by a crewmate? Mash **Space** to wriggle free.
+Being carried by a crewmate, or being cuffed by an officer? Mash **Space** to wriggle free.
 
-The status bar reads, left to right: **ARMS** (the weapons you own, 1-7), **CASH**, **HEAT %**, **HANDS** (the dolly, or your ammo when a gun is out), your crook's **face** (it sweats as the heat rises, grins when money comes in, and sees stars when you get run over), **STAMINA %** (**KM/H** in a car), **COPS**, **DAY / RENT**, and **GEAR** (traps in your pocket; in a car, the trunk and the NOS gauge). The radar is top right. When you're carrying loot, a **SHOP** marker at the top of the screen points home; when you're empty-handed, a green **CAR TO STEAL** marker points at the nearest parked car. Hold a slide and the **DRIFT** meter counts it up.
+The status bar reads, left to right: **ARMS** (the weapons you own, 1-7), **CASH**, **HEAT %**, **HANDS** (the dolly, or your ammo when a gun is out), your crook's **face** (it sweats as the heat rises, grins when money comes in, and sees stars when you get run over), **STAMINA %** (**KM/H** in a car), **COPS** (it reads **LETHAL** while the police are shooting to kill), **DAY / RENT**, and **GEAR** (traps in your pocket; in a car, the trunk and the NOS gauge). The radar is top right. When you're carrying loot, a **SHOP** marker at the top of the screen points home; when you're empty-handed, a green **CAR TO STEAL** marker points at the nearest parked car. Hold a slide and the **DRIFT** meter counts it up. In a car, the dashboard has a **tachometer** next to the speedo: revs, redline, the gear you're in, and a boost gauge if there's a turbo (blue) or a supercharger (gold) under the bonnet.
 
 ---
 
@@ -113,13 +117,13 @@ Look at the **TUNE-UP** bench and press E. Whatever you're holding (and the engi
 - **Categories** down the left: every part slot (engine, gearbox, ECU, exhaust, wheels, doors, hood, bumpers, seats, spoiler), then **paint**, **livery**, **horn**, **underglow**, **extras** and the **locker** itself.
 - **Fit** a part from the locker, **buy** one new (1.6x street value, condition 100%, every style), **remove** one (it goes to the locker), **sell** straight from the locker, or **take** one back into your hands.
 - A rotating preview shows the car with your changes, and bars show **power, top speed, acceleration, grip and weight**. Bigger wheels and a spoiler really do grip harder; a heavier engine really is heavier.
-- **Paint** $150 (16 colours). **Liveries** $250: racing stripes, two-tone, flames, checkers, polka dots, camo, taxi, pastel, lightning. **Horns**: stock, clown, La Cucaracha, wet fart, goat, air horn, ice cream jingle (hover one to hear it). **Underglow** $300. **Extras:** NOS $900, ejector seat $600, a hood gnome $80 (free if you bring your own gnome).
+- **Paint** $150 (16 colours). **Liveries** $250: racing stripes, two-tone, flames, checkers, polka dots, camo, taxi, pastel, lightning. **Horns**: stock, clown, La Cucaracha, wet fart, goat, air horn, ice cream jingle (hover one to hear it). **Underglow** $300. **Extras:** NOS $900, ejector seat $600, a hood gnome $80 (free if you bring your own gnome), hydraulics $500.
 - **W/S**, the arrows or the mouse wheel move. **Enter** or **E** picks; with the mouse, click a row to highlight it and click it again to buy or fit it. **A**, **Backspace** or right click goes back a level; **Esc** leaves. In **LIVERY**, A/D picks the second colour. In the **LOCKER**, Enter sells and **X** takes the part out.
 - The locker holds 40 parts; overflow gets shoved out onto the floor by the bench. **SHOP SEIZED** empties it. The car keeps its mods.
 
 ### Vehicles and styles
 
-Eight kinds of vehicle turn up, parked and in traffic, each with its own size, weight, grip, top speed and trunk:
+Ten kinds of vehicle turn up, parked and in traffic, each with its own size, weight, grip, top speed and trunk:
 
 | Vehicle | Feel | Trunk |
 |---|---|---|
@@ -131,8 +135,30 @@ Eight kinds of vehicle turn up, parked and in traffic, each with its own size, w
 | Box van | Slow, front-drive, carries everything | 10 |
 | Ice cream van | Plays its jingle. Pedestrians queue for it (and stop witnessing) | 6 |
 | Mobility scooter | 12 m/s flat out. Steal it anyway | 1 |
+| Rice rocket | Slammed, stickered, a wing taller than the roof, a fart-can exhaust. Pops and bangs. Often genuinely quick | 2 |
+| 4x4 truck | Lifted, all-wheel drive, a diesel. Parks are just shortcuts to it. Can't do a brake stand | 8 |
 
 Every part rolls a **style**: gold mesh, spinner or sawblade wheels, scoop, flame, carbon, shark-mouth or blower hoods, bull bars, quad exhausts, race-number doors, rainbow spoilers. Styles show on the car, in the part's name, and in its price (gold mesh sells for 1.6x a steelie). About 30% of cars wear a livery, and 6% of parked cars have underglow. That's the point: find a car with a part you want, strip it, and fit it to yours.
+
+### Engines
+
+Every engine has its own voice, synthesized at startup: each one is rendered at six points across its rev range and the game crossfades between them as the needle moves, so revving sounds like revving.
+
+| Engine | Sound | Found in |
+|---|---|---|
+| 1.0 / 1.6 four | Buzzy | Keis, sedans, vans |
+| 2.0 turbo | Muffled four + turbo whistle and a **pssh** when you lift | Coupes, rice |
+| 1.6 supercharged | Four with a **supercharger whine** that rises with the revs | Keis, sedans, rice |
+| 1.8 VTEC | Screams to 8,600. Changes its whole personality at 5,500: **VTEC JUST KICKED IN, YO** | Rice, coupes |
+| 13B rotary | **Brap brap** | Coupes, rice |
+| 3.0 V6 | Smooth, slightly uneven | Sedans, cops, pickups |
+| 5.7 V8 | Burble (a cross-plane V8 doesn't fire evenly) | Muscle cars, pickups, 4x4s |
+| 6.2 supercharged V8 | Burble + blower whine. The most powerful thing in the city | Muscle cars, 4x4s |
+| 3.0 twin-turbo six | Silky, with the big-turbo **stututu** flutter | Coupes, sedans |
+| 4.5 turbo diesel | Clattery tractor | 4x4s, vans, ice cream vans |
+| Scooter motor | An electric whine. Terrifying at 12 m/s | The scooter |
+
+Cars with a tuned ECU or exhaust (and every rice rocket) **pop and bang** on the overrun, with flames out of the exhaust, and do a **two-step** brap on a brake stand. Tyres **screech** when they're sliding, spinning or locked.
 
 ### Driving and drifting
 
@@ -141,8 +167,10 @@ The cars run on a tyre model now, not a rail:
 - Grip builds with slip angle, peaks and then falls off, so a car that breaks away slides until you catch it.
 - Braking, accelerating and cornering share one grip budget. Stamp on the throttle mid-corner in a rear-drive car and the tail steps out; in a front-drive van it just pushes wide.
 - The weight shifts: lift off in a corner and the nose tucks in.
-- **Space** locks the rear wheels: yank it to swing the tail round.
-- The front wheels self-centre. Let go of the steering mid-slide and the car straightens itself; countersteer to hold the angle.
+- **Space** locks the rear wheels: yank it to swing the tail round. It can't spin you like a top: the handbrake is for starting a slide, not ending the run.
+- The front wheels self-centre. Let go of the steering mid-slide and the car straightens itself. **Countersteer** and the wheels point exactly where the car's going (a keyboard's full lock would overcook it), so a slide is caught, not turned into a tank-slapper.
+- **Drift assist (v0.8):** past about 17 degrees of slide the car is nudged back toward where it's going, and any rotation that would make the slide worse (or snap it back the other way) is bled off. Steer *into* the slide and the help mostly steps aside, so you can hold a big angle for as long as your nerve lasts.
+- **Brake stands:** W and S together at a standstill. The brakes hold one axle and the driven wheels spin up into a cloud; steer and you do **donuts**. Keep it up and the smoke gets thick enough to hide in (see below). Front-drive cars do it backwards. All-wheel-drive 4x4s can't do it at all.
 - The **DRIFT** meter scores every slide over 14 degrees and 8 m/s.
 
 ### Crime
@@ -152,7 +180,7 @@ The cars run on a tyre model now, not a rail:
 - **Robbing:** look at someone who's on the floor, or who has their hands up, and hold E for 0.8 s. Wallets hold $15-90 and refill after 3 minutes. +4 heat.
 - **Hands up:** point a gun at someone within 10 m and they freeze with their hands up. Lower it and they run.
 - **Black market:** seven crates along the west wall of the shop. Look at one and hold E. Pistol $350 (24 rounds), shotgun $800 (10 shells, 7 pellets), ammo $60 (tops up the guns you own), spike strip $120, roadblock $200, banana peel $40, box of donuts $30. You can carry five of each trap.
-- **Guns** are hitscan. Shoot people (they go down for 5 s), **tyres** (a hit near a wheel knocks it clean off), and cop cars (8 hits and it burns, then explodes into loot). Every shot within earshot of a pedestrian or cop adds +8 heat; hitting a cop maxes it out. Getting busted **confiscates your guns**.
+- **Guns** are hitscan. Shoot people (they go down for 5 s), **tyres** (a hit near a wheel knocks it clean off), and cop cars (8 hits and it burns, then explodes into loot). Every shot within earshot of a pedestrian or cop adds +8 heat; hitting a cop maxes it out. **Any shot the police can hear makes them shoot back, for real** (see [Heat and cops](#heat-and-cops)). Getting busted **confiscates your guns**.
 - **Traps:** select one (4-7) and click. Spike strips and roadblocks go down 3.5 m in front of you, square across the road.
   - **Spike strip:** shreds the tyres of anything that drives over it (three cars, then it's blunt). Traffic that loses two wheels stops, and the driver runs off and leaves the engine running.
   - **Roadblock:** a solid barrier the width of the road. Traffic stops in front of it and honks. Ram it at 11 m/s or more and it's matchsticks.
@@ -175,7 +203,18 @@ The cars run on a tyre model now, not a rail:
 - **Garden gnomes:** twelve of them stand guard on the city's lawns. Pinching one is +3 heat (it's the principle of the thing). Sell it for $60, or fit it to your hood.
 - **Ice cream van:** drive one slowly and pedestrians queue up for it. People in a queue don't witness crimes.
 - **The mobility scooter.**
-- Get hit by a car doing more than 15 m/s and you're **YEETED** into the air. Other banners: **HUMBLED** (a pedestrian beat you up, or a banana did), **BONKED**, **STRIKE!**, **HOME RUN!**, **EJECTED**.
+- Get hit by a car doing more than 15 m/s and you're **YEETED** into the air. Other banners: **HUMBLED** (a pedestrian beat you up, or a banana did), **BONKED**, **STRIKE!**, **HOME RUN!**, **EJECTED**, **TASED**, **PANTSED**, **BUSTED**, **JAILBREAK!**, **SMILE!**, **WASTED**.
+- **v0.8's additions:**
+  - **The K9 unit.** From 60 heat some cop cars bring a dog. You can't outrun it. It doesn't arrest you; it takes your **trousers**, and you shuffle at half speed in your boxers for 9 s. (The boxers have patterns. The game tells everyone which.)
+  - **The streaker.** Every couple of minutes a naked man sprints through town. Cops near him forget all about you, and stop witnessing. Tackle him for a citizen's arrest: +$50 and -10 heat.
+  - **Speed cameras** post your own clean ride a $40 ticket if you go past at more than 90 km/h. **SMILE!**
+  - **Smoke screens.** Hold a burnout for 1.5 s and the smoke's thick enough to hide in: nobody can see through it for 10 s.
+  - **Hydraulics** ($500 in the mod shop): X in the car and it bounces. Pedestrians stop to enjoy the lowrider show (and stop witnessing).
+  - **Pops and bangs**, a **two-step** on the brake stand, and **VTEC JUST KICKED IN, YO**.
+  - **Mugshots.** When you're busted, the game reads out your charge sheet: 3X GRAND THEFT AUTO, GNOME THEFT, UNLICENSED DANCING, LITTERING (BANANAS), BRIBERY (DONUTS)...
+  - **One phone call.** Somebody always uses it to order a pizza.
+  - **The orange jumpsuit.** Break out of jail and you're wanted on sight until you get back to the shop and change.
+  - **Confetti** and a kazoo fanfare every time a car's delivered.
 
 ### The city
 
@@ -191,8 +230,13 @@ The cars run on a tyre model now, not a rail:
 - If nobody sees you for 4 s, heat cools at 3/s. Parks and buildings block line of sight.
 - **Two patrol cars are always out there**, cruising the grid like traffic. They don't chase anyone until they see a wanted target, and then they do.
 - Heat is a **wanted level**: 1 cop car on the way at 25 heat, 2 at 50, 3 at 75 and **5** at 100. They come from the edge of the map.
-- From 75 heat, cops **shoot** at crooks on foot within 26 m. A hit knocks you flat, and the cuffs do the rest.
-- If you stay on foot within 1 m of a cop car's bodywork for 1 s, you're **BUSTED**. You drop whatever you're carrying (your partner can grab it) and sit in cuffs for 5 s.
+- **Officers (v0.8).** When a cop car catches up with a crook on foot, it pulls over and an **officer gets out** and runs you down (faster than you walk, slower than you sprint). Let him stand next to you for 1.2 s and you're cuffed: **BUSTED**. **Punch him** (+15 heat: assaulting an officer) or **mash Space** to wriggle out of his grip. He gives up and walks back to his car if you get away or reach the shop.
+- **Tasers.** From 50 heat, officers tase you from a few metres. You twitch on the pavement for 2 s, and the cuffs go on twice as fast while you're down. **DON'T TASE ME, BRO.**
+- **Lethal force** only happens once *you* escalate: fire a gun anywhere a cop can hear it, or hit a cop or a cop car with a bullet, and for 45 s the police shoot to kill (officers on foot and out of car windows; the status bar says **LETHAL**). A police bullet is **WASTED**: you drop everything, and the crew loses **50% ÷ the number of players** of its cash (half solo, a quarter each for two, an eighth for four). You wake up at the shop 4 s later.
+- **Busted = the precinct.** You drop what you're carrying (your partner can grab it), sit on the kerb for the mugshot, then wake up in the **precinct lockup**, a walled police station a few blocks from the shop. Three guards; the big one has the **keys**. Knock him down, hold E on him to take them, and E at the gate opens it. Then run: you're in an **orange jumpsuit**, a jailbreak is +40 heat, and the whole city knows your face until you get back to the shop and change. Other ways out:
+  - a crewmate **picks the lock** from outside (hold E at the gate for 6 s),
+  - somebody **rams the gate** with a car,
+  - or you **post bail** at the front desk ($250, and $100 more every time).
 - Ram a cop at more than 25 m/s relative speed and it catches fire, then explodes after 3 s. All its parts scatter as loot.
 
 ### Crashes
@@ -276,9 +320,11 @@ SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests
 - `tests/test_music.py` checks that the beat's two layers loop seamlessly, aren't silent or clipping, and hit on the one.
 - `tests/test_garage.py` covers v0.7 trunks (put, take, a full Kei, loot in stolen cars, an engine in a pickup bed, spilling when the shell is crushed, the trunk in the SELF block), the vehicle models and part styles, and the mod shop (the locker, fit, buy, remove, sell, paint, liveries, horns, extras, no credit, a resent command billing only once, the menu over the wire, and buying with mouse clicks through the real client menu).
 - `tests/test_brawl.py` covers peds fighting back (getting up swinging, taking their money back, armed peds), picking up and bowling people, carrying and wriggling free, haymakers, dancing, jumping a roadblock, patrol cars, donuts, cops shooting at high heat, bananas, the ejector seat, gnomes, the ice cream queue and NOS. Throwing parts is in `tests/test_combat.py`.
+- `tests/test_police.py` covers v0.8's police: officers deploying and cuffing, walking back, wriggling out, punching an officer, tasers, the lethal clock and what a death costs (per player count), the precinct (every city has one; the gate is solid until it opens, for the predictor too), keys, guards, bail, lock picking, ramming the gate, the mugshot, the K9 unit, the streaker, speed cameras, smoke screens and hydraulics.
+- `tests/test_engines.py` covers revs and gears (shifting up, the rev limiter, turbo spool and blow-off, supercharger boost, VTEC), the engine notes (every voice loops without a click and rises in pitch with the revs), brake stands and donuts (and that a burnout predicts exactly), catching a handbrake slide in every rear-drive car, the handbrake yaw cap, rice rockets, 4x4s on grass, and engines on the wire.
 - `tests/test_drift.py` pins the tyre model down: straight lines stay straight, handbrake turns rotate, rear-drive power oversteer, front-drive understeer, slides that catch themselves, braking distance, model top speeds, bananas, and a predicted jump that matches the host.
 
-119 tests in total.
+163 tests in total.
 
 ---
 
@@ -296,6 +342,10 @@ chopped/mapgen.py    deterministic procedural city (seeded; clients rebuild it l
 chopped/physics.py   the shared Physics mixin: tyre model, collisions, walking, jumping
 chopped/brawl.py     fighting back, throwing parts and people, haymakers, dancing (World mixin)
 chopped/garage.py    trunks and the mod shop's host side, plus its wire codec (World mixin)
+chopped/police.py    officers, tasers, lethal force and dying, the precinct lockup, K9s, the streaker,
+                     speed cameras, smoke screens, hydraulics (World mixin)
+chopped/drivetrain.py  revs, gears and boost for the tachometer and the engine notes (client, no pygame)
+chopped/enginesynth.py the engine voices, turbo whistle, blow-off, pops, screech (pure Python synthesis)
 chopped/sim.py       authoritative world: crashes, heat, cops, traffic, pedestrians, the dolly,
                      guns/traps/carjacking, economy (no pygame anywhere in the sim modules)
 chopped/predict.py   client-side prediction: runs sim.Physics on your own car/avatar, reconciles

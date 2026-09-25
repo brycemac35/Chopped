@@ -11,7 +11,20 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
 
 ## 1. Status and your tasks, in order
 
-### Where things stand (Sept 25, 2026, session 2, fourth round: v0.7)
+### Where things stand (Sept 25, 2026, session 2, fifth round: v0.8)
+- **v0.8** (Bryce: "instead of the cops shooting you lethally right away have them try to handcuff you. then you get taken to the precinct where you have to beat your way out. and also make the objects you interact with have more angles ... if the cops do decide to lethally shoot you that you die, lose a/x % of your money depending on how many people are playing. the drifting feels too loose, please allow the driver to regain control when handbraking. add brakestands, spinning tire sounds and a tachometer ... better engine sounds ... turbo noises ... super chargers and a few more engine options. add riced out cars and 4x4 trucks. also add 10 more funny features"). All done:
+  - **Police** (`police.py`, a World mixin): cop cars that catch a crook on foot let an **officer** out (NPC kind `OFFICER`, `Car.officer`); he runs you down and cuffs you (`CUFF_TIME`; mash Space or punch him to break free). **Tasers** from `TASER_HEAT`. **Lethal force only after the crew escalates** (`World.lethal_t`, set by `_escalate` when a gunshot is heard by police, or when a cop/cop car is hit). A lethal hit = `DEAD` state, **WASTED**, crew loses `DEATH_LOSS / players` of its cash.
+  - **The precinct**: `mapgen._make_precinct` puts a walled lockup on a block >= `PRECINCT_MIN_BLOCKS` from the shop (new tile `PRECINCT`). Busted -> `CUFFED` for 3 s (mugshot toast from `Player.rap`) -> `_jail`: `Player.jailed`, guards (`GUARD`, `KEYGUARD`). Take the keys off the downed key guard, E at the gate (a `Trap` of kind `TRAP_GATE`, kept in `World.gate_trap`, NOT in `World.traps`; solid while shut, sent as a trap row). Or: a crewmate picks the lock, someone rams it, or bail at the desk. Escapees wear the **orange jumpsuit** (wanted on sight) until they reach the shop.
+  - **Drift**: `Physics._drift_assist` (nudges the nose toward travel past ~17 degrees, damps rotation that worsens the slide), a keyboard-friendly countersteer limit, a yaw-rate cap (kills tank-slappers) and a handbrake yaw cap. **Brake stands / donuts** (W+S, `Physics._brake_stand`). All of it is in the shared Physics, so it predicts (`test_engines.test_burnout_predicts`).
+  - **Engines**: 8 new ones incl. two superchargers (`parts.ENGINE_SPECS`: voice, aspiration, redline, idle), per-model engine tables, `Car.pops()`. **Rice rockets** (`V.RICE`) and **4x4s** (`V.TRUCK4`: `awd`, `offroad`).
+  - **Sound**: `enginesynth.py` renders each engine voice at `ENGINE_BANDS` rpm points (background thread at startup, ~0.3 s); `audio.engine_note` crossfades neighbouring bands on two channels. Turbo whistle bands, blow-off/flutter, pops, shift clunk, tyre screech. `drivetrain.Tacho` (client-only, cosmetic) turns speed + pedals into revs/gear/boost for the **tachometer** and the audio. Car rows carry an engine byte and a drive byte (`DR_*`) so you hear everyone's engine.
+  - **More angles**: `CAR_ANGLES` 32 (was 16), `CHASE_CAR_ANGLES` 72, `PERSON_ANGLES` 16 and `PROP_ANGLES` 16 (were 8). Sprites render in <1 ms and are cached.
+  - **Silly**: K9 dogs (take your trousers), the streaker (cops chase him instead; tackle him for a reward), speed cameras (fines on your own ride), burnout smoke screens (`TRAP_SMOKE`, block witness sight), hydraulics (mod shop extra, X), pops and bangs + two-step, VTEC toast, mugshot charge sheets, one phone call, orange jumpsuit, delivery confetti.
+  - Fixed in passing: every wall sign in the raycaster was mirrored (CHOP SHOP read backwards since v0.5).
+- **Protocol VERSION 8, RELEASE 0.8.0:** car rows +engine byte +drive byte; player rows +flags2 (`PF2_*`); snapshot header +alert byte (`AL_LETHAL`); NPC states `NS_TASER`, `NS_CUFFING`, `NS_RUNOFF`; trap kinds `TRAP_GATE`, `TRAP_SMOKE`; `B_HOP` button.
+- **Tests:** 163, all OK (v0.8 added `test_police.py` and `test_engines.py`). Game-loop selftest about 51 fps.
+
+### v0.7 (earlier this session)
 - **v0.7 is the big one.** Bryce asked for: higher resolution, "realistic drifting", a 3rd-person view when driving, "much more fighting back from the people", more cops, storage in cars, other vehicles, "more randomized car styles so it's worth placing the parts you find on your car", a GTA-style car editor, then "10 more silly features" (throwing parts, picking people up and throwing them, looking up/down, jumping, "ridiculous ideas to make the boys laugh"). All done:
   - **Resolution:** the canvas is now 640×360 (was 480×270), integer-scaled. First person draws into 640×328 with the 32 px bar below. HUD drawing goes through `doomhud.Pen`; the bar has new ARMS and GEAR panels.
   - **Tyre model** in `physics.Physics._drive`: bicycle model, a Pacejka-ish slip curve, a friction ellipse, weight transfer (capped at 1 g), handbrake locks the rears, caster self-aligning steer, a DRIFT meter. `tests/test_drift.py` pins down the feel. Traffic/cop AI gets traction control.
@@ -24,8 +37,7 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
   - **Silly stuff:** throw parts (click with full hands), pick up (G) and throw people, human bowling (STRIKE!), haymaker (hold click), ejector seat + parachute, joke horns, NOS, donut boxes (cops stop to eat), banana peels, big-head mode (F9), dance taunt (T), garden gnomes, ice cream van queues, YEETED/HUMBLED/HOME RUN banners.
   - Code split: `enums.py`, `lines.py`, `entities.py`, `physics.py`, `vehicles.py`, `brawl.py` and `garage.py` came out of `sim.py`, which still re-exports the names tests use (`S.Car`, `S.B_UP`, ...). `World(Physics, Brawl, Garage)`.
 - **Protocol VERSION 7, RELEASE 0.7.0:** input buttons are u16 plus 4 menu bytes; car rows carry model, livery, extras and packed styles; player/NPC/pickup rows carry z; the SELF block carries grip/mass/top/NOS/spin (`SELF_EXTRA`), an 8-byte arsenal, and optional trunk and menu blocks.
-- **Tests:** 119, all OK (v0.7 added `test_garage.py`, `test_brawl.py`, `test_drift.py`). Game-loop selftest about 53 fps.
-- **Performance:** `fp.draw` is about 9 ms at 640×328 in a busy street (was 6 ms at 480×238).
+- **Performance:** `fp.draw` is about 8–9 ms at 640×328 in a busy street (was 6 ms at 480×238).
 
 ### v0.6 (earlier this session)
 - **v0.6 is crime** (Bryce: "i want the ability to punch and rob people also add guns. and please add traps for us to buy to actually stop the cars, currently i cant seem to rob a car"):
@@ -55,6 +67,7 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
 ### Task 1: Play the exe on a real Windows PC
 1. Download the **Chopped-windows** artifact from the latest green **Build** run (Actions tab). If a future run fails, read the **smoke-logs** artifact.
 2. By hand on a real PC: run `Chopped.exe --host`, then `Chopped.exe --join 127.0.0.1 --name TWO --fake-lag 150`. With prediction the joiner's own car should feel instant. Compare with `--no-predict`.
+   - v0.8 things to feel out: is the drift assist too strong now (`DRIFT_ASSIST_*`, `YAW_CAP_*`, `COUNTERSTEER_*`)? Do the engine notes sound right on real speakers (`enginesynth.VOICES`)? Is the lockup too hard or too easy (`JAIL_GUARDS`, `GUARD_*`)? Is `DEATH_LOSS` too harsh solo?
    - v0.7 things to feel out: does the drifting feel right with a mouse + keyboard (tuning is `TIRE_*`, `STEER_*`, `WEIGHT_TRANSFER` in config)? Is the chase cam too floaty (`CHASE_*`)? Are 5 cops at 100 heat plus 2 patrols too many? Do brave peds make walking around too dangerous (`BRAVE_CHANCE`)?
 3. Accept the Windows Firewall prompt (Private networks). SmartScreen will warn because the exe is unsigned: click "More info", then "Run anyway".
 
@@ -81,7 +94,7 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
 ## 2. Hard rules
 - **Networking stays stdlib UDP.** No networking libraries; this keeps PyInstaller packaging trivial. `miniupnpc` is optional and must stay an optional import.
 - **No asset files.** All sprites, textures, the pixel font, sounds and the music are generated in code (`art.py`, `fpart.py`, `audio.py`, `music.py`). Keep it that way unless Bryce says otherwise.
-- **The sim modules must not import pygame:** `sim.py`, `physics.py`, `brawl.py`, `garage.py`, `entities.py`, `enums.py`, `vehicles.py`, `parts.py`, `lines.py`. They're the authoritative, testable simulation.
+- **The sim modules must not import pygame:** `sim.py`, `physics.py`, `brawl.py`, `garage.py`, `police.py`, `entities.py`, `enums.py`, `vehicles.py`, `parts.py`, `lines.py` (and the client-side pure modules `drivetrain.py`, `enginesynth.py`). They're the authoritative, testable simulation.
 - **All tuning numbers live in `chopped/config.py`**, each with a comment explaining why.
 - **Bump `config.VERSION`** whenever the wire protocol changes. Clients with a different version get rejected politely.
 - **Keep packets under `MAX_PACKET` (1150 bytes).** `tests/test_misc.py` checks a worst-case snapshot, rush-hour traffic included.
@@ -90,11 +103,11 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
   ```
   set SDL_VIDEODRIVER=dummy & set SDL_AUDIODRIVER=dummy & python -m unittest discover -s tests -v
   ```
-  (On Linux/macOS: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests -v`.) At handoff (session 2, v0.7): **119 tests, all OK**, and the game-loop selftest ran at about 53 fps.
+  (On Linux/macOS: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests -v`.) At handoff (session 2, v0.8): **163 tests, all OK**, and the game-loop selftest ran at about 51 fps.
 
 ## 3. Architecture (details in README.md)
 - `main.py` is the command line: `--host`, `--join IP[:PORT]`, `--server` (headless), `--selftest`, `--port`, `--name`, `--mute`, `--no-upnp`, `--log FILE`, `--fake-lag MS`, `--no-predict`.
-- **Networking model (protocol VERSION 7):**
+- **Networking model (protocol VERSION 8):**
   - The host runs the simulation at 60 Hz in-process.
   - Clients send one input per 60 Hz tick. One-shot keys are sent as counters, so a lost packet can't eat a tap.
   - The server sends each client its own zlib snapshot at 20 Hz. Far-away peds, pickups and traffic are culled beyond 95 m.
@@ -130,10 +143,10 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
   - At 100 heat, up to 2 cop cars spawn.
   - Horn: cops within 40 m do donuts for 3 s.
   - Ramming a cop at over 25 m/s relative speed sets it on fire; it burns for 3 s, then explodes into loot.
-- **Arrest:**
-  - Triggered by standing on foot within 3.2 m of a cop car for 1 s.
+- **Arrest** (changed in v0.8 at Bryce's request, see below):
+  - ~~Triggered by standing on foot within 3.2 m of a cop car for 1 s.~~ Now an officer on foot has to reach you and cuff you (`CUFF_TIME` 1.2 s).
   - Your held parts drop at that spot, so a partner can grab them.
-  - You're cuffed for 5 s, then respawn at the shop. Cash is kept.
+  - ~~You're cuffed for 5 s, then respawn at the shop.~~ Now 3 s on the kerb, then the precinct lockup. Cash is kept.
 - **Delivery:** the car must be fully inside the garage and moving under 4 m/s. Heat drops to 0, the cops leave, and the car never drives again.
 - **Carrying:**
   - Two hands. Wheels, ECUs and bucket seats take one hand; panels, exhausts, gearboxes and stock seats take both.
@@ -158,13 +171,21 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
   - Shooting a player tumbles them and makes them drop what they're carrying. There's no health anywhere: getting shot is a 1.8 s nap.
   - Traps: at most 12 in the world, towed after 150 s. Spike strips wear out after 3 cars.
 - **v0.7 decisions, flagged for Bryce** (all tunable in `config.py`):
-  - **Cops (Bryce asked for "more plentiful"):** `MAX_COPS` 5 (was 2), dispatched by wanted level (`COP_TIERS`: 1 at 25 heat, 2 at 50, 3 at 75, 5 at 100), plus `PATROL_COPS` 2 always cruising. Patrols are witnesses but don't arrest until they engage. From 75 heat cops shoot crooks on foot (a hit is a tumble; there's still no health).
-  - **Arrest range** is now 1 m from the cop car's bodywork instead of 3.2 m from its middle. For a Kei that works out about the same, and it stays fair now that cars come in different sizes.
+  - **Cops (Bryce asked for "more plentiful"):** `MAX_COPS` 5 (was 2), dispatched by wanted level (`COP_TIERS`: 1 at 25 heat, 2 at 50, 3 at 75, 5 at 100), plus `PATROL_COPS` 2 always cruising. Patrols are witnesses but don't arrest until they engage. ~~From 75 heat cops shoot crooks on foot~~ (replaced in v0.8 by tasers and escalation-only lethal force).
+  - ~~**Arrest range** 1 m from the cop car's bodywork~~ (replaced in v0.8 by officers on foot).
   - **The parts counter and bench-install are gone**, replaced by the mod shop. Buying is still 1.6× base value (times the style's value), condition 1.0.
   - **The locker (`World.stash`) is shared by the crew** and holds 40 parts; overflow is pushed onto the floor. SHOP SEIZED empties it (the car keeps its mods, as before).
   - **Peds fight back:** `BRAVE_CHANCE` 0.35, `ARMED_CHANCE` 0.3, a hit knocks you down for 0.9 s and empties your hands. Laughing, queueing and carried peds aren't witnesses.
   - Traffic bail behaviour is unchanged from v0.6 (the engine stays running).
   - Big-head mode, the chase camera and pitch are client-side only.
+- **v0.8 decisions, flagged for Bryce** (all tunable in `config.py`):
+  - **"lose a/x % of your money"** was read as: the crew loses `DEATH_LOSS` (50%) divided by the number of players (50% solo, 25% for two, 12.5% for four). If he meant each player's full share (100% / players), set `DEATH_LOSS = 1.0`.
+  - **When cops go lethal:** only after the crew fires a gun within `COP_HEAR_RANGE` (55 m) of any cop or officer, or hits a cop/cop car with a bullet; it lasts `LETHAL_TIME` (45 s) and refreshes on every shot. The v0.7 "cops shoot at 75 heat" rule is gone (tasers from 50 heat instead).
+  - **Dying keeps your guns** (the cash is the penalty); **busted still confiscates them.**
+  - **Jail has three ways out besides fighting:** a crewmate picks the lock (6 s), a car rams the gate (>= 9 m/s delta-v), or bail ($250 + $100 per previous arrest this run). Bail is there so a solo player who keeps losing to the guards isn't stuck forever.
+  - **Jailbreak costs +40 heat** and the jumpsuit makes you a wanted target even at 0 heat until you reach the shop.
+  - **Traffic bail behaviour and everything else in the heat model is unchanged.**
+  - Drift assist is on for every player-driven car; AI cars keep their traction control instead.
 - **Decisions the builder made and flagged** (fine to keep):
   - Cop dispatch stays on until heat reaches 0.
   - The horn has a 7 s cooldown per cop.

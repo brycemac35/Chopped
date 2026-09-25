@@ -2026,8 +2026,8 @@ class World(Physics, Brawl, Garage, Police):
             if car.wanted():
                 t.append((car.x, car.y, car.vx, car.vy, True, car))
         for p in self.players.values():
-            if (self.heat > 0 or p.jumpsuit) and p.state in (FOOT, TUMBLE) and not p.jailed and \
-                    not self.map.in_garage(p.x, p.y):
+            wanted = self.heat > 0 or (p.jumpsuit and C.JUMPSUIT_WITNESS)   # (orange: wanted on sight)
+            if wanted and p.state in (FOOT, TUMBLE) and not p.jailed and not self.map.in_garage(p.x, p.y):
                 t.append((p.x, p.y, p.vx, p.vy, False, p))
         return t
 

@@ -512,8 +512,9 @@ class FPRenderer:
             zbuf[x] = dist
             hit = (cy + dist * dy) if side == 0 else (cx + dist * dx)
             u = int((hit % T) / T * FA.TEX)
-            if (side == 0 and dx > 0) or (side == 1 and dy < 0):
-                u = FA.TEX - 1 - u                          # so text reads the right way round
+            if (side == 0 and dx < 0) or (side == 1 and dy > 0):
+                u = FA.TEX - 1 - u                          # so text reads the right way round (v0.8: it
+                                                            # didn't -- CHOP SHOP had been POHS POHC for ages)
             if did in self.inner_plain and not (side == 1 and dy < 0):
                 did = self.inner_plain[did]                 # (a one-sided sign: only the street face has it)
             wt = self._wall_tex(did, night)

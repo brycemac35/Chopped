@@ -111,7 +111,7 @@ class Police:
             if p.state not in (FOOT, TUMBLE) or p.jailed or self.map.in_garage(p.x, p.y) or \
                     self.map.in_precinct(p.x, p.y):
                 continue
-            if self.heat > 0 or p.jumpsuit:
+            if self.heat > 0 or (p.jumpsuit and C.JUMPSUIT_WITNESS):
                 out.append(p)
         return out
 

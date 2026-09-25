@@ -647,17 +647,18 @@ class DoomHud:
             f.draw(low, "THE CREW PAYS THE HOSPITAL. YOU WAKE UP AT THE SHOP.", W // 2, VIEW_H // 2 + 12,
                    P["white"], align="center")
             return
+        oy = 62                                 # (under the toasts, over the action)
         if f2 & PR.PF2_JAILED:
-            low.blit(self._panel(360, 12, 170), (W // 2 - 180, 16))
+            low.blit(self._panel(360, 12, 170), (W // 2 - 180, oy - 2))
             msg = "IN THE LOCKUP: OPEN THE GATE!" if f2 & PR.PF2_KEYS else \
                 "IN THE LOCKUP: KNOCK OUT THE BIG GUARD, TAKE HIS KEYS (OR POST BAIL AT THE DESK)"
-            f.draw(low, msg, W // 2, 18, P["gold"], align="center")
+            f.draw(low, msg, W // 2, oy, P["gold"], align="center")
         elif f2 & PR.PF2_JUMPSUIT:
-            f.draw(low, "ESCAPED CONVICT: GET BACK TO THE SHOP AND CHANGE", W // 2, 18,
+            f.draw(low, "ESCAPED CONVICT: GET BACK TO THE SHOP AND CHANGE", W // 2, oy,
                    (255, 140, 40) if flash else P["white"], align="center")
         if f2 & PR.PF2_KEYS:
-            low.fill(P["ink"], (W // 2 - 10, 30, 20, 12))
-            f.draw(low, "KEYS", W // 2, 33, P["gold"], align="center")
+            low.fill(P["ink"], (W // 2 - 10, oy + 12, 20, 12))
+            f.draw(low, "KEYS", W // 2, oy + 15, P["gold"], align="center")
         if f2 & PR.PF2_CUFFING and me[2] in (S.FOOT, S.TUMBLE):
             f.draw(low, "CUFFS GOING ON! MASH SPACE!", W // 2, VIEW_H // 2 + 24,
                    P["danger"] if flash else P["white"], scale=2, align="center")
