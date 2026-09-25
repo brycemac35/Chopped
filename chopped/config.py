@@ -79,11 +79,19 @@ STAMINA_WALK_2H_DRAIN = 8.0      # just carrying a bumper is cardio
 STAMINA_REGEN = 18.0
 STAMINA_REGEN_DELAY = 0.9        # catch your breath before you get it back
 STAMINA_RECOVER_AT = 25.0        # exhausted until you're back above this
+JUMP_SPEED = 6.2                 # m/s straight up: ~0.9 m of air. Doomguy couldn't do this.
+JUMP_GRAVITY = 21.0              # snappier than real gravity; floaty jumps feel like the moon
+JUMP_STAMINA = 5.0               # per jump (bunny-hopping from the cops is a valid strategy)
+AIR_CONTROL = 3.0                # 1/s: how much you can steer mid-air (ground is 16)
+HURDLE_HEIGHT = 0.7              # over this, you clear a roadblock (it's 1 m; you tuck your knees)
+CAR_ROOF_Z = 1.6                 # people higher than this fly over cars instead of into them
+CHUTE_SINK = 2.2                 # m/s: parachute descent (ejector seat)
 INTERACT_RANGE_CAR = 3.2         # metres from car centre for door stuff
 INTERACT_RANGE_SLOT = 2.4        # metres from a slot anchor for stripping
 INTERACT_RANGE_PICKUP = 1.6
 INTERACT_RANGE_BENCH = 2.2
 INTERACT_RANGE_DOLLY = 1.8
+CAR_PROMPT_TIME = 4.0            # s the driving controls stay on screen after you get in
 TAP_HOLD = 0.2                   # holds shorter than this fire on a single tap
 AIM_REACH = 1.0                  # you interact with whatever's this far in front of your face
 CAR_AIM_RANGE = 1.5              # ...if the car's bodywork is within this of that point
@@ -159,6 +167,51 @@ NOS_REFILL = 0.25                # s of boost regained per second (fills in 16 s
 
 LIVERY_CHANCE = 0.3              # v0.7: stripes, flames, polka dots... 30% of the city dresses up
 CIV_GLOW_CHANCE = 0.06           # neon underglow on a parked car: someone's pride and joy. Now yours.
+
+# --------------------------------------------------------------------------
+# v0.7 slapstick: throwing, carrying, bowling, fighting back (brawl.py)
+# --------------------------------------------------------------------------
+BANNER_TIME = 2.5                # s a YEETED / HUMBLED / STRIKE! banner stays up
+THROW_SPEED = 16.0               # m/s a thrown part leaves your hands at
+THROW_HEAVY_MULT = 0.8           # doors and bumpers fly slower (they fly, though)
+THROW_LIFT = 3.0                 # m/s upward: a flat arc, like a frisbee made of steel
+THROW_COOLDOWN = 0.35
+THROW_HIT_R = 0.75               # m: how close a flying part has to pass to connect
+THROW_KNOCKDOWN = 3.0            # s a pedestrian stays down (x1.4 for a two-hander)
+THROW_PLAYER_TUMBLE = 1.2        # s a crewmate stays down (friendly fire is still fire)
+THROW_WEAR = 0.08                # condition lost per bonk: throwing parts isn't free
+GRAB_RANGE = 1.6                 # m from your aim point to pick someone up (G)
+CARRY_STRUGGLE = 7.0             # s before a carried pedestrian wriggles free
+WRIGGLE_PRESSES = 5              # Space presses for a carried crewmate to break free
+THROW_PERSON_SPEED = 13.0        # m/s. Olympic hammer throwers weep.
+THROW_PERSON_LIFT = 4.5
+THROWN_TUMBLE = 3.0              # s a thrown person spends rethinking things
+BOWL_R = 1.0                     # m: a flying person knocks down anyone this close
+STRIKE_COUNT = 3                 # people knocked over by one flying person = STRIKE!
+HAYMAKER_CHARGE = 0.7            # s holding the punch before it's a haymaker
+HAYMAKER_SPEED = 18.0            # m/s you send them off at...
+HAYMAKER_LIFT = 7.0              # ...and up (they come down eventually)
+HAYMAKER_TUMBLE = 4.0
+DANCE_RADIUS = 14.0              # T: everyone this close has an opinion
+DANCE_OFFEND_CHANCE = 0.3        # brave peds who take it personally
+DANCE_LAUGH_TIME = 4.0           # s the rest stand there laughing (and can be robbed, or picked up)
+DANCE_COP_HEAT = 3.0             # per reaction, if a cop can see you dancing
+BRAVE_CHANCE = 0.35              # pedestrians who fight back instead of running
+ARMED_CHANCE = 0.3               # ...and of those, how many are carrying (about 1 in 10 overall)
+CARJACK_FIGHT_CHANCE = 0.5       # dragged-out drivers who come back swinging
+BRAWL_TIME = 25.0                # s a grudge lasts
+BRAWL_GRIT_MAX = 3               # knockdowns a brawler takes before they've had enough
+BRAWL_RALLY_RADIUS = 14.0        # brave bystanders this close pile in when you start something
+BRAWL_RALLY_CHANCE = 0.5
+BRAWL_GIVE_UP = 45.0             # m: outrun them this far and they go home
+BRAWL_SPEED = 7.4                # m/s: faster than your walk (6), slower than your sprint (10)
+BRAWL_REACH = 1.2
+BRAWL_PUNCH_COOLDOWN = 0.9
+BRAWL_HIT_CHANCE = 0.7
+BRAWL_PUNCH_TUMBLE = 0.9         # s on the floor per pedestrian punch (and your hands empty out)
+PED_GUN_RANGE = 22.0             # armed pedestrians shoot from here...
+PED_GUN_COOLDOWN = 1.3           # ...this often...
+PED_GUN_ACCURACY = 0.3           # ...and hit this often. Enough.
 
 # --------------------------------------------------------------------------
 # Crashes: judged on delta-v (how hard you STOPPED), not how fast you were going
@@ -332,6 +385,16 @@ MAX_PICKUPS = 90
 
 TOAST_TIME = 3.5
 MUSIC_VOLUME = 0.45              # the beat sits under the engine and the sirens, not on top of them
+MOUSE_PITCH_SENS = 0.0022        # look up/down: share of the view height per mouse count
+PITCH_LIMIT = 0.42               # ...up to this share of the view (y-shearing gets weird past it)
+CHASE_BACK = 3.8                 # 3rd-person camera: this far behind, plus 0.75 x the car's length
+CHASE_HEIGHT = 2.1               # ...and this high, plus a bit for tall vans
+CHASE_PITCH = 0.12               # looking down at the car by this share of the view
+CHASE_LAG = 5.0                  # 1/s: how fast the camera swings round behind you
+CHASE_FOLLOW_VEL = 0.4           # share of the way it turns toward where you're actually going (drifts!)
+CHASE_ORBIT_RETURN = 1.2         # s after you stop mouse-looking before it drifts back behind the car
+DRIFT_MIN_ANGLE = 14.0           # degrees of slide that count as a drift on the meter
+DRIFT_MIN_SPEED = 8.0
 
 # --------------------------------------------------------------------------
 # First-person view (the Doom-style one)

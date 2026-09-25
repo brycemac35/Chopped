@@ -626,6 +626,25 @@ def person_boxes(shirt, skin, hair, frame, extra=None, pants=(52, 56, 78), gun=0
         elif extra == "handsup":
             b.append((-0.06, 0.08, y0, y1, 1.3, 1.92, shirt))                             # don't shoot
             b.append((-0.06, 0.08, y0, y1, 1.92, 2.04, skin))
+        elif extra == "fists":
+            # put 'em up: forearms forward, fists at chin height
+            b.append((0.0, 0.3, y0 + side * -0.06, y1 + side * -0.06, 1.2, 1.32, shirt))
+            b.append((0.3, 0.42, y0 + side * -0.08, y1 + side * -0.08, 1.24, 1.4, skin))
+        elif extra == "laugh":
+            # clutching their sides
+            b.append((0.02, 0.16, y0 - side * 0.06, y1 - side * 0.06, 0.95, 1.3, shirt))
+            b.append((0.1, 0.2, y0 - side * 0.12, y1 - side * 0.12, 0.95, 1.05, skin))
+        elif extra in ("dance0", "dance1"):
+            up = (extra == "dance0") == (side > 0)
+            if up:
+                b.append((-0.06, 0.08, y0 + side * 0.08, y1 + side * 0.08, 1.35, 1.95, shirt))
+                b.append((-0.06, 0.08, y0 + side * 0.1, y1 + side * 0.1, 1.95, 2.07, skin))
+            else:
+                b.append((-0.06, 0.08, y0 + side * 0.25, y1 + side * 0.25, 1.2, 1.3, shirt))
+                b.append((-0.06, 0.08, y0 + side * 0.45, y1 + side * 0.45, 1.2, 1.3, skin))
+        elif extra == "windup" and side > 0:
+            b.append((-0.45, -0.05, y0 + 0.05, y1 + 0.05, 1.25, 1.36, shirt))                # cocked back
+            b.append((-0.58, -0.44, y0 + 0.05, y1 + 0.05, 1.24, 1.38, skin))
         elif gun and side > 0:
             # arm straight out, gun at the end: the international sign for "wallet. Now."
             b.append((0.0, 0.42, 0.18, 0.29, 1.24, 1.35, shirt))
@@ -769,6 +788,19 @@ def make_lamp(night):
         pygame.draw.circle(glow, (255, 240, 170, 90), (6, 6), 6)
         s.blit(glow, (0, 2))
     return s, 6, 50
+
+
+def make_chute():
+    """Ejector-seat parachute: a striped canopy and its strings."""
+    s = pygame.Surface((40, 34), pygame.SRCALPHA)
+    cols = ((236, 70, 60), (245, 245, 240))
+    for k in range(8):
+        x0 = 2 + k * 4.5
+        pygame.draw.polygon(s, cols[k % 2], [(20, 2), (x0, 14), (x0 + 4.5, 14)])
+    pygame.draw.ellipse(s, (200, 60, 50), (0, 6, 40, 12), 2)
+    for x in (2, 12, 28, 38):
+        pygame.draw.line(s, (60, 60, 60), (x, 14), (20, 33))
+    return s, 20, 34
 
 
 def make_camera_pole():

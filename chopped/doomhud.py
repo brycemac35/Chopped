@@ -111,6 +111,8 @@ class DoomHud:
         self.rng = random.Random(3)
         self.icons2 = [pygame.transform.scale(i, (16, 16)) for i in bank.icons]
         self.icons6 = {}
+        # drift meter: [seconds sideways, score, seconds since it last counted, banner text, banner until]
+        self.drift = [0.0, 0.0, 9.0, "", 0.0]
 
     # ------------------------------------------------------------------ pieces
     def _make_bar(self):
@@ -171,7 +173,7 @@ class DoomHud:
         self.toasts.append((text, TOAST_COLORS.get(color, P["white"]), now))
 
     # ------------------------------------------------------------------ first-person overlays
-    def draw_overlay(self, surf, view, now, speed_bob, steer, weapon=S.ARM_FISTS, fire_t=-9.0):
+    def draw_overlay(self, surf, view, now, speed_bob, steer, weapon=S.ARM_FISTS, fire_t=-9.0, chase=False):
         """Hands / held parts / dolly / weapon / car interior, over the 3D view."""
         me = view.me
         if me is None:
@@ -180,7 +182,8 @@ class DoomHud:
         pen = Pen(surf)
         vw, vh = pen.size
         if state in (S.DRIVER, S.PASSENGER) and view.my_car is not None:
-            self._dashboard(pen, view.my_car, state == S.DRIVER, steer, now)
+            if not chase:
+                self._dashboard(pen, view.my_car, state == S.DRIVER, steer, now)
             return
         if state == S.CUFFED:
             for x in range(0, vw, 26):
@@ -188,6 +191,24 @@ class DoomHud:
                 pen.fill((130, 130, 140), (x + 1, 0, 2, vh))
             return
         if state != S.FOOT:
+            return
+        sleeve0 = PLAYER_COLORS[me[1] % 4]
+        skin0 = SKINS[me[0] % 4]
+        if me[3] & PR.PF_CARRY:
+            # a pair of legs over your left shoulder, kicking; your hands on their knees
+            kick = math.sin(now * 11) * 6
+            for k, dx in enumerate((0, 22)):
+                pen.poly((52, 56, 78), [(40 + dx, 0), (62 + dx, 0), (70 + dx + kick * (1 if k else -1), 120),
+                                         (48 + dx + kick * (1 if k else -1), 120)])
+                pen.fill((30, 26, 30), (46 + dx + int(kick * (1 if k else -1)), 116, 28, 12))
+            self._fist(pen, 70, vh - 60, skin0, sleeve0, -1)
+            self._fist(pen, vw // 2 + 120, vh - 24, skin0, sleeve0, 1)
+            return
+        if me[3] & PR.PF_DANCE:
+            # both hands up, waving. You look ridiculous. That's the point.
+            wave = math.sin(now * 10) * 30
+            self._fist(pen, vw // 2 - 110 + int(wave), vh - 120 - int(abs(wave)), skin0, sleeve0, -1)
+            self._fist(pen, vw // 2 + 110 + int(wave), vh - 120 - int(abs(-wave)), skin0, sleeve0, 1)
             return
         bob = math.sin(now * 9.0) * 3 * speed_bob
         sway = math.cos(now * 4.5) * 4 * speed_bob
@@ -275,6 +296,14 @@ class DoomHud:
             return
         # fists: the right one jabs at the middle of the screen
         by = vh - 24 + int(bob)
+        me = view.me
+        if me is not None and me[3] & PR.PF_CHARGE:
+            # winding up the haymaker: right fist pulled way back, trembling with intent
+            shake = math.sin(time.perf_counter() * 60) * 2
+            pen.fill((255, 220, 120), (vw // 2 - 30, vh - 12, 60, 3))
+            self._fist(pen, vw // 2 - 120 - int(sway), by, skin, sleeve, -1)
+            self._fist(pen, vw // 2 + 170 + int(shake), by + 30, skin, sleeve, 1)
+            return
         jab = math.sin(min(1.0, since / 0.22) * math.pi) if since < 0.22 else 0.0
         self._fist(pen, vw // 2 - 120 - int(sway), by, skin, sleeve, -1)
         self._fist(pen, vw // 2 + 120 + int(sway) - int(jab * 100), by - int(jab * 46), skin, sleeve, 1)
@@ -287,6 +316,39 @@ class DoomHud:
             t = math.radians(a)
             pen.line((255, 230, 120), (x, y), (x + int(math.cos(t) * r * 1.6),
                                                              y + int(math.sin(t) * r * 1.6)), 2)
+
+    def drift_meter(self, surf, view, now, dt):
+        """Points for style. Pure bragging rights: no cash, no heat, just a
+        number your mates will dispute."""
+        me, car = view.me, view.my_car
+        d = self.drift
+        sideways = False
+        if me is not None and car is not None and me[2] == S.DRIVER:
+            spd = math.hypot(car[9], car[10])
+            if spd > C.DRIFT_MIN_SPEED:
+                slip = (math.atan2(car[10], car[9]) - car[11] + math.pi) % (2 * math.pi) - math.pi
+                ang = abs(math.degrees(slip))
+                if C.DRIFT_MIN_ANGLE < ang < 120:
+                    sideways = True
+                    d[0] += dt
+                    d[1] += dt * spd * ang * 0.35 * (1.0 + min(3.0, d[0]) * 0.5)
+                    d[2] = 0.0
+        if not sideways:
+            d[2] += dt
+            if d[0] > 0 and d[2] > 0.5:
+                if d[0] > 0.8:
+                    words = ("NICE DRIFT", "TOKYO WOULD BE PROUD", "SIDEWAYS SENSEI", "THE TYRES FILED A COMPLAINT")
+                    word = words[min(len(words) - 1, int(d[1] // 1500))]
+                    d[3], d[4] = "%s! +%d" % (word, int(d[1])), now + 2.0
+                d[0] = d[1] = 0.0
+        vw, vh = surf.get_size()
+        if d[0] > 0.3:
+            num = self.big("%d" % int(d[1]), BIG_GOLD)
+            surf.blit(num, (vw // 2 - num.get_width() // 2, 30))
+            self.font.draw(surf, "DRIFT x%.1f  %.1fS" % (1.0 + min(3.0, d[0]) * 0.5, d[0]), vw // 2, 50,
+                           P["gold"], align="center")
+        elif now < d[4]:
+            self.font.draw(surf, d[3], vw // 2, 36, P["gold"], scale=2, align="center")
 
     def _icon6(self, idx):
         ic = self.icons6.get(idx)
@@ -484,6 +546,7 @@ class DoomHud:
                 self._shop_compass(low, view, info, now)
                 self._car_compass(low, view, info, now)
         self._banners(low, snap, me, now, flash)
+        self._comedy_banner(low, me, now)
         if now < self.help_until and not info.get("paused"):
             lines = ["MOUSE LOOK  WASD MOVE/DRIVE  SHIFT SPRINT  E USE (HOLD)  G DROP  F EXIT CAR",
                      "CLICK/CTRL PUNCH/SHOOT/PLACE  1-5, WHEEL OR Q: WEAPONS  SPACE HANDBRAKE  H HORN",
@@ -636,6 +699,24 @@ class DoomHud:
             text = "CAR TO STEAL %dM" % bd
             pygame.draw.polygon(low, col, [(x - 4, 22), (x + 4, 22), (x, 27)])
         self.font.draw(low, text, int(x), 14, col, align="center")
+
+    def _comedy_banner(self, low, me, now):
+        """YEETED. HUMBLED. STRIKE! Big letters, a wobble, and your dignity."""
+        if me is None or len(me) < 17 or not me[16]:
+            self.banner_seen = 0
+            return
+        if me[16] != getattr(self, "banner_seen", 0):
+            self.banner_seen = me[16]
+            self.banner_t0 = now
+        t = now - self.banner_t0
+        text = S.BANNER_TEXT[me[16] % len(S.BANNER_TEXT)]
+        good = me[16] in (S.BN_HOMERUN, S.BN_STRIKE)
+        scale = 5 if t > 0.15 else 8
+        col = P["gold"] if good else P["danger"]
+        wob = int(math.sin(now * 14) * 2)
+        y = VIEW_H // 2 - 60 + wob
+        self.font.draw(low, text, W // 2 + 2, y + 2, P["ink"], scale=scale, align="center")
+        self.font.draw(low, text, W // 2, y, col, scale=scale, align="center")
 
     def _banners(self, low, snap, me, now, flash):
         f = self.font

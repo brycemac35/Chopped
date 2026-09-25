@@ -454,17 +454,38 @@ class Physics:
             tx, ty = dx * inv * spd, dy * inv * spd
         else:
             tx = ty = 0.0
-        k = min(1.0, 16.0 * dt)
+        grounded = p.z <= 0.0
+        k = min(1.0, (16.0 if grounded else C.AIR_CONTROL) * dt)
         p.vx += (tx - p.vx) * k
         p.vy += (ty - p.vy) * k
         p.sprinting = want_sprint
         p.moving = moving
+        # jumping (v0.7). Hold Space and you bunny-hop. We're not judging.
+        if grounded and b & B_JUMP and p.walk_load() < 2 and p.stamina > C.JUMP_STAMINA:
+            p.vz = C.JUMP_SPEED * (0.8 if used else 1.0)
+            p.stamina -= C.JUMP_STAMINA
+            p.regen_delay = C.STAMINA_REGEN_DELAY
+            grounded = False
+        if not grounded or p.vz:
+            self._fall(p, dt)
+
+    @staticmethod
+    def _fall(b, dt, chute=False):
+        """Gravity for anything with a z: people mid-jump, mid-throw, mid-ejection."""
+        b.vz -= C.JUMP_GRAVITY * dt
+        if chute:
+            b.vz = max(b.vz, -C.CHUTE_SINK)
+        b.z += b.vz * dt
+        if b.z <= 0.0:
+            b.z = 0.0
+            b.vz = 0.0
 
     def _body_vs_world(self, b, r):
         rects = self._rects
         rects.clear()
         self.map.solid_rects_near(b.x, b.y, r, rects)
-        rects.extend(self.extra_rects)
+        if b.z < C.HURDLE_HEIGHT:
+            rects.extend(self.extra_rects)             # (jump high enough and you clear a roadblock)
         for rect in rects:
             hit = circle_rect_contact(b.x, b.y, r, rect)
             if hit:
@@ -481,6 +502,8 @@ class Physics:
         closing velocity, and report the hardest hit as (rel_speed, car_vx,
         car_vy, nx, ny) so the caller can decide who goes ragdoll."""
         result = None
+        if b.z > C.CAR_ROOF_Z:
+            return None                                # sailing over the traffic
         for car in self.cars.values():
             dx, dy = b.x - car.x, b.y - car.y
             reach = car.bound + r

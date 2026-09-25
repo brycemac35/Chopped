@@ -223,13 +223,15 @@ class Server:
             return
         conn.last_heard = now
         if ptype == P.P_INPUT and len(data) >= off + P.INPUT.size:
-            seq, cms, ack, buttons, use, drop, ex, yaw, fire, weapon = P.INPUT.unpack_from(data, off)
+            (seq, cms, ack, buttons, use, drop, ex, yaw, fire, weapon,
+             mseq, mop, marg) = P.INPUT.unpack_from(data, off)
             if seq <= conn.input_seq:
                 return                     # stale/out-of-order: newer state already applied
             conn.input_seq = seq
             conn.echo_ms = cms
             conn.ack_event = max(conn.ack_event, ack)
-            self.world.set_input(conn.pid, InputState(buttons, use, drop, ex, P.unang16(yaw), fire, weapon))
+            self.world.set_input(conn.pid, InputState(buttons, use, drop, ex, P.unang16(yaw), fire, weapon,
+                                                      mseq, mop, marg))
         elif ptype == P.P_LEAVE:
             self._drop(conn, "left")
 
@@ -408,12 +410,12 @@ class Client:
             i = self.inp
             y16 = P.ang16(i.yaw)
             self._send(P.header(P.P_INPUT) + P.INPUT.pack(
-                self.input_seq, ms_now(), self.last_event, i.buttons & 0xFF,
+                self.input_seq, ms_now(), self.last_event, i.buttons & 0xFFFF,
                 i.use_count & 0xFF, i.drop_count & 0xFF, i.exit_count & 0xFF, y16,
-                i.fire_count & 0xFF, i.weapon & 0xFF))
+                i.fire_count & 0xFF, i.weapon & 0xFF, i.menu_seq & 0xFF, i.menu_op & 0xFF, i.menu_arg & 0xFF))
             if self.predictor is not None:
                 # predict with the yaw exactly as the server will decode it
-                self.predictor.push_input(self.input_seq, i.buttons & 0xFF, P.unang16(y16))
+                self.predictor.push_input(self.input_seq, i.buttons & 0xFFFF, P.unang16(y16))
         if now - self.last_input > 0.25:
             self.last_input = now      # window was dragged / laptop napped: don't machine-gun inputs
 
@@ -551,6 +553,8 @@ class Client:
             me[3] = (me[3] & ~(PF_MOVING | PF_SPRINT | PF_EXHAUSTED)) | (PF_MOVING if b.moving else 0) | \
                 (PF_SPRINT if b.sprinting else 0) | (PF_EXHAUSTED if b.exhausted else 0)
             me[11] = b.stamina
+            if len(me) > 15:
+                me[15] = b.z                 # your own jump, predicted: no 100 ms hop delay
             v.players[self.pid] = v.me = me
             return True
         return False

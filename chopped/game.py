@@ -13,6 +13,7 @@ import pygame
 
 from . import config as C
 from . import sim as S
+from . import vehicles as V
 from . import art
 from .art import P, PixelFont
 from .audio import Audio
@@ -69,6 +70,8 @@ class Bot:
             b |= S.B_HANDBRAKE if r.random() < 0.15 else 0
             b |= S.B_HORN if r.random() < 0.1 else 0
             b |= S.B_USE if r.random() < 0.3 else 0
+            b |= S.B_TAUNT if r.random() < 0.05 else 0
+            b |= S.B_FIRE if r.random() < 0.15 else 0
             self.buttons = b
             if r.random() < 0.2:
                 self.use += 1
@@ -121,6 +124,11 @@ class App:
         self.fire_anim = -9.0          # when you last pulled the trigger (for the view-model kick)
         self.bot = Bot() if self.selftest else None
         self.yaw = 0.0                 # where you're looking (first person); sent with every input
+        self.pitch = 0.0               # looking up/down, in pixels of horizon shift (client-only)
+        self.chase = False             # V: third-person chase camera when driving
+        self.cam_yaw = None            # the chase camera's own, lagging, heading
+        self.cam_orbit = 0.0           # mouse-look around the car in chase view
+        self.orbit_idle = 0.0
         self.fp_mode = True            # Tab flips to the top-down automap
         self.fp = None
         self.last_state = None
@@ -307,6 +315,12 @@ class App:
                         self.exit_c += 1
                     elif ev.key == pygame.K_TAB:
                         self.fp_mode = not self.fp_mode
+                    elif ev.key == pygame.K_v:
+                        self.chase = not self.chase
+                        self.cam_yaw = None
+                        if self.hud is not None:
+                            self.hud.add_toast("CAMERA: %s" % ("CHASE (3RD PERSON)" if self.chase else "COCKPIT"),
+                                               S.T_INFO, time.perf_counter())
                     elif ev.key in (pygame.K_LCTRL, pygame.K_RCTRL):
                         self._fire()
                     elif pygame.K_1 <= ev.key <= pygame.K_5:
@@ -376,15 +390,51 @@ class App:
         if k[pygame.K_LSHIFT] or k[pygame.K_RSHIFT]: b |= S.B_SPRINT
         if k[pygame.K_SPACE]: b |= S.B_HANDBRAKE
         if k[pygame.K_h]: b |= S.B_HORN
-        rel = pygame.mouse.get_rel()[0] if self.mouse_grabbed else 0
+        if k[pygame.K_t]: b |= S.B_TAUNT
+        if k[pygame.K_LCTRL] or k[pygame.K_RCTRL] or (self.mouse_grabbed and pygame.mouse.get_pressed()[0]):
+            b |= S.B_FIRE                      # held: the haymaker winds up while you hold it
+        rel, rely = pygame.mouse.get_rel() if self.mouse_grabbed else (0, 0)
         if in_car:
-            # arrows steer too; the view is welded to the car
+            # arrows steer too; the view is welded to the car (in chase view the mouse orbits it)
             if k[pygame.K_LEFT]: b |= S.B_LEFT
             if k[pygame.K_RIGHT]: b |= S.B_RIGHT
+            if self.chase:
+                self.cam_orbit = max(-math.pi, min(math.pi, self.cam_orbit + rel * C.MOUSE_SENS))
+                self.orbit_idle = 0.0 if rel else self.orbit_idle + dt
+                if self.orbit_idle > C.CHASE_ORBIT_RETURN:
+                    self.cam_orbit *= math.exp(-3.0 * dt)
+            else:
+                self._look_updown(rely)
         else:
             turn = (1 if k[pygame.K_RIGHT] else 0) - (1 if k[pygame.K_LEFT] else 0)
             self.yaw = (self.yaw + turn * C.FP_TURN_SPEED * dt + rel * C.MOUSE_SENS) % (2 * math.pi)
+            self._look_updown(rely)
         return S.InputState(b, self.use_c, self.drop_c, self.exit_c, self.yaw, self.fire_c, weapon)
+
+    def _look_updown(self, rely):
+        lim = VIEW_H * C.PITCH_LIMIT
+        self.pitch = max(-lim, min(lim, self.pitch - rely * C.MOUSE_PITCH_SENS * VIEW_H))
+
+    def _chase_cam(self, car, dt):
+        """Behind and above the car, lagging a little, swinging toward where it's
+        actually going so a drift shows as a drift. Pulled in if a wall's behind."""
+        x, y, vx, vy, a = car[7], car[8], car[9], car[10], car[11]
+        m = V.model(car[15])
+        want = a
+        spd = math.hypot(vx, vy)
+        if spd > 5.0:
+            va = math.atan2(vy, vx)
+            want = a + ((va - a + math.pi) % (2 * math.pi) - math.pi) * C.CHASE_FOLLOW_VEL
+        if self.cam_yaw is None:
+            self.cam_yaw = want
+        d = (want - self.cam_yaw + math.pi) % (2 * math.pi) - math.pi
+        self.cam_yaw += d * min(1.0, C.CHASE_LAG * dt)
+        yaw = self.cam_yaw + self.cam_orbit
+        dist = C.CHASE_BACK + m.length * 0.75
+        clear = self.client.map.ray_clear(x, y, yaw + math.pi, dist + 0.8, step=0.25)
+        dist = max(1.2, min(dist, clear - 0.8))
+        eye = C.CHASE_HEIGHT + m.height * 0.45
+        return (x - math.cos(yaw) * dist, y - math.sin(yaw) * dist, yaw, eye)
 
     def _update(self, now, dt):
         level = 0
@@ -480,26 +530,44 @@ class App:
         car = view.my_car
         state = me[2]
         hide = None
-        if state in (S.DRIVER, S.PASSENGER) and car is not None:
+        pitch = self.pitch
+        hires = None
+        chase = False
+        if state in (S.DRIVER, S.PASSENGER) and car is not None and self.chase:
+            cam = self._chase_cam(car, dt)
+            pitch = -VIEW_H * C.CHASE_PITCH
+            hires = car[0]
+            moving = 0.0
+            chase = True
+        elif state in (S.DRIVER, S.PASSENGER) and car is not None:
             a = car[11]
-            cam = (car[7] + math.cos(a) * 0.3, car[8] + math.sin(a) * 0.3, a, C.FP_EYE_CAR)
-            hide = car[0]
+            m = V.model(car[15])
+            cam = (car[7] + math.cos(a) * 0.3, car[8] + math.sin(a) * 0.3, a,
+                   C.FP_EYE_CAR * (m.height / 1.55 if car[15] != V.SCOOTER else 1.0))
+            hide = car[0] if car[15] != V.SCOOTER else None
             moving = 0.0
         elif state == S.TUMBLE:
-            cam = (me[4], me[5], me[8], 0.5)
+            cam = (me[4], me[5], me[8], 0.5 + me[15])
+            pitch = 0
+            moving = 0.0
+        elif state == S.CARRIED:
+            cam = (me[4], me[5], me[8] + math.pi, 1.4)      # upside down over a shoulder, facing backwards
+            pitch = -VIEW_H * 0.2
             moving = 0.0
         else:
             spd = math.hypot(me[6], me[7])
             moving = min(1.0, spd / C.WALK_SPEED)
             bob = abs(math.sin(now * 9.0)) * C.FP_BOB * moving
-            cam = (me[4], me[5], self.yaw, (C.FP_EYE if state != S.CUFFED else 1.3) + bob)
+            cam = (me[4], me[5], self.yaw, (C.FP_EYE if state != S.CUFFED else 1.3) + bob + me[15])
         self.fp.car_emitters(view, dt)
-        surf = self.fp.draw(view, cam, self.client.pid, now, dt, view.snap.rent, self.renderer.bank, hide)
+        surf = self.fp.draw(view, cam, self.client.pid, now, dt, view.snap.rent, self.renderer.bank, hide,
+                            pitch=int(pitch), hires=hires)
         steer = 0.0
         if self.client.inp is not None:
             b = self.client.inp.buttons
             steer = (1.0 if b & S.B_RIGHT else 0.0) - (1.0 if b & S.B_LEFT else 0.0)
-        self.hud.draw_overlay(surf, view, now, moving, steer, self._held_weapon(), self.fire_anim)
+        self.hud.draw_overlay(surf, view, now, moving, steer, self._held_weapon(), self.fire_anim, chase=chase)
+        self.hud.drift_meter(surf, view, now, dt)
         low.blit(surf, (0, 0))
 
     def _host_lines(self):

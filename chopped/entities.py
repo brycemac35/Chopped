@@ -37,9 +37,11 @@ class InputState:
     """What a player is pressing, and where they're looking. Counters (not
     booleans) for one-shot keys so a tap survives a dropped packet: if the
     number changed, it happened. yaw is the first-person view direction."""
-    __slots__ = ("buttons", "use_count", "drop_count", "exit_count", "yaw", "fire_count", "weapon")
+    __slots__ = ("buttons", "use_count", "drop_count", "exit_count", "yaw", "fire_count", "weapon",
+                 "menu_seq", "menu_op", "menu_arg")
 
-    def __init__(self, buttons=0, use_count=0, drop_count=0, exit_count=0, yaw=0.0, fire_count=0, weapon=0):
+    def __init__(self, buttons=0, use_count=0, drop_count=0, exit_count=0, yaw=0.0, fire_count=0, weapon=0,
+                 menu_seq=0, menu_op=0, menu_arg=0):
         self.buttons = buttons
         self.use_count = use_count
         self.drop_count = drop_count
@@ -47,6 +49,9 @@ class InputState:
         self.yaw = yaw
         self.fire_count = fire_count      # clicks, counted (like E) so a dropped packet can't eat a shot
         self.weapon = weapon              # ARM_* slot you've got selected
+        self.menu_seq = menu_seq          # mod shop: bumped once per command (like the counters above)
+        self.menu_op = menu_op
+        self.menu_arg = menu_arg
 
 
 class Car:
@@ -177,7 +182,8 @@ class Player:
                  "cuffed_t", "arrest_t", "input", "prev_use", "prev_drop", "prev_exit",
                  "hold_key", "hold", "need_release", "prompt", "hold_frac", "sprinting",
                  "moving", "last_seen", "addr", "dolly", "weapon", "arms", "ammo", "gear", "fire_cd",
-                 "prev_fire", "z", "vz")
+                 "prev_fire", "z", "vz", "seat_t", "carrying", "carrier", "wriggle", "prev_jump",
+                 "charge_t", "dancing", "chute", "banner", "banner_t", "robbed_from")
 
     def __init__(self, pid, name, color):
         self.id = pid
@@ -215,9 +221,20 @@ class Player:
         self.prev_fire = 0
         self.z = 0.0                  # feet off the ground (v0.7: you can jump now)
         self.vz = 0.0
+        self.seat_t = 0.0             # seconds since you got in (the controls prompt fades out)
+        self.carrying = None          # ("npc", id) or ("player", pid): a whole person, over your shoulder
+        self.carrier = None           # CARRIED: the pid whose shoulder you're on
+        self.wriggle = 0              # CARRIED: jump presses toward breaking free
+        self.prev_jump = False
+        self.charge_t = 0.0           # fists: seconds the button's been held (haymaker wind-up)
+        self.dancing = False          # T: the dance. It offends everyone.
+        self.chute = False            # ejected with a parachute: floating down
+        self.banner = 0               # last comedy banner (for the client: YEETED, HUMBLED...)
+        self.banner_t = 0.0
+        self.robbed_from = {}         # npc id -> dollars you took (they want it back)
 
     def hands_used(self):
-        if self.dolly is not None:
+        if self.dolly is not None or self.carrying is not None:
             return 2
         return sum(p.bulk for p in self.hands)
 
@@ -226,6 +243,8 @@ class Player:
 
     def walk_load(self):
         """0..2, how hard walking/sprinting is on your stamina."""
+        if self.carrying is not None:
+            return 2                  # a whole human. Lift with the legs.
         if self.dolly is not None:
             return 2 if self.dolly.part is not None else 1
         return min(2, self.hands_used())
@@ -246,7 +265,8 @@ class Player:
 class NPC:
     __slots__ = ("id", "kind", "x", "y", "vx", "vy", "ang", "tumble_t", "life_t", "dirx", "diry",
                  "turn_t", "target", "yell_t", "complain_cd", "spin", "flee_t", "fx", "fy", "ttl", "wallet",
-                 "wallet_t", "surrender_t")
+                 "wallet_t", "surrender_t", "z", "vz", "brave", "armed", "hostile_t", "foe", "grit", "attack_cd",
+                 "carried_by", "struggle_t", "thrown_by", "bowled", "laugh_t", "lure")
 
     def __init__(self, nid, kind, x, y):
         self.id = nid
@@ -268,6 +288,19 @@ class NPC:
         self.wallet = (C.WALLET_MIN + C.WALLET_MAX) // 2   # World rolls a proper one for pedestrians
         self.wallet_t = 0.0           # counts down to a refilled wallet after a robbery
         self.surrender_t = 0.0        # > 0: hands up, someone's pointing a gun at them
+        self.z = self.vz = 0.0        # thrown people fly (v0.7)
+        self.brave = False            # fights back instead of running (World rolls it)
+        self.armed = False            # ...and some of the brave ones are carrying
+        self.hostile_t = 0.0          # > 0: coming for `foe`
+        self.foe = None               # player id they're after
+        self.grit = 0                 # knockdowns they'll take before giving up
+        self.attack_cd = 0.0
+        self.carried_by = None        # player id, if someone's got them over a shoulder
+        self.struggle_t = 0.0         # carried: seconds until they wriggle free
+        self.thrown_by = None         # player id who threw them (for strikes and blame)
+        self.bowled = 0               # people this flying person has knocked over
+        self.laugh_t = 0.0            # > 0: laughing at your dance
+        self.lure = None              # (x, y): walking toward something (an ice cream van)
 
 
 class Dolly:
@@ -310,7 +343,7 @@ class Trap:
 
 
 class Pickup:
-    __slots__ = ("id", "part", "x", "y", "vx", "vy", "age")
+    __slots__ = ("id", "part", "x", "y", "vx", "vy", "age", "z", "vz", "thrower", "hit")
 
     def __init__(self, pid, part, x, y, vx=0.0, vy=0.0):
         self.id = pid
@@ -318,6 +351,9 @@ class Pickup:
         self.x, self.y = x, y
         self.vx, self.vy = vx, vy
         self.age = 0.0
+        self.z = self.vz = 0.0        # thrown parts fly (v0.7). A door at 16 m/s is an argument-ender.
+        self.thrower = None
+        self.hit = set()              # who this throw already bonked
 
     def scale(self):
         left = C.PICKUP_LIFETIME - self.age

@@ -301,9 +301,15 @@ class Renderer:
             if not (-10 < sx < W + 10 and -10 < sy < H + 10):
                 continue
             shirt, skin, hair, extra = self._person_key(n[0], n[1])
-            fr = frame if n[2] == 0 else panic if n[2] == 2 else 0
+            fr = frame if n[2] in (0, 4, 5) else panic if n[2] == 2 else 0
+            z = n[6] if len(n) > 6 else 0.0
+            if z > 0.1:
+                low.fill((20, 18, 26), (sx - 2, sy + 2, 5, 2))            # shadow on the ground
+                sy -= int(z * PPM)
             spr = self.bank.person((shirt, skin, hair, fr, extra), n[5])
             low.blit(spr, (sx - spr.get_width() // 2, sy - spr.get_height() // 2))
+            if n[2] in (4, 5) and frame:
+                self.font.draw(low, "!", sx, sy - 10, P["danger"], align="center")
             if n[1] == S.OWNER and frame:
                 self.font.draw(low, "!", sx, sy - 10, P["danger"], align="center")
             elif n[2] == 2 and panic and (n[0] + int(now * 2)) % 3 == 0:
@@ -366,6 +372,10 @@ class Renderer:
             shirt = art.PLAYER_COLORS[color % 4]
             extra = "cuffed" if state == S.CUFFED else None
             fr = frame if (flags & PR.PF_MOVING) else 0
+            z = p[15] if len(p) > 15 else 0.0
+            if z > 0.1:
+                low.fill((20, 18, 26), (sx - 2, sy + 2, 5, 2))
+                sy -= int(z * PPM)
             spr = self.bank.person((shirt, art.SKINS[pid % 4], art.HAIRS[pid % 6], fr, extra), ang)
             low.blit(spr, (sx - spr.get_width() // 2, sy - spr.get_height() // 2))
             # carried parts float in front of you (it's a stylistic choice)

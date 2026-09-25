@@ -22,8 +22,9 @@ P_JOIN, P_WELCOME, P_REJECT, P_INPUT, P_SNAPSHOT, P_LEAVE, P_SHUTDOWN = range(1,
 HDR = struct.Struct("<2sBB")
 JOIN = struct.Struct("<IB")               # nonce, is_local
 WELCOME = struct.Struct("<BII")           # pid, map_seed, nonce
-INPUT = struct.Struct("<IIIBBBBHBB")      # seq, client_ms, ack_event, buttons, use, drop, exit, yaw16,
-                                          # fire (click counter), weapon slot
+INPUT = struct.Struct("<IIIHBBBHBBBBB")   # seq, client_ms, ack_event, buttons (16 bits), use, drop, exit,
+                                          # yaw16, fire (click counter), weapon slot,
+                                          # mod-shop command: counter, op, arg
 
 SNAP_HDR = struct.Struct("<IIBiHHBBBBHBBIHI")
 # tick, echo_ms, your_pid, cash, day_left_ds, debt_ds, heat, witness(|128 cooling),
@@ -48,9 +49,9 @@ COUNTS = struct.Struct("<BBBBBBB")
 CAR = struct.Struct("<HBBBBHIHHhhHBBBBBBB")
 # id, kind, colour, state, flags, part mask, style word, x, y, vx, vy, ang, driver, passenger, damage,
 # model, livery, extras (horn 0-2, NOS flame 3, glow 4-7), extras2 (see CX_*)
-PLAYER = struct.Struct("<BBBBHHhhHBBBHB")    # ... + weapon
-NPC = struct.Struct("<HBBHHB")
-PICKUP = struct.Struct("<HBHHB")
+PLAYER = struct.Struct("<BBBBHHhhHBBBHBBB")    # ... + weapon, z (0.1 m), banner
+NPC = struct.Struct("<HBBHHBB")           # id, kind, state, x, y, ang8, z (0.1 m)
+PICKUP = struct.Struct("<HBHHBBB")        # id, part, x, y, scale, z (0.1 m), style
 DOLLY = struct.Struct("<HHHBBB")        # id, x, y, ang8, part_idx (255 empty), holder pid (0 none)
 TRAP = struct.Struct("<HBHHBB")         # id, kind, x, y, ang8, life left (255 = fresh)
 EV_SHOT = struct.Struct("<BHHHH")       # weapon, from x, y, to x, y
@@ -61,6 +62,9 @@ CF_ALARM, CF_FIRE, CF_HORN, CF_HANDBRAKE, CF_CONFUSED, CF_WANTED = 1, 2, 4, 8, 1
 CF_TRUNK = 64                   # something in the trunk (you only find out what by looking)
 CX_GNOME, CX_NOS, CX_EJECTOR, CX_SPIN, CX_DONUT, CX_PATROL = 1, 2, 4, 8, 16, 32
 PF_SPRINT, PF_EXHAUSTED, PF_MOVING, PF_DOLLY = 1, 2, 4, 8
+PF_CARRY, PF_DANCE, PF_CHARGE, PF_CHUTE = 16, 32, 64, 128
+# NPC row states
+NS_WALK, NS_DOWN, NS_FLEE, NS_HANDSUP, NS_BRAWL, NS_ARMED, NS_CARRIED, NS_LAUGH = range(8)
 
 SLOT_BITS = {s: 1 << i for i, s in enumerate(SLOTS)}
 
@@ -99,6 +103,11 @@ def ang16(a):
 def unang16(v):
     a = v / 65536.0 * 2 * math.pi
     return a - 2 * math.pi if a > math.pi else a
+
+
+def _z(v):
+    v = int(v * 10)
+    return 0 if v < 0 else 255 if v > 255 else v
 
 
 def _ang8(a):
@@ -188,24 +197,40 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
         h0 = PART_INDEX[p.hands[0].type_id] if len(p.hands) > 0 else NO_PART
         h1 = PART_INDEX[p.hands[1].type_id] if len(p.hands) > 1 else NO_PART
         flags = (PF_SPRINT if p.sprinting else 0) | (PF_EXHAUSTED if p.exhausted else 0) | \
-                (PF_MOVING if p.moving else 0) | (PF_DOLLY if p.dolly is not None else 0)
+                (PF_MOVING if p.moving else 0) | (PF_DOLLY if p.dolly is not None else 0) | \
+                (PF_CARRY if p.carrying is not None else 0) | (PF_DANCE if p.dancing else 0) | \
+                (PF_CHARGE if p.charge_t > 0.15 else 0) | (PF_CHUTE if p.chute else 0)
         ang = p.spin if p.state == TUMBLE else p.ang
         players.append(PLAYER.pack(p.id, p.color, p.state, flags, _pos(p.x), _pos(p.y),
                                    _vel(p.vx), _vel(p.vy), _ang(ang), h0, h1,
-                                   int(p.stamina * 2.55), p.car_id or 0, p.weapon) + encode_text(p.name, 12))
+                                   int(p.stamina * 2.55), p.car_id or 0, p.weapon, _z(p.z), p.banner)
+                       + encode_text(p.name, 12))
     npcs = []
     for n in world.npcs.values():
         d2 = (n.x - px) ** 2 + (n.y - py) ** 2
         if d2 < r2:
-            state = 1 if n.tumble_t > 0 else 3 if n.surrender_t > 0 else 2 if n.flee_t > 0 else 0
+            if n.carried_by is not None:
+                state = NS_CARRIED
+            elif n.tumble_t > 0:
+                state = NS_DOWN
+            elif n.surrender_t > 0:
+                state = NS_HANDSUP
+            elif n.hostile_t > 0:
+                state = NS_ARMED if n.armed else NS_BRAWL
+            elif n.laugh_t > 0:
+                state = NS_LAUGH
+            elif n.flee_t > 0:
+                state = NS_FLEE
+            else:
+                state = NS_WALK
             npcs.append((d2, NPC.pack(n.id, n.kind, state, _pos(n.x), _pos(n.y),
-                                      _ang8(n.spin if state else n.ang))))
+                                      _ang8(n.spin if state in (NS_DOWN, NS_CARRIED) else n.ang), _z(n.z))))
     picks = []
     for pk in world.pickups.values():
         d2 = (pk.x - px) ** 2 + (pk.y - py) ** 2
         if d2 < r2:
             picks.append((d2, PICKUP.pack(pk.id, PART_INDEX[pk.part.type_id], _pos(pk.x), _pos(pk.y),
-                                          int(pk.scale() * 255))))
+                                          int(pk.scale() * 255), _z(pk.z), pk.part.style & 255)))
     npcs.sort(key=lambda t: t[0])
     picks.sort(key=lambda t: t[0])
     dollies = [DOLLY.pack(d.id, _pos(d.x), _pos(d.y), _ang8(d.ang),
@@ -291,9 +316,10 @@ def decode_snapshot(payload):
         f = PLAYER.unpack_from(data, off)
         off += PLAYER.size
         name, off = _text(data, off)
-        # (id, color, state, flags, x, y, vx, vy, ang, h0, h1, stamina, car_id, name, weapon)
+        # (id, color, state, flags, x, y, vx, vy, ang, h0, h1, stamina, car_id, name, weapon, z, banner)
         s.players[f[0]] = [f[0], f[1], f[2], f[3], f[4] / 16.0, f[5] / 16.0, f[6] / 64.0, f[7] / 64.0,
-                           f[8] / 65536.0 * 2 * math.pi, f[9], f[10], f[11] / 2.55, f[12], name, f[13]]
+                           f[8] / 65536.0 * 2 * math.pi, f[9], f[10], f[11] / 2.55, f[12], name, f[13],
+                           f[14] / 10.0, f[15]]
     s.dollies = {}
     for _ in range(ndl):
         f = DOLLY.unpack_from(data, off)
@@ -310,14 +336,14 @@ def decode_snapshot(payload):
     for _ in range(nn):
         f = NPC.unpack_from(data, off)
         off += NPC.size
-        # (id, kind, state, x, y, ang)
-        s.npcs[f[0]] = [f[0], f[1], f[2], f[3] / 16.0, f[4] / 16.0, f[5] / 256.0 * 2 * math.pi]
+        # (id, kind, state, x, y, ang, z)
+        s.npcs[f[0]] = [f[0], f[1], f[2], f[3] / 16.0, f[4] / 16.0, f[5] / 256.0 * 2 * math.pi, f[6] / 10.0]
     s.pickups = {}
     for _ in range(npk):
         f = PICKUP.unpack_from(data, off)
         off += PICKUP.size
-        # (id, part_idx, x, y, scale)
-        s.pickups[f[0]] = [f[0], f[1], f[2] / 16.0, f[3] / 16.0, f[4] / 255.0]
+        # (id, part_idx, x, y, scale, z, style)
+        s.pickups[f[0]] = [f[0], f[1], f[2] / 16.0, f[3] / 16.0, f[4] / 255.0, f[5] / 10.0, f[6]]
     s.events = []
     for _ in range(nev):
         seq, kind = EV.unpack_from(data, off)

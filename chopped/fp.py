@@ -17,6 +17,7 @@ import random
 import pygame
 
 from . import config as C
+from .config import clamp
 from . import mapgen as M
 from . import fpart as FA
 from . import sim as S
@@ -64,7 +65,8 @@ class FPRenderer:
     def __init__(self, cmap, map_surf, vw, vh):
         self.map = cmap
         self.vw, self.vh = vw, vh
-        self.hor = vh // 2
+        self.hor0 = vh // 2
+        self.hor = self.hor0          # moves with pitch (looking up/down: Build-engine y-shearing)
         self.fov = math.radians(C.FP_FOV)
         self.tanh = math.tan(self.fov / 2)
         self.D = (vw / 2) / self.tanh
@@ -79,7 +81,9 @@ class FPRenderer:
         for bx, by, bw, bh in (cmap.sell_bench, cmap.tune_bench):
             self.floor_map.fill(P["concrete"], (int(bx * FLOOR_PPM) - 2, int(by * FLOOR_PPM) - 2,
                                                 int(bw * FLOOR_PPM) + 6, int(bh * FLOOR_PPM) + 6))
-        self.skies = {k: FA.make_sky(k, 4 * vw, self.hor) for k in FA.SKY_KEYS}
+        self.sky_h = int(vh * 0.95)   # tall enough to look up into
+        self.skies = {k: FA.make_sky(k, 4 * vw, self.sky_h) for k in FA.SKY_KEYS}
+        self.hires = None             # the car the chase camera is following: drawn in more detail
         self._build_static_sprites()
         self.car_cache = {}
         self.person_cache = {}
@@ -160,6 +164,7 @@ class FPRenderer:
         self.tree_imgs = [FA.make_tree(rng) for _ in range(4)]
         self.lamp_img = {False: FA.make_lamp(False), True: FA.make_lamp(True)}
         self.cam_img = FA.make_camera_pole()
+        self.chute_img = FA.make_chute()
         statics = []
         for ty in range(n):
             for tx in range(n):
@@ -313,9 +318,12 @@ class FPRenderer:
                       life * r.uniform(0.6, 1.2), color)
 
     # ------------------------------------------------------------------ main draw
-    def draw(self, view, cam, me_pid, now, dt, day_left, bank, hide_car=None):
-        """cam = (x, y, yaw, eye_height). Draws into self.view and returns it."""
+    def draw(self, view, cam, me_pid, now, dt, day_left, bank, hide_car=None, pitch=0, hires=None):
+        """cam = (x, y, yaw, eye_height); pitch = pixels the horizon moves down
+        (looking up) or up (negative, looking down). Draws into self.view."""
         cx, cy, yaw, eye = cam
+        self.hor = int(clamp(self.hor0 + pitch, 6, self.vh - 6))
+        self.hires = hires
         if self.shake > 0.05:
             yaw += self.rng.uniform(-0.01, 0.01) * self.shake
             eye += self.rng.uniform(-0.02, 0.02) * self.shake
@@ -350,9 +358,14 @@ class FPRenderer:
                 continue
             sky = self.skies[key]
             sky.set_alpha(None if alpha >= 255 else alpha)
-            surf.blit(sky, (0, 0), pygame.Rect(off, 0, min(self.vw, sw - off), self.hor))
+            # the sky's bottom edge sits on the horizon, wherever pitch put it
+            h = min(self.hor, self.sky_h)
+            sy, dy = self.sky_h - h, self.hor - h
+            if dy > 0 and alpha >= 255:
+                surf.fill(sky.get_at((0, 0))[:3], (0, 0, self.vw, dy))       # above the top of the gradient
+            surf.blit(sky, (0, dy), pygame.Rect(off, sy, min(self.vw, sw - off), h))
             if sw - off < self.vw:
-                surf.blit(sky, (sw - off, 0), pygame.Rect(0, 0, self.vw - (sw - off), self.hor))
+                surf.blit(sky, (sw - off, dy), pygame.Rect(0, sy, self.vw - (sw - off), h))
         self.skies[b].set_alpha(None)
 
     def _floor(self, surf, cx, cy, yaw, eye, dark):
@@ -382,7 +395,7 @@ class FPRenderer:
                 continue
             surf.blit(scale(rot.subsurface((x0, y, w, 1)), (vw, 1)), (0, r))
         # distance haze + night: one pre-made gradient, rebuilt only when the light changes
-        key = (round(dark, 2), eye)
+        key = (round(dark, 2), round(eye, 2), hor)
         if self._fog_key != key:
             self._fog_key = key
             fog = pygame.Surface((1, vh - hor), pygame.SRCALPHA)
@@ -532,16 +545,32 @@ class FPRenderer:
             if row[0] == hide_car:
                 continue
             az = math.atan2(row[8] - cy, row[7] - cx) - row[11]
-            add(row[7], row[8], lambda r=row, a=az: self._car_sprite(r, a), tag=self._car_marker(row))
+            if row[0] == self.hires:
+                # the chase cam's car: more angles, more pixels (it's right there, being drifted)
+                add(row[7], row[8], lambda r=row, a=az: self._car_sprite(r, a, 64, 20), tag=("smoke", row))
+            else:
+                add(row[7], row[8], lambda r=row, a=az: self._car_sprite(r, a), tag=self._car_marker(row))
         frame = int(now * 7) % 2
         for n in view.npcs.values():
             shirt, skin, hair, extra = self._person_look(n[0], n[1])
             az = math.atan2(n[4] - cy, n[3] - cx) - n[5]
-            fr = frame if n[2] not in (1, 3) else 0
-            if n[2] == 3:
+            st = n[2]
+            fr = frame if st in (PR.NS_WALK, PR.NS_FLEE, PR.NS_BRAWL) else 0
+            gun = 0
+            if st == PR.NS_HANDSUP:
                 extra = "handsup"
-            add(n[3], n[4], lambda s=shirt, k=skin, h=hair, e=extra, f=fr, dn=(n[2] == 1), a=az:
-                self._person_sprite(s, k, h, f, e, dn, a))
+            elif st == PR.NS_BRAWL and extra is None:
+                extra = "fists"
+            elif st == PR.NS_ARMED:
+                gun = 1
+            elif st == PR.NS_LAUGH and extra is None:
+                extra = "laugh"
+            down = st in (PR.NS_DOWN, PR.NS_CARRIED)
+            z = n[6] if len(n) > 6 else 0.0
+            if st == PR.NS_CARRIED:
+                z -= 0.55                              # draped over a shoulder, not floating above it
+            add(n[3], n[4], lambda s=shirt, k=skin, h=hair, e=extra, f=fr, dn=down, a=az, g=gun:
+                self._person_sprite(s, k, h, f, e, dn, a, g), z=z)
         for p in view.players.values():
             if p[0] == me_pid or p[2] in (S.DRIVER, S.PASSENGER):
                 continue
@@ -549,14 +578,26 @@ class FPRenderer:
             extra = "cuffed" if p[2] == S.CUFFED else None
             az = math.atan2(p[5] - cy, p[4] - cx) - p[8]
             fr = frame if p[3] & PR.PF_MOVING else 0
+            flags = p[3]
             gun = {S.ARM_PISTOL: 1, S.ARM_SHOTGUN: 2}.get(p[14] if len(p) > 14 else 0, 0) \
-                if p[2] == S.FOOT and p[9] == NO_PART and not p[3] & PR.PF_DOLLY else 0
+                if p[2] == S.FOOT and p[9] == NO_PART and not flags & (PR.PF_DOLLY | PR.PF_CARRY) else 0
+            if flags & PR.PF_DANCE:
+                extra, gun = ("dance0" if int(now * 5) % 2 else "dance1"), 0
+            elif flags & PR.PF_CHARGE:
+                extra = "windup"
+            z = p[15] if len(p) > 15 else 0.0
+            down = p[2] in (S.TUMBLE, S.CARRIED)
+            if p[2] == S.CARRIED:
+                z -= 0.55
             add(p[4], p[5], lambda s=shirt, k=SKINS[p[0] % 4], h=HAIRS[p[0] % 6], f=fr, e=extra,
-                dn=(p[2] == S.TUMBLE), a=az, g=gun: self._person_sprite(s, k, h, f, e, dn, a, g), tag=("name", p))
+                dn=down, a=az, g=gun: self._person_sprite(s, k, h, f, e, dn, a, g), z=z, tag=("name", p))
+            if flags & PR.PF_CHUTE:
+                add(p[4], p[5], lambda: (self.chute_img, 12), z=z + 1.9)
         for pk in view.pickups.values():
             ic = self._icon(bank, pk[1])
             bob = 0.12 + 0.06 * math.sin(now * 3 + pk[0])
-            add(pk[2], pk[3], lambda i=ic: (i, 12), z=bob, tag=("pickup", pk[4]))
+            pz = pk[5] if len(pk) > 5 else 0.0
+            add(pk[2], pk[3], lambda i=ic: (i, 12), z=bob + pz, tag=("pickup", pk[4]))
         for d in view.dollies.values():
             if d[5] == me_pid:
                 continue
@@ -766,6 +807,17 @@ class FPRenderer:
             elif dmg >= 3 and r.random() < 0.1:
                 self.emit(SMOKE, x + math.cos(ang) * 1.5, y + math.sin(ang) * 1.5, 1.0, 0, 0, 1.0, 1.0)
             spd = math.hypot(vx, vy)
+            if spd > 6 and not (kind == S.COP and flags & PR.CF_FIRE):
+                slip = abs((math.atan2(vy, vx) - ang + math.pi) % TWO_PI - math.pi)
+                if 0.25 < slip < 2.6 or (flags & PR.CF_HANDBRAKE and spd > 8):
+                    # tyre smoke off the rear wheels: the drift's calling card
+                    mdl = V.model(c[15])
+                    fx, fy = math.cos(ang), math.sin(ang)
+                    for ly in (-mdl.width * 0.4, mdl.width * 0.4):
+                        if r.random() < 0.55:
+                            lx = -mdl.length * 0.32
+                            self.emit(SMOKE, x + fx * lx - fy * ly, y + fy * lx + fx * ly, 0.3,
+                                      r.uniform(-1, 1), r.uniform(-1, 1), 0.6, 1.3)
             if spd > 3:
                 fx, fy = math.cos(ang), math.sin(ang)
                 for slot in ("WheelFL", "WheelFR", "WheelRL", "WheelRR"):

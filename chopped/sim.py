@@ -17,6 +17,7 @@ from .parts import (SLOTS, SLOT_CATEGORY, CATEGORY_SLOTS, WHEEL_SLOTS,
                     PANEL_SLOTS, STRIP_TIME, DOLLY, PART_DEFS, Part, part_power,
                     kei_loadout, cop_loadout, personal_loadout, model_loadout, roll_trunk)
 from . import vehicles as V
+from .brawl import Brawl
 from .enums import *  # noqa: F401,F403
 from .lines import *  # noqa: F401,F403
 from .entities import *  # noqa: F401,F403
@@ -24,9 +25,10 @@ from .entities import _next_tier  # noqa: F401
 from .physics import *  # noqa: F401,F403
 
 DIRS = ((1, 0), (-1, 0), (0, 1), (0, -1))
+_REEXPORTS = (kei_loadout,)   # tests (and old habits) reach for S.kei_loadout
 
 
-class World(Physics):
+class World(Physics, Brawl):
     def __init__(self, map_seed=None, rng_seed=None):
         if map_seed is None:
             map_seed = random.randrange(1, 2 ** 31)
@@ -160,6 +162,7 @@ class World(Physics):
         n = NPC(self.new_id(), PED, (tx + 0.5) * C.TILE_M, (ty + 0.5) * C.TILE_M)
         n.wallet = self.rng.randint(C.WALLET_MIN, C.WALLET_MAX)
         n.dirx, n.diry = self.rng.choice(((1, 0), (-1, 0), (0, 1), (0, -1)))
+        self._roll_bravery(n)
         self.npcs[n.id] = n
         return n
 
@@ -214,6 +217,12 @@ class World(Physics):
         if not p:
             return
         self._leave_car(p, place=True)
+        self._drop_carry(p, throw=False)
+        if p.state == CARRIED:
+            self._free_carried_player(p)
+        for q in self.players.values():
+            if q.carrying == ("player", pid):
+                q.carrying = None
         self._drop_all(p)
         self._release_dolly(p)
         del self.players[pid]
@@ -233,6 +242,8 @@ class World(Physics):
 
     def _enter_car(self, p, car, seat):
         self._release_dolly(p)        # it'd never fit in a Kei anyway
+        self._drop_carry(p, throw=False)   # (they would, but that's a different game)
+        p.z = p.vz = 0.0
         if seat == DRIVER and car.kind == CIV and not car.stolen and car.state == RUNNING:
             # a car whose driver bailed, engine still running: finders keepers, says nobody
             car.stolen = True
@@ -245,6 +256,7 @@ class World(Physics):
         p.state = seat
         p.car_id = car.id
         p.vx = p.vy = 0.0
+        p.seat_t = 0.0
 
     def _leave_car(self, p, place=True):
         car = self.cars.get(p.car_id) if p.car_id is not None else None
@@ -326,6 +338,7 @@ class World(Physics):
         self._sync_occupants()
         for p in self.players.values():
             self._move_player(p, dt)
+        self._update_carries(dt)
         self._update_dollies(dt)
         self._update_npcs(dt)
         self._update_pickups(dt)
@@ -442,6 +455,19 @@ class World(Physics):
         b = inp.buttons
         p.prompt = ""
         p.hold_frac = 0.0
+        p.dancing = False
+        if p.banner_t > 0:
+            p.banner_t -= dt
+            if p.banner_t <= 0:
+                p.banner = BN_NONE
+        jump_tap = bool(b & B_JUMP) and not p.prev_jump
+        p.prev_jump = bool(b & B_JUMP)
+
+        if p.state == CARRIED:
+            p.prompt = "YOU'RE BEING CARRIED. MASH SPACE TO WRIGGLE FREE (%d/%d)" % (p.wriggle, C.WRIGGLE_PRESSES)
+            if jump_tap:
+                self._wriggle(p)
+            return
 
         if p.state == CUFFED:
             p.cuffed_t -= dt
@@ -465,11 +491,14 @@ class World(Physics):
                 self._leave_car(p, place=True)
                 return
             car.horn = car.horn or bool(b & B_HORN)
+            p.seat_t += dt
             if p.state == DRIVER:
                 drive_input(car, b)
-                p.prompt = "F: GET OUT   SPACE: HANDBRAKE   H: HORN"
-            else:
-                p.prompt = "RIDING SHOTGUN. F: GET OUT   H: HORN"
+                if p.seat_t < C.CAR_PROMPT_TIME:
+                    p.prompt = "F: GET OUT   SPACE: HANDBRAKE   H: HORN   V: CAMERA" + (
+                        "   SHIFT: NOS" if car.nos else "")
+            elif p.seat_t < C.CAR_PROMPT_TIME:
+                p.prompt = "RIDING SHOTGUN. F: GET OUT   H: HORN   V: CAMERA"
             return
 
         # ---- on foot --------------------------------------------------------
@@ -477,9 +506,21 @@ class World(Physics):
         p.weapon = inp.weapon if (0 <= inp.weapon <= ARM_BLOCK and p.owns(inp.weapon)) else ARM_FISTS
         if p.weapon in (ARM_PISTOL, ARM_SHOTGUN) and not p.hands and p.dolly is None:
             self._menace(p)
-        if fire_tap and p.fire_cd <= 0:
-            self._attack(p)
-        if drop_tap and p.dolly is not None:
+        if b & B_TAUNT:
+            self._dance(p, dt)
+        fists = p.weapon == ARM_FISTS and not p.hands and p.dolly is None and p.carrying is None
+        charged = self._charge_fists(p, bool(b & B_FIRE) and fists, dt) if fists or p.charge_t else False
+        if fire_tap and p.fire_cd <= 0 and not charged:
+            if p.carrying is not None:
+                self._drop_carry(p, throw=True)           # YEET
+                p.fire_cd = C.THROW_COOLDOWN
+            elif p.hands:
+                self._throw_part(p)
+            else:
+                self._attack(p)
+        if drop_tap and p.carrying is not None:
+            self._drop_carry(p, throw=False)
+        elif drop_tap and p.dolly is not None:
             self._release_dolly(p)
             self.sfx(S_DROP, p.x, p.y)
         elif drop_tap and p.hands:
@@ -487,6 +528,16 @@ class World(Physics):
             fx, fy = math.cos(p.ang), math.sin(p.ang)
             self.add_pickup(part, p.x + fx * 0.9, p.y + fy * 0.9, fx * 1.5, fy * 1.5)
             self.sfx(S_DROP, p.x, p.y)
+        elif drop_tap:
+            who = self._grab_target(p)
+            if who is not None:
+                self._grab(p, who)
+        if p.carrying is not None:
+            who = self._carried_ref(p)
+            p.prompt = "CARRYING %s.  CLICK: THROW   G: PUT DOWN" % (
+                who.name if isinstance(who, Player) else "A STRANGER")
+            p.hold = 0.0
+            return
 
         key, label, duration, action = self._find_interaction(p)
         p.prompt = label
@@ -550,9 +601,10 @@ class World(Physics):
         # someone on the floor, or with their hands up: help yourself
         mark = self._robbable_near(ax, ay)
         if mark is not None:
+            grab = "   G: PICK UP" if not p.hands else ""
             if mark.wallet <= 0:
-                return (None, "THEY'RE BROKE. A BUS PASS AND HALF A SANDWICH.", 0, None)
-            return (("rob", mark.id), "HOLD E: ROB THEM", C.ROB_TIME, lambda: self._rob(p, mark))
+                return (None, "THEY'RE BROKE. A BUS PASS AND HALF A SANDWICH." + grab, 0, None)
+            return (("rob", mark.id), "HOLD E: ROB THEM" + grab, C.ROB_TIME, lambda: self._rob(p, mark))
         # a dolly to grab
         dl = self._nearest_dolly(ax, ay, C.INTERACT_RANGE_DOLLY)
         if dl is not None:
@@ -574,6 +626,11 @@ class World(Physics):
                 return (None, "HANDS FULL - SELL IT OR DROP (G)", 0, None)
             return (("pick", best.id), "E: PICK UP %s ($%d)" % (part.name.upper(), part.value),
                     C.PICKUP_TIME, lambda: self._pickup(p, best))
+        # a crewmate within reach: you COULD pick them up. Should you? Yes.
+        if not p.hands:
+            for q in self.players.values():
+                if q is not p and q.state in (FOOT, TUMBLE) and math.hypot(q.x - ax, q.y - ay) < C.GRAB_RANGE * 0.8:
+                    return (None, "G: PICK UP %s (THEY'LL HATE IT)" % q.name, 0, None)
         # cars: the one whose bodywork is closest to where you're looking
         best, bd = None, 99.0
         for car in self.cars.values():
@@ -675,6 +732,8 @@ class World(Physics):
                     break
             n = NPC(self.new_id(), OWNER, x, y)
             n.target = car.id
+            n.brave = True                        # it's THEIR car. Of course they're going to swing.
+            n.foe, n.hostile_t, n.grit = p.id, C.BRAWL_TIME, 2
             self.npcs[n.id] = n
             self.toast("OWNER: HEY!! THAT'S MY CAR!", T_BAD)
 
@@ -997,12 +1056,12 @@ class World(Physics):
         self.sfx(S_PUNCH, best.x, best.y)
         if isinstance(best, Player):
             if best.state == FOOT:
-                self._tumble(best, fx * 5, fy * 5, C.PUNCH_PLAYER_TUMBLE)
+                self._hurt_player(best, fx * 5, fy * 5, C.PUNCH_PLAYER_TUMBLE)
                 self.toast("%s DECKED %s. FRIENDSHIP: TESTED." % (p.name, best.name), T_WHITE)
             return
-        best.tumble_t = max(best.tumble_t, C.PUNCH_KNOCKDOWN)
-        best.vx, best.vy = fx * 5, fy * 5
-        best.surrender_t = 0.0
+        if best.carried_by is not None:
+            return
+        self._knock_down_npc(best, fx * 5, fy * 5, C.PUNCH_KNOCKDOWN, p)
         self._crime(C.PUNCH_HEAT)
         if best.complain_cd <= 0:
             best.complain_cd = 3.0
@@ -1096,15 +1155,13 @@ class World(Physics):
             return
         if isinstance(target, Player):
             if target.state == FOOT:
-                self._drop_all(target)
-                self._release_dolly(target)
-                self._tumble(target, fx * 7, fy * 7, C.SHOT_PLAYER_TUMBLE)
+                self._hurt_player(target, fx * 7, fy * 7, C.SHOT_PLAYER_TUMBLE, BN_HUMBLED)
                 self.toast("%s SHOT %s. THEY'RE FINE. THEY'RE FURIOUS." % (p.name, target.name), T_BAD)
             return
         n = target
-        n.tumble_t = max(n.tumble_t, C.SHOT_KNOCKDOWN)
-        n.vx, n.vy = fx * 6, fy * 6
-        n.surrender_t = 0.0
+        if n.carried_by is not None:
+            return
+        self._knock_down_npc(n, fx * 6, fy * 6, C.SHOT_KNOCKDOWN, p)
         self.sfx(S_YELP, n.x, n.y)
         if n.complain_cd <= 0:
             n.complain_cd = 3.0
@@ -1114,7 +1171,7 @@ class World(Physics):
     def _robbable_near(self, x, y):
         best, bd = None, 1.7
         for n in self.npcs.values():
-            if n.tumble_t > 0 or n.surrender_t > 0:
+            if (n.tumble_t > 0 or n.surrender_t > 0 or n.laugh_t > 0) and n.carried_by is None:
                 d = math.hypot(n.x - x, n.y - y)
                 if d < bd:
                     best, bd = n, d
@@ -1130,7 +1187,12 @@ class World(Physics):
         self.sfx(S_ROB, n.x, n.y)
         self.toast("%s LIFTED A WALLET: +$%d %s" % (p.name, cash, self.rng.choice(WALLET_EXTRAS)), T_MONEY)
         n.surrender_t = 0.0
-        self._flee(n, n.x - p.x, n.y - p.y)
+        n.laugh_t = 0.0
+        p.robbed_from[n.id] = p.robbed_from.get(n.id, 0) + cash
+        if n.brave:
+            self._provoke(n, p)       # they get up. They remember your face.
+        else:
+            self._flee(n, n.x - p.x, n.y - p.y)
 
     # ------------------------------------------------------------------ carjacking
     def _carjack(self, p, car):
@@ -1144,7 +1206,12 @@ class World(Physics):
         n.tumble_t = 1.2
         n.vx, n.vy = (x - car.x) * 2, (y - car.y) * 2
         self.npcs[n.id] = n
-        self._flee(n, x - car.x, y - car.y)
+        if self.rng.random() < C.CARJACK_FIGHT_CHANCE:
+            n.brave = True
+            n.armed = self.rng.random() < C.ARMED_CHANCE
+            self._provoke(n, p, witnesses=False)       # they get up swinging
+        else:
+            self._flee(n, x - car.x, y - car.y)
         car.kind, car.state, car.route = CIV, RUNNING, []
         car.stolen, car.alarm, car.special = True, False, None
         car.throttle = car.steer = 0.0
@@ -1497,17 +1564,20 @@ class World(Physics):
 
     # ------------------------------------------------------------------ on-foot movement
     def _move_player(self, p, dt):
-        if p.state in (DRIVER, PASSENGER):
-            return
+        if p.state in (DRIVER, PASSENGER, CARRIED):
+            return                     # (carried: _update_carries puts you on a shoulder)
         b = p.input.buttons
         if p.state == TUMBLE:
             p.tumble_t -= dt
             p.spin += p.spin_rate * dt
             p.spin_rate *= math.exp(-1.5 * dt)
-            dec = math.exp(-2.5 * dt)
+            airborne = p.z > 0 or p.vz > 0
+            dec = math.exp((-0.3 if airborne else -2.5) * dt)   # no friction in the air
             p.vx *= dec
             p.vy *= dec
-            if p.tumble_t <= 0:
+            if airborne:
+                self._fly_player(p, dt)
+            if p.tumble_t <= 0 and p.z <= 0:
                 p.state = FOOT
                 p.spin = 0.0
             p.moving = False
@@ -1558,14 +1628,24 @@ class World(Physics):
                 if n.kind == CLOWN and n.life_t > C.CLOWN_LIFETIME:
                     dead.append(n.id)     # poof. Back to the tiny car in the sky.
                     continue
-            if n.tumble_t > 0:
-                n.tumble_t -= dt
+            if n.carried_by is not None:
+                continue                  # over somebody's shoulder, legs kicking (see _update_carries)
+            airborne = n.z > 0 or n.vz > 0
+            if airborne or n.thrown_by is not None:
+                self._fly_npc(n, dt)
+            if n.tumble_t > 0 or airborne:
+                n.tumble_t = max(0.05, n.tumble_t - dt) if airborne else n.tumble_t - dt
                 n.spin += dt * 12
-                dec = math.exp(-2.5 * dt)
+                dec = math.exp((-0.3 if airborne else -2.5) * dt)
                 n.vx *= dec
                 n.vy *= dec
             elif n.surrender_t > 0:
                 n.vx = n.vy = 0.0         # frozen, hands up, reconsidering their life choices
+            elif n.hostile_t > 0 and self._brawler(n, dt):
+                n.spin = 0.0              # coming for you
+            elif n.laugh_t > 0:
+                n.laugh_t -= dt           # pointing and laughing at your dance
+                n.vx = n.vy = 0.0
             elif n.kind == PED and n.flee_t > 0:
                 n.flee_t -= dt
                 n.vx, n.vy = self._flee_velocity(n)
@@ -1641,6 +1721,7 @@ class World(Physics):
 
     # ------------------------------------------------------------------ pickups
     def _update_pickups(self, dt):
+        self._fly_pickups(dt)
         dead = []
         m = self.map
         for pk in self.pickups.values():
@@ -1837,6 +1918,7 @@ class World(Physics):
                 p.arrest_t = 0.0
 
     def arrest(self, p):
+        self._drop_carry(p, throw=False)
         self._drop_all(p)
         self._release_dolly(p)        # engine and all, right there for your partner
         if p.arms & ~1:
