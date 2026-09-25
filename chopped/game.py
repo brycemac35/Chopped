@@ -535,10 +535,11 @@ class App:
         else:
             r.draw(low.subsurface((0, 0, W, VIEW_H)), view, now, dt)
         info = {"lines": self._info_lines(), "help_until": self.hud.help_until, "paused": self.paused,
+                "menu": self.modshop.open,
                 "fp": self.fp_mode, "yaw": self.yaw, "garage": self.client.map.garage_center,
                 "in_garage": self.client.map.in_garage(me[4], me[5]), "weapon": self._held_weapon()}
         self.hud.draw(low, view, now, info)
-        if self.server and now < self.host_banner_until and not self.paused:
+        if self.server and now < self.host_banner_until and not self.paused and not self.modshop.open:
             lines = self._host_lines()
             # just under the help card (which ends at y=73), so neither covers the other
             low.blit(self.hud._panel(300, 8 * len(lines) + 4, 170), (W // 2 - 150, 78))

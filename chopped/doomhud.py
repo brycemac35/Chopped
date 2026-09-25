@@ -567,7 +567,7 @@ class DoomHud:
                 self._car_compass(low, view, info, now)
         self._banners(low, snap, me, now, flash)
         self._comedy_banner(low, me, now)
-        if now < self.help_until and not info.get("paused"):
+        if now < self.help_until and not info.get("paused") and not info.get("menu"):
             lines = ["MOUSE LOOK  WASD MOVE/DRIVE  SPACE JUMP/HANDBRAKE  SHIFT SPRINT/NOS  E USE (HOLD)",
                      "CLICK/CTRL PUNCH/SHOOT/THROW (HOLD: HAYMAKER)  1-7 WEAPONS  G GRAB/DROP  F EXIT CAR",
                      "V CHASE CAM  TAB MAP  H HORN  T DANCE  M MUSIC  ESC MENU  F11 FULLSCREEN",
