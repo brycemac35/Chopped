@@ -66,6 +66,7 @@ class CityMap:
 
         self.solid = bytearray(1 if t in SOLID_TYPES else 0 for t in self.tiles)
         self.opaque = bytearray(1 if t in OPAQUE_TYPES else 0 for t in self.tiles)
+        self._merge_solids()
         for ty in range(n):
             for tx in range(n):
                 if self.tiles[ty * n + tx] == SIDEWALK:
@@ -214,6 +215,40 @@ class CityMap:
             self.cop_spawns.append((m - mid, k, math.pi))
             k += 12.0
 
+    def _merge_solids(self):
+        """Greedy-mesh solid tiles into as few rectangles as possible. Cars
+        are boxes, and a box sliding along a wall built from 4 m tiles snags on
+        every seam between them ("ghost edges"). One building = one rectangle
+        = one smooth wall to scrape your doors off."""
+        n = self.n
+        T = C.TILE_M
+        solid = self.solid
+        owner = [-1] * (n * n)
+        rects = []
+        for ty in range(n):
+            for tx in range(n):
+                i = ty * n + tx
+                if not solid[i] or owner[i] >= 0:
+                    continue
+                w = 1
+                while tx + w < n and solid[i + w] and owner[i + w] < 0:
+                    w += 1
+                h = 1
+                while ty + h < n and all(solid[(ty + h) * n + tx + k] and owner[(ty + h) * n + tx + k] < 0
+                                         for k in range(w)):
+                    h += 1
+                rid = len(rects)
+                rects.append((tx * T, ty * T, w * T, h * T))
+                for yy in range(ty, ty + h):
+                    row = yy * n
+                    for xx in range(tx, tx + w):
+                        owner[row + xx] = rid
+        self.solid_rects = rects
+        self.rect_owner = owner
+        # the edge of the world: four fat walls just outside the map
+        m, k = n * T, 40.0
+        self.edge_rects = [(-k, -k, m + 2 * k, k), (-k, m, m + 2 * k, k), (-k, 0.0, k, m), (m, 0.0, k, m)]
+
     # ------------------------------------------------------------------ queries
     def tile(self, tx, ty):
         if 0 <= tx < self.n and 0 <= ty < self.n:
@@ -268,15 +303,27 @@ class CityMap:
         return length
 
     def solid_rects_near(self, x, y, r, out):
-        """Collect solid AABBs (metres) overlapping a circle. Appends to `out`
-        to avoid allocating a new list in the hot loop."""
+        """Collect solid AABBs (metres, merged -- see _merge_solids) that
+        overlap the square around a circle. Appends to `out` to avoid
+        allocating a new list in the hot loop."""
         T = C.TILE_M
+        n = self.n
         tx0, tx1 = int((x - r) // T), int((x + r) // T)
         ty0, ty1 = int((y - r) // T), int((y + r) // T)
-        for ty in range(ty0, ty1 + 1):
-            for tx in range(tx0, tx1 + 1):
-                if self.solid_tile(tx, ty):
-                    out.append((tx * T, ty * T, T, T))
+        owner = self.rect_owner
+        seen = ()
+        for ty in range(max(0, ty0), min(n - 1, ty1) + 1):
+            row = ty * n
+            for tx in range(max(0, tx0), min(n - 1, tx1) + 1):
+                rid = owner[row + tx]
+                if rid >= 0 and rid not in seen:
+                    seen += (rid,)
+                    out.append(self.solid_rects[rid])
+        if tx0 < 0 or ty0 < 0 or tx1 >= n or ty1 >= n:
+            for rect in self.edge_rects:
+                rx, ry, rw, rh = rect
+                if x + r > rx and x - r < rx + rw and y + r > ry and y - r < ry + rh:
+                    out.append(rect)
         for rect in self.static_rects:
             rx, ry, rw, rh = rect
             if x + r > rx and x - r < rx + rw and y + r > ry and y - r < ry + rh:

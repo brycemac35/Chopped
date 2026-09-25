@@ -215,6 +215,11 @@ class Pickup:
 # ---------------------------------------------------------------------------
 # Collision helpers
 # ---------------------------------------------------------------------------
+HL, HW = C.CAR_LEN / 2.0, C.CAR_WID / 2.0     # a car is a 4.4 x 2.4 m box now, corners and all
+CAR_BOUND_R = math.hypot(HL, HW)               # ...that fits in a 2.5 m circle for broad-phase checks
+CONTACT_TIE = 0.12                             # corners closer than this in depth count as "flush"
+
+
 def circle_rect_contact(x, y, r, rect):
     """Returns (nx, ny, pen, px, py) if the circle overlaps the AABB, else None.
     (px, py) is the contact point on the rect."""
@@ -240,7 +245,357 @@ def circle_rect_contact(x, y, r, rect):
     return 0.0, 1.0, b + r, x, ry + rh
 
 
-class World:
+def _box_point(x, y, c, s, dx, dy):
+    """The corner of a car box that sticks out furthest along (dx, dy). When
+    two corners are within CONTACT_TIE of each other (a flush bumper against a
+    wall) we take the middle of that edge instead -- otherwise a dead-straight
+    hit would spin the car off whichever corner won the rounding lottery."""
+    pf = c * dx + s * dy
+    pr = -s * dx + c * dy
+    lx = 0.0 if 2 * HL * abs(pf) < CONTACT_TIE else (HL if pf > 0 else -HL)
+    ly = 0.0 if 2 * HW * abs(pr) < CONTACT_TIE else (HW if pr > 0 else -HW)
+    return x + c * lx - s * ly, y + s * lx + c * ly
+
+
+def _clamp_to_box(px, py, x, y, c, s):
+    lx = clamp((px - x) * c + (py - y) * s, -HL, HL)
+    ly = clamp(-(px - x) * s + (py - y) * c, -HW, HW)
+    return x + c * lx - s * ly, y + s * lx + c * ly
+
+
+def obb_rect_contact(x, y, ang, rect):
+    """Car box vs axis-aligned rect, separating-axis test on the 4 candidate
+    axes. Returns (nx, ny, pen, px, py) with the normal pointing from the rect
+    towards the car, or None."""
+    rx, ry, rw, rh = rect
+    ex, ey = rw * 0.5, rh * 0.5
+    dx, dy = rx + ex - x, ry + ey - y            # car centre -> rect centre
+    c, s = math.cos(ang), math.sin(ang)
+    ac, asn = abs(c), abs(s)
+    ox = HL * ac + HW * asn + ex - abs(dx)
+    if ox <= 0:
+        return None
+    oy = HL * asn + HW * ac + ey - abs(dy)
+    if oy <= 0:
+        return None
+    df = dx * c + dy * s
+    of = HL + ex * ac + ey * asn - abs(df)
+    if of <= 0:
+        return None
+    dr = -dx * s + dy * c
+    orr = HW + ex * asn + ey * ac - abs(dr)
+    if orr <= 0:
+        return None
+    # Prefer the rect's own faces unless a car face is clearly shallower:
+    # walls are axis-aligned, and a normal that flickers between two
+    # candidates is how cars end up vibrating against buildings.
+    if min(ox, oy) <= min(of, orr) * 1.05 + 0.02:
+        if ox <= oy:
+            nx, ny, pen = (-1.0 if dx > 0 else 1.0), 0.0, ox
+        else:
+            nx, ny, pen = 0.0, (-1.0 if dy > 0 else 1.0), oy
+        px, py = _box_point(x, y, c, s, -nx, -ny)          # deepest car corner(s)
+        px = clamp(px, rx, rx + rw)
+        py = clamp(py, ry, ry + rh)
+    else:
+        if of <= orr:
+            ax, ay, pen, dd = c, s, of, df
+        else:
+            ax, ay, pen, dd = -s, c, orr, dr
+        sg = -1.0 if dd > 0 else 1.0
+        nx, ny = ax * sg, ay * sg
+        # the rect corner poking deepest into the car (a building corner in the door)
+        qx = rx + rw * 0.5 if rw * abs(nx) < CONTACT_TIE else (rx + rw if nx > 0 else rx)
+        qy = ry + rh * 0.5 if rh * abs(ny) < CONTACT_TIE else (ry + rh if ny > 0 else ry)
+        px, py = _clamp_to_box(qx, qy, x, y, c, s)
+    return nx, ny, pen, px, py
+
+
+def obb_obb_contact(a, b):
+    """Car box vs car box. Returns (nx, ny, pen, px, py), normal pointing from
+    b to a, or None. Same SAT idea with both cars' axes as candidates."""
+    dx, dy = b.x - a.x, b.y - a.y
+    ca, sa = math.cos(a.ang), math.sin(a.ang)
+    cb, sb = math.cos(b.ang), math.sin(b.ang)
+    best = None
+    for ux, uy, owner in ((ca, sa, 0), (-sa, ca, 0), (cb, sb, 1), (-sb, cb, 1)):
+        ra = HL * abs(ux * ca + uy * sa) + HW * abs(-ux * sa + uy * ca)
+        rb = HL * abs(ux * cb + uy * sb) + HW * abs(-ux * sb + uy * cb)
+        dd = dx * ux + dy * uy
+        ov = ra + rb - abs(dd)
+        if ov <= 0:
+            return None
+        if best is None or ov < best[0] - 0.01:
+            best = (ov, ux, uy, dd, owner)
+    pen, ux, uy, dd, owner = best
+    sg = -1.0 if dd > 0 else 1.0
+    nx, ny = ux * sg, uy * sg                     # from b towards a
+    if owner == 0:     # a's face: b's corner is doing the poking
+        px, py = _box_point(b.x, b.y, cb, sb, nx, ny)
+        px, py = _clamp_to_box(px, py, a.x, a.y, ca, sa)
+    else:              # b's face: a's corner is doing the poking
+        px, py = _box_point(a.x, a.y, ca, sa, -nx, -ny)
+        px, py = _clamp_to_box(px, py, b.x, b.y, cb, sb)
+    return nx, ny, pen, px, py
+
+
+def drive_input(car, buttons):
+    """Driver's buttons -> pedals and wheel. Shared by the server and the
+    client-side predictor so they can't disagree about what W means."""
+    car.throttle = (1.0 if buttons & B_UP else 0.0) - (1.0 if buttons & B_DOWN else 0.0)
+    car.steer = (1.0 if buttons & B_RIGHT else 0.0) - (1.0 if buttons & B_LEFT else 0.0)
+    car.handbrake = bool(buttons & B_HANDBRAKE)
+
+
+class Physics:
+    """Movement and collision maths, shared by the authoritative World and
+    the client-side Predictor (predict.py). Same code on both ends is the whole
+    trick of prediction: if the client ran different maths, it would predict a
+    different car and the server would keep yanking it back.
+
+    Subclasses provide self.map, self.cars and self._rects (a scratch list)."""
+
+    # ------------------------------------------------------------------ cars
+    def _drive(self, car, dt):
+        fx, fy = math.cos(car.ang), math.sin(car.ang)
+        rx, ry = -fy, fx
+        vf = car.vx * fx + car.vy * fy
+        vr = car.vx * rx + car.vy * ry
+        driven = car.driver is not None or car.kind == COP
+        mw = car.missing_wheels()
+        on_grass = self.map.tile_at(car.x, car.y) == 3  # GRASS
+        if car.kind == COP:
+            accel = C.ACCEL_PER_100_POWER * C.COP_ACCEL_MULT
+            top = C.COP_TOP_SPEED
+        else:
+            accel = C.ACCEL_PER_100_POWER * car.power() / 100.0
+            top = C.CIV_TOP_SPEED
+        if car.state == DELIVERED:
+            driven = False            # delivered cars never drive again. RIP.
+        top *= (1.0 - C.MISSING_WHEEL_TOP * mw)
+        thr = car.throttle if driven else 0.0
+        hb = car.handbrake if driven else False
+        if thr > 0:
+            if vf < -0.5:
+                vf = min(0.0, vf + C.BRAKE_DECEL * thr * dt)
+            else:
+                vf += accel * thr * dt
+        elif thr < 0:
+            if vf > 0.5:
+                vf = max(0.0, vf + C.BRAKE_DECEL * thr * dt)
+            else:
+                vf += accel * C.REVERSE_FRAC * thr * dt
+                vf = max(vf, -C.REVERSE_MAX)
+        else:
+            dec = (C.ROLL_DECEL if driven else C.PARKED_BRAKE) * dt
+            vf = vf - dec if vf > dec else vf + dec if vf < -dec else 0.0
+        vf -= C.DRAG_K * vf * abs(vf) * dt
+        if on_grass:
+            vf -= math.copysign(min(abs(vf), C.GRASS_DRAG * dt), vf)
+        if hb:
+            vf = max(0.0, vf - C.HANDBRAKE_DECEL * dt) if vf > 0 else min(0.0, vf + C.HANDBRAKE_DECEL * dt)
+        vf = clamp(vf, -C.REVERSE_MAX, top)
+        grip = C.HANDBRAKE_GRIP if hb else C.GRIP
+        if abs(vr) > C.SLIDE_THRESHOLD:
+            grip *= C.SLIDE_GRIP_MULT
+        if on_grass:
+            grip *= C.GRASS_GRIP_MULT
+        grip *= max(0.2, 1.0 - C.MISSING_WHEEL_GRIP * mw)
+        vr *= math.exp(-grip * dt)
+        # steering: full lock at low speed, shrinking as you go faster
+        aspd = abs(vf)
+        sf = min(1.0, aspd / C.STEER_FULL_AT)
+        lock = lerp(C.STEER_RATE_LOW, C.STEER_RATE_HIGH, clamp(aspd / C.CIV_TOP_SPEED, 0.0, 1.0))
+        target_w = (car.steer if driven else 0.0) * lock * sf * (1.0 if vf >= 0 else -1.0)
+        if hb:
+            target_w *= C.HANDBRAKE_YAW_MULT
+        if mw:
+            target_w += car.pull * C.MISSING_WHEEL_PULL * mw * sf
+        resp = C.STEER_RESPONSE * (0.35 if hb else 1.0)
+        car.w += (target_w - car.w) * min(1.0, resp * dt)
+        car.vx = fx * vf + rx * vr
+        car.vy = fy * vf + ry * vr
+        car.x += car.vx * dt
+        car.y += car.vy * dt
+        car.ang = wrap_angle(car.ang + car.w * dt)
+
+    def _apply_static_contact(self, car, px, py, nx, ny, pen, e):
+        car.x += nx * pen
+        car.y += ny * pen
+        rx, ry = px - car.x, py - car.y
+        vcx = car.vx - car.w * ry
+        vcy = car.vy + car.w * rx
+        vn = vcx * nx + vcy * ny
+        if vn >= 0:
+            return
+        rn = rx * ny - ry * nx
+        j = -(1.0 + e) * vn / (1.0 / car.mass + rn * rn / car.inertia)
+        car.vx += j * nx / car.mass
+        car.vy += j * ny / car.mass
+        car.w += rn * j / car.inertia
+        # scrape friction: walls are not ice rinks
+        tx, ty = -ny, nx
+        vt = vcx * tx + vcy * ty
+        ft = clamp(-vt * car.mass * 0.25, -0.3 * j, 0.3 * j)
+        car.vx += ft * tx / car.mass
+        car.vy += ft * ty / car.mass
+        dv = j / car.mass
+        car.impact_dv += dv
+        car.impact_nx += nx * dv
+        car.impact_ny += ny * dv
+
+    def _car_vs_world(self, car):
+        rects = self._rects
+        rects.clear()
+        self.map.solid_rects_near(car.x, car.y, CAR_BOUND_R, rects)
+        for rect in rects:
+            hit = obb_rect_contact(car.x, car.y, car.ang, rect)
+            if hit:
+                nx, ny, pen, px, py = hit
+                self._apply_static_contact(car, px, py, nx, ny, pen, C.RESTITUTION_WALL)
+
+    def _car_pair(self, a, b):
+        """Box-vs-box bump with a proper impulse at the contact point, so a
+        T-bone spins the victim and a nudge on the bumper just pushes. Returns
+        the closing speed (for "was that hard enough to set a cop on fire?")
+        or None if they didn't touch."""
+        hit = obb_obb_contact(a, b)
+        if hit is None:
+            return None
+        nx, ny, pen, px, py = hit                  # normal points from b to a
+        ima, imb = 1.0 / a.mass, 1.0 / b.mass
+        a.x += nx * pen * ima / (ima + imb)
+        a.y += ny * pen * ima / (ima + imb)
+        b.x -= nx * pen * imb / (ima + imb)
+        b.y -= ny * pen * imb / (ima + imb)
+        rax, ray = px - a.x, py - a.y
+        rbx, rby = px - b.x, py - b.y
+        vax = a.vx - a.w * ray
+        vay = a.vy + a.w * rax
+        vbx = b.vx - b.w * rby
+        vby = b.vy + b.w * rbx
+        vn = (vax - vbx) * nx + (vay - vby) * ny
+        if vn >= 0:
+            return None
+        rel = math.hypot(a.vx - b.vx, a.vy - b.vy)
+        rna = rax * ny - ray * nx
+        rnb = rbx * ny - rby * nx
+        j = -(1.0 + C.RESTITUTION_CAR) * vn / (ima + imb + rna * rna / a.inertia + rnb * rnb / b.inertia)
+        a.vx += j * nx * ima
+        a.vy += j * ny * ima
+        a.w += rna * j / a.inertia
+        b.vx -= j * nx * imb
+        b.vy -= j * ny * imb
+        b.w -= rnb * j / b.inertia
+        dva, dvb = j * ima, j * imb
+        a.impact_dv += dva
+        a.impact_nx += nx * dva
+        a.impact_ny += ny * dva
+        b.impact_dv += dvb
+        b.impact_nx -= nx * dvb
+        b.impact_ny -= ny * dvb
+        return rel
+
+    # ------------------------------------------------------------------ people
+    def _walk(self, p, b, dt):
+        """On-foot controls -> stamina, facing and velocity. The predictor runs
+        this too, so it may only read things the client is told about."""
+        dx = (1 if b & B_RIGHT else 0) - (1 if b & B_LEFT else 0)
+        dy = (1 if b & B_DOWN else 0) - (1 if b & B_UP else 0)
+        moving = dx != 0 or dy != 0
+        used = p.hands_used()
+        want_sprint = bool(b & B_SPRINT) and moving and not p.exhausted and p.stamina > 0
+        if want_sprint:
+            p.stamina -= C.STAMINA_SPRINT_DRAIN[min(used, 2)] * dt
+            p.regen_delay = C.STAMINA_REGEN_DELAY
+        elif moving and used >= 2:
+            p.stamina -= C.STAMINA_WALK_2H_DRAIN * dt
+            p.regen_delay = C.STAMINA_REGEN_DELAY
+        else:
+            p.regen_delay -= dt
+            if p.regen_delay <= 0:
+                p.stamina = min(C.STAMINA_MAX, p.stamina + C.STAMINA_REGEN * dt)
+        if p.stamina <= 0:
+            p.stamina = 0.0
+            p.exhausted = True
+        elif p.exhausted and p.stamina > C.STAMINA_RECOVER_AT:
+            p.exhausted = False
+        spd = C.SPRINT_SPEED if want_sprint else C.WALK_SPEED
+        if used >= 2:
+            spd *= C.TWO_HAND_SPEED_MULT
+        if p.exhausted:
+            spd *= C.EXHAUSTED_SPEED_MULT
+        if moving:
+            inv = 1.0 / math.hypot(dx, dy)
+            tx, ty = dx * inv * spd, dy * inv * spd
+            p.ang = math.atan2(dy, dx)
+        else:
+            tx = ty = 0.0
+        k = min(1.0, 16.0 * dt)
+        p.vx += (tx - p.vx) * k
+        p.vy += (ty - p.vy) * k
+        p.sprinting = want_sprint
+        p.moving = moving
+
+    def _body_vs_world(self, b, r):
+        rects = self._rects
+        rects.clear()
+        self.map.solid_rects_near(b.x, b.y, r, rects)
+        for rect in rects:
+            hit = circle_rect_contact(b.x, b.y, r, rect)
+            if hit:
+                nx, ny, pen, _, _ = hit
+                b.x += nx * pen
+                b.y += ny * pen
+                vn = b.vx * nx + b.vy * ny
+                if vn < 0:
+                    b.vx -= vn * nx * 1.3
+                    b.vy -= vn * ny * 1.3
+
+    def _body_vs_cars(self, b, r):
+        """Circle (a person) vs every car box nearby: shove them out, kill the
+        closing velocity, and report the hardest hit as (rel_speed, car_vx,
+        car_vy, nx, ny) so the caller can decide who goes ragdoll."""
+        result = None
+        reach = CAR_BOUND_R + r
+        for car in self.cars.values():
+            dx, dy = b.x - car.x, b.y - car.y
+            if abs(dx) > reach or abs(dy) > reach:
+                continue
+            c, s = math.cos(car.ang), math.sin(car.ang)
+            lx = dx * c + dy * s
+            ly = -dx * s + dy * c
+            qx = HL if lx > HL else -HL if lx < -HL else lx
+            qy = HW if ly > HW else -HW if ly < -HW else ly
+            ex, ey = lx - qx, ly - qy
+            d2 = ex * ex + ey * ey
+            if d2 > 1e-12:
+                if d2 >= r * r:
+                    continue
+                d = math.sqrt(d2)
+                nlx, nly, pen = ex / d, ey / d, r - d
+            else:
+                # centre inside the car (it drove onto you): out the nearest side
+                fx, fy = HL - abs(lx), HW - abs(ly)
+                if fx < fy:
+                    nlx, nly, pen = (1.0 if lx >= 0 else -1.0), 0.0, fx + r
+                else:
+                    nlx, nly, pen = 0.0, (1.0 if ly >= 0 else -1.0), fy + r
+            nx, ny = nlx * c - nly * s, nlx * s + nly * c
+            b.x += nx * pen
+            b.y += ny * pen
+            rel = math.hypot(car.vx - b.vx, car.vy - b.vy)
+            vn = (b.vx - car.vx) * nx + (b.vy - car.vy) * ny
+            if vn < 0:
+                b.vx -= vn * nx
+                b.vy -= vn * ny
+            if result is None or rel > result[0]:
+                result = (rel, car.vx, car.vy, nx, ny)
+        return result
+
+
+
+class World(Physics):
     def __init__(self, map_seed=None, rng_seed=None):
         if map_seed is None:
             map_seed = random.randrange(1, 2 ** 31)
@@ -592,9 +947,7 @@ class World:
                 return
             car.horn = car.horn or bool(b & B_HORN)
             if p.state == DRIVER:
-                car.throttle = (1.0 if b & B_UP else 0.0) - (1.0 if b & B_DOWN else 0.0)
-                car.steer = (1.0 if b & B_RIGHT else 0.0) - (1.0 if b & B_LEFT else 0.0)
-                car.handbrake = bool(b & B_HANDBRAKE)
+                drive_input(car, b)
                 p.prompt = "F: GET OUT   SPACE: HANDBRAKE   H: HORN"
             else:
                 p.prompt = "RIDING SHOTGUN. F: GET OUT   H: HORN"
@@ -943,167 +1296,17 @@ class World:
             a = cars[i]
             for j in range(i + 1, n):
                 b = cars[j]
-                if abs(a.x - b.x) < 4.6 and abs(a.y - b.y) < 4.6:
+                if abs(a.x - b.x) < 2 * CAR_BOUND_R and abs(a.y - b.y) < 2 * CAR_BOUND_R:
                     self._car_vs_car(a, b)
         for car in cars:
             if car.impact_dv >= C.CRASH_DENT_DV and car.crash_cd <= 0 and car.id in self.cars:
                 car.crash_cd = C.CRASH_COOLDOWN
                 self._crash(car, car.impact_dv, car.impact_nx, car.impact_ny)
 
-    def _drive(self, car, dt):
-        fx, fy = math.cos(car.ang), math.sin(car.ang)
-        rx, ry = -fy, fx
-        vf = car.vx * fx + car.vy * fy
-        vr = car.vx * rx + car.vy * ry
-        driven = car.driver is not None or car.kind == COP
-        mw = car.missing_wheels()
-        on_grass = self.map.tile_at(car.x, car.y) == 3  # GRASS
-        if car.kind == COP:
-            accel = C.ACCEL_PER_100_POWER * C.COP_ACCEL_MULT
-            top = C.COP_TOP_SPEED
-        else:
-            accel = C.ACCEL_PER_100_POWER * car.power() / 100.0
-            top = C.CIV_TOP_SPEED
-        if car.state == DELIVERED:
-            driven = False            # delivered cars never drive again. RIP.
-        top *= (1.0 - C.MISSING_WHEEL_TOP * mw)
-        thr = car.throttle if driven else 0.0
-        hb = car.handbrake if driven else False
-        if thr > 0:
-            if vf < -0.5:
-                vf = min(0.0, vf + C.BRAKE_DECEL * thr * dt)
-            else:
-                vf += accel * thr * dt
-        elif thr < 0:
-            if vf > 0.5:
-                vf = max(0.0, vf + C.BRAKE_DECEL * thr * dt)
-            else:
-                vf += accel * C.REVERSE_FRAC * thr * dt
-                vf = max(vf, -C.REVERSE_MAX)
-        else:
-            dec = (C.ROLL_DECEL if driven else C.PARKED_BRAKE) * dt
-            vf = vf - dec if vf > dec else vf + dec if vf < -dec else 0.0
-        vf -= C.DRAG_K * vf * abs(vf) * dt
-        if on_grass:
-            vf -= math.copysign(min(abs(vf), C.GRASS_DRAG * dt), vf)
-        if hb:
-            vf = max(0.0, vf - C.HANDBRAKE_DECEL * dt) if vf > 0 else min(0.0, vf + C.HANDBRAKE_DECEL * dt)
-        vf = clamp(vf, -C.REVERSE_MAX, top)
-        grip = C.HANDBRAKE_GRIP if hb else C.GRIP
-        if abs(vr) > C.SLIDE_THRESHOLD:
-            grip *= C.SLIDE_GRIP_MULT
-        if on_grass:
-            grip *= C.GRASS_GRIP_MULT
-        grip *= max(0.2, 1.0 - C.MISSING_WHEEL_GRIP * mw)
-        vr *= math.exp(-grip * dt)
-        # steering: full lock at low speed, shrinking as you go faster
-        aspd = abs(vf)
-        sf = min(1.0, aspd / C.STEER_FULL_AT)
-        lock = lerp(C.STEER_RATE_LOW, C.STEER_RATE_HIGH, clamp(aspd / C.CIV_TOP_SPEED, 0.0, 1.0))
-        target_w = (car.steer if driven else 0.0) * lock * sf * (1.0 if vf >= 0 else -1.0)
-        if hb:
-            target_w *= C.HANDBRAKE_YAW_MULT
-        if mw:
-            target_w += car.pull * C.MISSING_WHEEL_PULL * mw * sf
-        resp = C.STEER_RESPONSE * (0.35 if hb else 1.0)
-        car.w += (target_w - car.w) * min(1.0, resp * dt)
-        car.vx = fx * vf + rx * vr
-        car.vy = fy * vf + ry * vr
-        car.x += car.vx * dt
-        car.y += car.vy * dt
-        car.ang = wrap_angle(car.ang + car.w * dt)
-
-    def _apply_static_contact(self, car, px, py, nx, ny, pen, e):
-        car.x += nx * pen
-        car.y += ny * pen
-        rx, ry = px - car.x, py - car.y
-        vcx = car.vx - car.w * ry
-        vcy = car.vy + car.w * rx
-        vn = vcx * nx + vcy * ny
-        if vn >= 0:
-            return
-        rn = rx * ny - ry * nx
-        j = -(1.0 + e) * vn / (1.0 / car.mass + rn * rn / car.inertia)
-        car.vx += j * nx / car.mass
-        car.vy += j * ny / car.mass
-        car.w += rn * j / car.inertia
-        # scrape friction: walls are not ice rinks
-        tx, ty = -ny, nx
-        vt = vcx * tx + vcy * ty
-        ft = clamp(-vt * car.mass * 0.25, -0.3 * j, 0.3 * j)
-        car.vx += ft * tx / car.mass
-        car.vy += ft * ty / car.mass
-        dv = j / car.mass
-        car.impact_dv += dv
-        car.impact_nx += nx * dv
-        car.impact_ny += ny * dv
-
-    def _car_vs_world(self, car):
-        rects = self._rects
-        R = C.CAR_CIRCLE_R
-        for off in (C.CAR_CIRCLE_OFF, -C.CAR_CIRCLE_OFF):
-            c, s = math.cos(car.ang), math.sin(car.ang)
-            cx, cy = car.x + c * off, car.y + s * off
-            rects.clear()
-            self.map.solid_rects_near(cx, cy, R, rects)
-            for rect in rects:
-                cx, cy = car.x + c * off, car.y + s * off
-                hit = circle_rect_contact(cx, cy, R, rect)
-                if hit:
-                    nx, ny, pen, px, py = hit
-                    self._apply_static_contact(car, px, py, nx, ny, pen, C.RESTITUTION_WALL)
-
     def _car_vs_car(self, a, b):
-        R = C.CAR_CIRCLE_R
-        ca, sa = math.cos(a.ang), math.sin(a.ang)
-        cb, sb = math.cos(b.ang), math.sin(b.ang)
-        best = None
-        for oa in (C.CAR_CIRCLE_OFF, -C.CAR_CIRCLE_OFF):
-            ax, ay = a.x + ca * oa, a.y + sa * oa
-            for ob in (C.CAR_CIRCLE_OFF, -C.CAR_CIRCLE_OFF):
-                bx, by = b.x + cb * ob, b.y + sb * ob
-                dx, dy = ax - bx, ay - by
-                d2 = dx * dx + dy * dy
-                if d2 < 4 * R * R and (best is None or d2 < best[0]):
-                    best = (d2, ax, ay, bx, by)
-        if best is None:
+        rel = self._car_pair(a, b)
+        if rel is None:
             return
-        d2, ax, ay, bx, by = best
-        d = math.sqrt(d2) or 1e-4
-        nx, ny = (ax - bx) / d, (ay - by) / d      # points from b to a
-        pen = 2 * R - d
-        ima, imb = 1.0 / a.mass, 1.0 / b.mass
-        a.x += nx * pen * ima / (ima + imb)
-        a.y += ny * pen * ima / (ima + imb)
-        b.x -= nx * pen * imb / (ima + imb)
-        b.y -= ny * pen * imb / (ima + imb)
-        px, py = (ax + bx) / 2, (ay + by) / 2
-        rax, ray = px - a.x, py - a.y
-        rbx, rby = px - b.x, py - b.y
-        vax = a.vx - a.w * ray
-        vay = a.vy + a.w * rax
-        vbx = b.vx - b.w * rby
-        vby = b.vy + b.w * rbx
-        vn = (vax - vbx) * nx + (vay - vby) * ny
-        if vn >= 0:
-            return
-        rel = math.hypot(a.vx - b.vx, a.vy - b.vy)
-        rna = rax * ny - ray * nx
-        rnb = rbx * ny - rby * nx
-        j = -(1.0 + C.RESTITUTION_CAR) * vn / (ima + imb + rna * rna / a.inertia + rnb * rnb / b.inertia)
-        a.vx += j * nx * ima
-        a.vy += j * ny * ima
-        a.w += rna * j / a.inertia
-        b.vx -= j * nx * imb
-        b.vy -= j * ny * imb
-        b.w -= rnb * j / b.inertia
-        dva, dvb = j * ima, j * imb
-        a.impact_dv += dva
-        a.impact_nx += nx * dva
-        a.impact_ny += ny * dva
-        b.impact_dv += dvb
-        b.impact_nx -= nx * dvb
-        b.impact_ny -= ny * dvb
         # player car T-bones a cop hard enough -> cop catches fire
         for cop, other in ((a, b), (b, a)):
             if cop.kind == COP and other.kind != COP and other.driver is not None \
@@ -1196,42 +1399,7 @@ class World:
             p.vx = p.vy = 0.0
             p.moving = False
         else:
-            dx = (1 if b & B_RIGHT else 0) - (1 if b & B_LEFT else 0)
-            dy = (1 if b & B_DOWN else 0) - (1 if b & B_UP else 0)
-            moving = dx != 0 or dy != 0
-            used = p.hands_used()
-            want_sprint = bool(b & B_SPRINT) and moving and not p.exhausted and p.stamina > 0
-            if want_sprint:
-                p.stamina -= C.STAMINA_SPRINT_DRAIN[min(used, 2)] * dt
-                p.regen_delay = C.STAMINA_REGEN_DELAY
-            elif moving and used >= 2:
-                p.stamina -= C.STAMINA_WALK_2H_DRAIN * dt
-                p.regen_delay = C.STAMINA_REGEN_DELAY
-            else:
-                p.regen_delay -= dt
-                if p.regen_delay <= 0:
-                    p.stamina = min(C.STAMINA_MAX, p.stamina + C.STAMINA_REGEN * dt)
-            if p.stamina <= 0:
-                p.stamina = 0.0
-                p.exhausted = True
-            elif p.exhausted and p.stamina > C.STAMINA_RECOVER_AT:
-                p.exhausted = False
-            spd = C.SPRINT_SPEED if want_sprint else C.WALK_SPEED
-            if used >= 2:
-                spd *= C.TWO_HAND_SPEED_MULT
-            if p.exhausted:
-                spd *= C.EXHAUSTED_SPEED_MULT
-            if moving:
-                inv = 1.0 / math.hypot(dx, dy)
-                tx, ty = dx * inv * spd, dy * inv * spd
-                p.ang = math.atan2(dy, dx)
-            else:
-                tx = ty = 0.0
-            k = min(1.0, 16.0 * dt)
-            p.vx += (tx - p.vx) * k
-            p.vy += (ty - p.vy) * k
-            p.sprinting = want_sprint
-            p.moving = moving
+            self._walk(p, b, dt)
         p.x += p.vx * dt
         p.y += p.vy * dt
         self._body_vs_world(p, C.PLAYER_RADIUS)
@@ -1244,46 +1412,6 @@ class World:
                     self._tumble(p, cvx * 0.8 + nx * 3, cvy * 0.8 + ny * 3,
                                  lerp(1.2, 2.8, clamp(rel / 30.0, 0, 1)))
                     self.sfx(S_YELP, p.x, p.y)
-
-    def _body_vs_world(self, b, r):
-        rects = self._rects
-        rects.clear()
-        self.map.solid_rects_near(b.x, b.y, r, rects)
-        for rect in rects:
-            hit = circle_rect_contact(b.x, b.y, r, rect)
-            if hit:
-                nx, ny, pen, _, _ = hit
-                b.x += nx * pen
-                b.y += ny * pen
-                vn = b.vx * nx + b.vy * ny
-                if vn < 0:
-                    b.vx -= vn * nx * 1.3
-                    b.vy -= vn * ny * 1.3
-
-    def _body_vs_cars(self, b, r):
-        R = C.CAR_CIRCLE_R + r
-        result = None
-        for car in self.cars.values():
-            if abs(car.x - b.x) > 3.5 or abs(car.y - b.y) > 3.5:
-                continue
-            c, s = math.cos(car.ang), math.sin(car.ang)
-            for off in (C.CAR_CIRCLE_OFF, -C.CAR_CIRCLE_OFF):
-                cx, cy = car.x + c * off, car.y + s * off
-                dx, dy = b.x - cx, b.y - cy
-                d2 = dx * dx + dy * dy
-                if d2 < R * R:
-                    d = math.sqrt(d2) or 1e-4
-                    nx, ny = dx / d, dy / d
-                    b.x += nx * (R - d)
-                    b.y += ny * (R - d)
-                    rel = math.hypot(car.vx - b.vx, car.vy - b.vy)
-                    vn = (b.vx - car.vx) * nx + (b.vy - car.vy) * ny
-                    if vn < 0:
-                        b.vx -= vn * nx
-                        b.vy -= vn * ny
-                    if result is None or rel > result[0]:
-                        result = (rel, car.vx, car.vy, nx, ny)
-        return result
 
     # ------------------------------------------------------------------ NPCs
     def _update_npcs(self, dt):
