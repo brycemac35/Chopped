@@ -1,13 +1,14 @@
 # Chopped
 
-A chaotic co-op car-theft chop-shop game for 1-4 players online. Top-down
-pixel art, GTA 2 energy, and a heist that's always one pedestrian away from
-going wrong.
+A chaotic co-op car-theft chop-shop game for 1-4 players online. First-person
+pixel art with Doom energy (plus a top-down automap), and a heist that's
+always one pedestrian away from going wrong. The soundtrack is a dark
+Memphis-style trap beat, synthesized by the game itself.
 
 Steal cars, drive them into your shop, strip them for parts, sell the parts,
 and pay the rent. If you fall behind on rent, the landlord takes the shop.
 
-- Pure Python 3.12 + pygame-ce. **No asset files**: every sprite, tile, font glyph and sound is generated when the game starts. (The exe icon too, at build time.)
+- Pure Python 3.12 + pygame-ce. **No asset files**: every texture, sprite, font glyph, sound effect and the music are generated when the game starts. (The exe icon too, at build time.)
 - Host-authoritative networking over plain stdlib UDP (no networking library), with client-side prediction so joining players don't feel their ping.
 - Optional UPnP port forwarding via `miniupnpc`. The game works fine without it.
 
@@ -51,6 +52,7 @@ Command-line shortcuts:
 | `--port N`, `--mute`, `--no-upnp` | Use a different port, turn off audio, skip UPnP |
 | `--join 127.0.0.1 --fake-lag 150` | Pretend your ping is 150 ms higher. Try prediction on one PC |
 | `--no-predict` | Turn client-side prediction off, to compare |
+| `--no-music` | Sound effects only, no beat |
 | `--log FILE` | Write everything the game prints, including crash tracebacks, to FILE (the exe has no console) |
 
 ---
@@ -59,35 +61,42 @@ Command-line shortcuts:
 
 | Key | On foot | In a car |
 |---|---|---|
-| **W A S D** / arrows | Move | Throttle / brake-reverse / steer |
+| **Mouse** / **← →** | Look / turn | – (arrows steer) |
+| **W S** / **↑ ↓** | Forward / back | Throttle / brake-reverse |
+| **A D** | Strafe | Steer |
 | **Shift** | Sprint (uses stamina) | – |
-| **E** | Interact. **Hold** it for timed actions; a progress bar appears | – |
+| **E** | Use whatever you're looking at. **Hold** it for timed actions; a progress bar appears | – |
 | **G** | Drop the part you're holding / let go of the dolly | – |
 | **F** | – | Get out |
 | **Space** | – | Handbrake (break traction and drift) |
 | **H** | – | Horn. Cops within 40 m spin donuts for 3 s |
-| **Esc** | Pause overlay: players, host IP, ping. **Q** leaves | |
+| **Tab** | Automap: the top-down view of the city | |
+| **M** | Music on/off | |
+| **Esc** | Pause overlay: players, host IP, ping. Releases the mouse. **Q** leaves | |
 | **F11** | Toggle fullscreen | |
+
+The status bar reads, left to right: **CASH**, **HEAT %**, **HANDS** (or the dolly), your crook's **face** (it sweats as the heat rises, grins when money comes in, and sees stars when you get run over), **STAMINA %** (**KM/H** in a car), **COPS**, and **DAY / RENT**. The radar is top right. When you're carrying loot, a **SHOP** marker at the top of the screen points home.
 
 ---
 
 ## How to play
 
-1. **Find a car.** Parked civilian cars show as white dots on the minimap (bottom right). There are always up to four in the city.
-2. **Break in** by holding E at the car for 8 s. This sets off the alarm and adds **+10 heat**. Then **hotwire** it by holding E for 6 s, and you're the driver. A friend can press E to **ride shotgun**.
+1. **Find a car.** Parked civilian cars show as white dots on the radar and the automap. There are up to six in the city.
+2. **Break in** by looking at the car and holding E for 4 s. This sets off the alarm and adds **+10 heat**. Then **hotwire** it by holding E for 3 s, and you're the driver. A friend can press E to **ride shotgun**.
    - 12% of cars are **clown cars**. 15% have an **angry owner** who chases you and counts as a witness.
-3. **Drive it home.** A blinking arrow on the screen edge points to the shop. Stop the car (under 4 m/s) fully **inside the yellow line** in the garage to **deliver** it. Delivery turns the alarm off, sets heat to 0, sends the cops away, and a new car appears somewhere in the city.
-4. **Strip it.** Stand next to a part and hold E. Wheels take 4 s; hood, doors and bumpers 6 s; the engine 20 s.
+3. **Drive it home.** Follow the SHOP marker. Stop the car (under 4 m/s) fully **inside the yellow line** in the garage to **deliver** it. Delivery turns the alarm off, sets heat to 0, sends the cops away, and a new car appears somewhere in the city.
+4. **Strip it.** Look at a part and hold E. Wheels take 2 s; hood, doors and bumpers 3 s; the engine 10 s.
    - You have **two hands**. Wheels, ECUs and bucket seats take one hand. Doors, hoods, bumpers, exhausts, gearboxes and stock seats take both.
-   - **Engines are too heavy to carry.** Grab the **hand dolly** from its yellow box in the shop's north-east corner (E, with empty hands; it takes both). Take the hood off first, then push the dolly up to the engine bay and hold E for 20 s to strip the engine onto it. You can also tip a loose engine onto it (2 s), such as one from an exploded cop.
+   - **Engines are too heavy to carry.** Grab the **hand dolly** from its yellow box in the shop's north-east corner (E, with empty hands; it takes both). Take the hood off first, then push the dolly up to the engine bay and hold E for 10 s to strip the engine onto it. You can also tip a loose engine onto it (1 s), such as one from an exploded cop.
    - Pushing an empty dolly is a brisk walk. A loaded one is slow and tiring. **G** lets go. Getting busted, knocked flat or into a car also lets go, and the engine stays on the dolly for your partner. A dolly left outside the shop for 90 s finds its own way home.
    - When everything you can lift is gone, hold E to **crush the shell**. You get $150 plus 50% of any engine still in it.
-5. **Sell** a part by holding E for 1 s at the **$ SELL $** bench (engines sell off the dolly, at full price). Or **install** it on your own lime-green car by holding E for 3 s at the **TUNE-UP** bench. It goes into an empty slot or replaces a worse part, which drops on the floor. An engine from the dolly swaps in, and your old engine rides the dolly back out.
+5. **Sell** a part by holding E for half a second at the **$ SELL $** bench (engines sell off the dolly, at full price). Or **install** it on your own lime-green car by holding E for 1.5 s at the **TUNE-UP** bench. It goes into an empty slot or replaces a worse part, which drops on the floor. An engine from the dolly swaps in, and your old engine rides the dolly back out.
    - **Parts counter:** at TUNE-UP with empty hands you can **buy** the next part for your ride at 1.6× street value. It suggests missing parts first, then the best power per dollar you can afford (or the cheapest one to save for), then shiny tuned bits. No credit. Stealing is cheaper, but this is faster.
-6. **Pay the rent.** $150 is taken every 60 s from the shared wallet. If cash stays below $0 for 2 minutes, you get **SHOP SEIZED** and a new run starts. Your personal car **keeps its mods**.
+6. **Pay the rent.** A day lasts 3 minutes, from dawn to midnight, and the sky changes with it. At midnight the landlord takes the rent from the shared wallet: **$100 on day 1, then $75 more every day** ($175, $250, $325...). You get a summary of the day's haul. If cash stays below $0 for 2 minutes, you get **SHOP SEIZED** and a new run starts back on day 1. Your personal car **keeps its mods**.
 
 ### The city
 
+- **The soundtrack** is an original dark trap beat in the Memphis / phonk lane: sliding 808s, a clap on the three, rattling hi-hat rolls, a pitched cowbell and an eerie music-box bell. It's synthesized at startup (no audio files). The hats and cowbell kick in when you're on a job and hit harder when the heat's on. **M** toggles it.
 - **Traffic:** eight cars drive the grid, keeping right. They slow for corners, stop and honk if you stand in the road, and swing around stalled cars. Give one a small bump and the driver sits there, stunned and honking. Hit one hard enough to throw people out and the driver bails: they lock the car, take the keys and run. It's then an ordinary parked car you can break into (with the alarm and heat that go with it). Traffic drivers are *not* witnesses, and their horns don't confuse cops.
 - **Pedestrians** run from cars coming at them faster than about 50 km/h (they dive sideways), from crashes and explosions, and from anywhere near a stolen car while the cops are rolling. Panicking doesn't stop them from being witnesses.
 
@@ -176,6 +185,7 @@ SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests
   - Over real UDP with 120 ms ping and jitter, your avatar moves before the host has heard, then converges.
 - `tests/test_traffic.py` covers traffic that stays on the road, keeps right, stops, honks and bails, and pedestrians who flee.
 - `tests/test_dolly.py` covers the dolly (strip, load, sell, swap, speeds, letting go, coming home) and the parts counter.
+- `tests/test_music.py` checks that the beat's two layers loop seamlessly, aren't silent or clipping, and hit on the one.
 
 ---
 
@@ -194,10 +204,14 @@ chopped/net.py       UDP Server (60 Hz sim, 20 Hz snapshots) and Client (60 Hz i
                      100 ms interpolation for everyone else, --fake-lag)
 chopped/upnp.py      optional miniupnpc port mapping (runs in a background thread)
 chopped/art.py       palette, 3x5 pixel font, procedural sprites, pre-rendered city
-chopped/render.py    world renderer, particles, skid marks, camera
-chopped/ui.py        HUD, menu, pause overlay
+chopped/render.py    top-down renderer (the Tab automap), particles, skid marks, camera
+chopped/ui.py        main menu
 chopped/audio.py     procedural square-wave sfx and loops (silently disabled if there's no audio device)
-chopped/game.py      pygame app loop, host/join flow, selftest bot
+chopped/fp.py        first-person raycaster: textured walls, mode-7 street floor, sky, sprites
+chopped/fpart.py     first-person art: facades, skies, box-model cars/people rendered from 16/8 angles
+chopped/doomhud.py   status bar, face, messages, first-person hands / dolly / dashboard overlays
+chopped/music.py     the procedural beat (pure Python, rendered once at startup)
+chopped/game.py      pygame app loop, host/join flow, mouse look, selftest bot
 tools/make_icon.py   build-time icon + Windows version resource (from the sprite code)
 tools/smoke_exe.py   tests a BUILT exe: selftest + host/client over UDP
 .github/workflows/build.yml   tests on Windows + Linux, builds and smoke-tests Chopped.exe

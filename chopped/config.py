@@ -248,6 +248,7 @@ PICKUP_SHRINK = 30.0             # last 30 s it visibly shrinks
 MAX_PICKUPS = 90
 
 TOAST_TIME = 3.5
+MUSIC_VOLUME = 0.45              # the beat sits under the engine and the sirens, not on top of them
 
 # --------------------------------------------------------------------------
 # First-person view (the Doom-style one)

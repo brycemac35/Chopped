@@ -95,7 +95,8 @@ class App:
         self.scaled = None
         self.clock = pygame.time.Clock()
         self.font = PixelFont()
-        self.audio = Audio(enabled=not getattr(args, "mute", False))
+        self.audio = Audio(enabled=not getattr(args, "mute", False),
+                           music=not getattr(args, "no_music", False))
         self.menu = Menu(self.font, (getattr(args, "name", None) or os.environ.get("USERNAME")
                                      or os.environ.get("USER") or "CROOK")[:12].upper())
         self.state = "menu"
@@ -290,6 +291,10 @@ class App:
                         self.exit_c += 1
                     elif ev.key == pygame.K_TAB:
                         self.fp_mode = not self.fp_mode
+                    elif ev.key == pygame.K_m:
+                        on = self.audio.toggle_music()
+                        if self.hud is not None:
+                            self.hud.add_toast("MUSIC ON" if on else "MUSIC OFF", S.T_INFO, time.perf_counter())
 
     def toggle_fullscreen(self):
         self.fullscreen = not self.fullscreen
@@ -328,6 +333,11 @@ class App:
         return S.InputState(b, self.use_c, self.drop_c, self.exit_c, self.yaw)
 
     def _update(self, now, dt):
+        level = 0
+        if self.state == "play" and self.client is not None and self.client.latest is not None:
+            snap = self.client.latest
+            level = 2 if (snap.heat >= 35 or snap.cops) else 1
+        self.audio.update_music(level)
         if self.state == "connecting":
             self.client.update(now)
             if self.client.state == "connected" and self.client.latest is not None:
@@ -526,8 +536,9 @@ def run_selftest(args):
         return 1
     dt = time.perf_counter() - t0
     ok = app.frames_in_play > 30 and app.snapshots_seen > 0 and not app.error
-    print("SELFTEST %s: frames=%d play_frames=%d last_tick=%d players_seen=%d wall=%.1fs fps=%.1f audio=%s err=%s" % (
+    music = "off" if not app.audio.music_on else ("ready" if app.audio.music_tracks else "pending")
+    print("SELFTEST %s: frames=%d play_frames=%d last_tick=%d players_seen=%d wall=%.1fs fps=%.1f audio=%s music=%s err=%s" % (
         "OK" if ok else "FAIL", app.frames, app.frames_in_play, app.snapshots_seen, app.max_players_seen, dt,
-        app.frames / max(dt, 1e-6), app.audio.ok, app.error))
+        app.frames / max(dt, 1e-6), app.audio.ok, music, app.error))
     sys.stdout.flush()
     return 0 if ok else 1

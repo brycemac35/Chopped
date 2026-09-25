@@ -6,10 +6,13 @@ quietly turns into a very expensive no-op.
 
 import math
 import random
+import threading
 from array import array
 
 import pygame
 
+from . import config as C
+from . import music as MU
 from . import sim as S
 
 RATE = 22050
@@ -21,12 +24,17 @@ def _clip(v):
 
 
 class Audio:
-    def __init__(self, enabled=True):
+    def __init__(self, enabled=True, music=True):
         self.ok = False
         self.sounds = {}
         self.loops = {}
         self.channels = {}
         self.loop_state = {}
+        self.music_on = music
+        self.music_tracks = None      # [calm, groove, hot] once the beat has been rendered
+        self._music_bytes = None
+        self.music_ch = None
+        self.music_level = None
         if not enabled:
             return
         try:
@@ -37,12 +45,15 @@ class Audio:
                 return
             self.rate, _fmt, self.nch = init
             pygame.mixer.set_num_channels(20)
-            pygame.mixer.set_reserved(5)
+            pygame.mixer.set_reserved(6)
             self._build()
             for i, name in enumerate(("engine", "alarm", "siren", "horn", "fire")):
                 self.channels[name] = pygame.mixer.Channel(i)
                 self.loop_state[name] = None
+            self.music_ch = pygame.mixer.Channel(5)
             self.ok = True
+            if music:
+                threading.Thread(target=self._compose, name="chopped-beat", daemon=True).start()
         except Exception:
             self.ok = False       # no sound card, no problem. Imagine the crunches.
 
@@ -109,6 +120,62 @@ class Audio:
             dur = n / f                                  # whole cycles -> seamless loop
             self.engine.append(self._mk(self._tone(dur, lambda t, p, f=f: (saw(f, t) * 0.5 + sq(f / 2, t) * 0.25) * 0.5), 0.5))
 
+    # ------------------------------------------------------------------ music
+    def _compose(self):
+        """Background thread: render the beat and pre-mix three intensities.
+        Pre-mixing (instead of two layers on two channels) keeps the hats
+        locked to the 808s -- two channels can drift a whole audio buffer apart."""
+        try:
+            street, heat = MU.compose(self.rate)
+            out = []
+            for hv in (0.0, 0.45, 1.0):
+                vals = [a * 0.8 + b * hv * 0.9 for a, b in zip(street, heat)]
+                m = max(1e-6, max(abs(v) for v in vals))
+                k = 0.95 / m * 32767 * MASTER
+                pcm = array("h", (int(v * k) for v in vals))
+                if self.nch > 1:
+                    wide = array("h")
+                    for v in pcm:
+                        wide.extend((v,) * self.nch)
+                    pcm = wide
+                out.append(pcm.tobytes())
+            self._music_bytes = out
+        except Exception:
+            self._music_bytes = None      # no beat is better than no game
+
+    def update_music(self, level):
+        """Call every frame. level 0 = menu/calm, 1 = on the job, 2 = heat's on.
+        Changes land on the next loop boundary (the beat 'drops'), gaplessly,
+        via Channel.queue()."""
+        if not self.ok:
+            return
+        if self.music_tracks is None and self._music_bytes is not None:
+            try:
+                self.music_tracks = [pygame.mixer.Sound(buffer=b) for b in self._music_bytes]
+            except Exception:
+                self.music_tracks = []
+            self._music_bytes = None
+        if not self.music_tracks:
+            return
+        ch = self.music_ch
+        if not self.music_on:
+            if ch.get_busy():
+                ch.stop()
+            self.music_level = None
+            return
+        level = max(0, min(len(self.music_tracks) - 1, level))
+        ch.set_volume(C.MUSIC_VOLUME)
+        if not ch.get_busy():
+            ch.play(self.music_tracks[level])
+            self.music_level = level
+        elif ch.get_queue() is None:
+            ch.queue(self.music_tracks[level])
+            self.music_level = level
+
+    def toggle_music(self):
+        self.music_on = not self.music_on
+        return self.music_on
+
     # ------------------------------------------------------------------ playback
     def play(self, sid, dist=0.0):
         if not self.ok:
@@ -142,7 +209,11 @@ class Audio:
         ch.set_volume(min(1.0, vol))
 
     def stop_all(self):
+        """Stops the sound effects; the music plays on (it's the menu music too)."""
         if self.ok:
-            pygame.mixer.stop()
+            for ch in self.channels.values():
+                ch.stop()
+            for i in range(6, pygame.mixer.get_num_channels()):
+                pygame.mixer.Channel(i).stop()
             for k in self.loop_state:
                 self.loop_state[k] = None

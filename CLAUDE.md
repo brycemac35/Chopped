@@ -11,25 +11,22 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
 
 ## 1. Status and your tasks, in order
 
-### Where things stand (Sept 25, 2026, session 2)
-- **Windows exe:** it's built by GitHub Actions (`.github/workflows/build.yml`) on `windows-latest`. The workflow:
-  - runs all tests on Windows and Linux
-  - generates the icon, builds from `Chopped.spec`, and smoke-tests the built exe (`tools/smoke_exe.py`: a solo selftest, then a host exe and a client exe over UDP)
-  - uploads the **Chopped-windows** artifact. A `v*` tag also publishes a GitHub Release.
-  - **First Windows run (Build #1, Sept 25, 2026): all green.**
-    - All 56 tests passed on Windows and Linux.
-    - `Chopped.exe` is 15.6 MB and was built with its icon and version info.
-    - Smoke test on Windows: the solo selftest, the host and the client all printed SELFTEST OK at about 59–60 fps, and the host saw 2 players.
-- **Gaps closed in session 2:**
-  - client-side prediction
-  - box collision
-  - moving traffic and fleeing pedestrians
-  - the hand dolly and the parts counter
-  - exe icon and version info
-  - VPN-proof host IP display
-  - racing stripes on the wrong car kind
-  - unobtainable exploded-cop engines
-- **Tests:** 56, all OK on Linux with Python 3.12, including the 2-process game loop at about 61 fps.
+### Where things stand (Sept 25, 2026, session 2, second round)
+- **v0.5 is Doom-style first person**, at Bryce's request ("more of a doom style game"). The top-down view is kept as the Tab automap.
+  - `fp.py`: the raycaster (textured walls, mode-7 floor, skies, sprites)
+  - `fpart.py`: all first-person art, generated in code
+  - `doomhud.py`: status bar, face and overlays
+  - Controls: mouse look, WASD with strafe. Interactions use what you're looking at (`World._aim`).
+- **Faster pacing** (Bryce: "doesn't play as fast as I want"):
+  - walk 6.0 and sprint 10.0 m/s
+  - every action timer halved
+  - 6 parked cars instead of 4
+- **Rent:** once per 3-minute day. $100 on day 1, then $75 more each day.
+- **Music** (Bryce asked for "pouya / suicide boys type beat"): `music.py` renders an original dark trap / Memphis beat at startup, with no files. Layers switch at loop boundaries depending on heat. M toggles it; `--no-music` turns it off.
+- **Protocol VERSION 5:** inputs carry the view yaw; snapshots carry the day number and rent due.
+- **Windows exe:** built by GitHub Actions (`.github/workflows/build.yml`) on every push, and smoke-tested as an exe. Build #1 (v0.4) was green on Windows. Check the Actions tab for the latest run.
+- **Tests:** 61, all OK. Both processes of the game-loop test render first person with music at about 55–60 fps on one machine.
+- **Performance budget:** `fp.draw` is about 6 ms per frame at 480×238. The beat takes about 0.8 s to render in a background thread at startup, while you're in the menu.
 
 ### Task 1: Play the exe on a real Windows PC
 1. Download the **Chopped-windows** artifact from the latest green **Build** run (Actions tab). If a future run fails, read the **smoke-logs** artifact.
@@ -58,7 +55,7 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
 
 ## 2. Hard rules
 - **Networking stays stdlib UDP.** No networking libraries; this keeps PyInstaller packaging trivial. `miniupnpc` is optional and must stay an optional import.
-- **No asset files.** All sprites, tiles, the pixel font and sounds are generated in code (`art.py`, `audio.py`). Keep it that way unless Bryce says otherwise.
+- **No asset files.** All sprites, textures, the pixel font, sounds and the music are generated in code (`art.py`, `fpart.py`, `audio.py`, `music.py`). Keep it that way unless Bryce says otherwise.
 - **`sim.py` must not import pygame.** It's the authoritative, testable simulation.
 - **All tuning numbers live in `chopped/config.py`**, each with a comment explaining why.
 - **Bump `config.VERSION`** whenever the wire protocol changes. Clients with a different version get rejected politely.
@@ -68,7 +65,7 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
   ```
   set SDL_VIDEODRIVER=dummy & set SDL_AUDIODRIVER=dummy & python -m unittest discover -s tests -v
   ```
-  (On Linux/macOS: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests -v`.) At handoff (session 2): **56 tests, all OK**, and `--selftest` ran at about 61 fps.
+  (On Linux/macOS: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests -v`.) At handoff (session 2): **61 tests, all OK**, and `--selftest` ran at about 61 fps.
 
 ## 3. Architecture (details in README.md)
 - `main.py` is the command line: `--host`, `--join IP[:PORT]`, `--server` (headless), `--selftest`, `--port`, `--name`, `--mute`, `--no-upnp`, `--log FILE`, `--fake-lag MS`, `--no-predict`.
@@ -84,11 +81,14 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
 - **Traffic:** `TRAFFIC` kind cars follow waypoints on the road grid (right-hand lanes, pure pursuit). Cars that drift more than 140 m from every player are recycled off-screen. `World.traffic_target = 0` turns traffic off (the tests do this).
 - **City:** generated deterministically from a seed (`mapgen.py`), so clients rebuild it locally and it's never sent over the network.
 - **Rendering:** the game draws to a 480×270 surface and scales it up with nearest-neighbour. F11 toggles fullscreen.
+  - First person comes from `fp.FPRenderer`, drawing into a 480×238 view with the 32 px `DoomHud` bar below.
+  - Tab switches to the top-down `render.Renderer` as an automap.
+  - The first-person floor is the top-down map surface, rotated each frame, so anything drawn on the map (skid marks, labels) shows up on the street.
 
 ## 4. Game design and tuning (agreed with Bryce; don't change without asking)
 - **Stealing:**
-  - Break in by holding E for 8 s. This triggers the alarm and adds +10 heat.
-  - Hotwire by holding E for 6 s; whoever hotwires becomes the driver.
+  - Break in by holding E for 4 s (v0.5, was 8). This triggers the alarm and adds +10 heat.
+  - Hotwire by holding E for 3 s (v0.5, was 6); whoever hotwires becomes the driver.
   - Only one prompt shows for each car state: Locked → break in; BrokenIn → hotwire; Running → drive / ride shotgun; Delivered → strip; fully stripped → crush shell.
 - **Driving:**
   - Top speed: civilian 45 m/s, cops 48 m/s with 1.35× acceleration. Cops win the straights and lose the corners.
@@ -114,13 +114,13 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
   - Stamina pool is 100. Sprint drain is 12, 22 or 38 per second (empty, one-handed, two-handed). Walking two-handed drains 8/s.
   - Loose parts vanish after 10 minutes.
 - **Money:**
-  - Start with $300. Rent is $150 every 60 s.
+  - Start with $300. **v0.5 (Bryce's request): rent is due once a day at midnight.** A day is 3 minutes. Rent is $100 on day 1 and $75 more each day after (`config.rent_for_day`).
   - 120 s below $0 means SHOP SEIZED. The new run resets cash, city cars, heat and loose parts, but **the personal car keeps its mods**.
   - A stock Kei Hatch is worth about $1,070 in parts.
 - **Specials:** 12% of cars are clown cars (4 clowns burst out). 15% have an angry owner who chases at 5.5 m/s and counts as a heat witness.
 - **Session 2 decisions, flagged for Bryce** (all tunable in `config.py`):
   - **Traffic drivers are not heat witnesses**, and their horns don't confuse cops. This keeps the agreed heat balance. Making them witnesses would be a one-line change in `_witness_scan`.
-  - **Traffic can't be stolen while driven.** A hard crash (at or above the eject delta-v) makes the driver bail and lock it. It becomes a normal LOCKED civilian car: 8 s break-in, alarm, +10 heat.
+  - **Traffic can't be stolen while driven.** A hard crash (at or above the eject delta-v) makes the driver bail and lock it. It becomes a normal LOCKED civilian car: normal break-in, alarm, +10 heat.
   - **Dolly:** there's one. Stripping an engine onto it uses the existing 20 s engine strip time, and the hood must come off first. Speed is ×0.85 empty and ×0.62 loaded. Loaded counts as two-handed for stamina. It returns home after 90 s abandoned outside the shop. Crushing still pays 50% for engines left in.
   - **Parts counter:** at the tune-up bench with empty hands, it sells the next tier at 1.6× base value, condition 1.0. The replaced part drops on the floor. No credit.
   - Pedestrians flee but still witness.

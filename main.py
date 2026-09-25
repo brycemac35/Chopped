@@ -51,6 +51,7 @@ def parse_args(argv=None):
     ap.add_argument("--frames", type=int, default=None, help="selftest: frames to run")
     ap.add_argument("--seconds", type=float, default=None, help="selftest/server: seconds to run")
     ap.add_argument("--mute", action="store_true", help="no audio")
+    ap.add_argument("--no-music", dest="no_music", action="store_true", help="sound effects only, no beat")
     ap.add_argument("--no-upnp", dest="no_upnp", action="store_true", help="don't try UPnP")
     ap.add_argument("--log", metavar="FILE", help="write all output (and crash tracebacks) to FILE")
     ap.add_argument("--fake-lag", dest="fake_lag", type=float, default=0.0, metavar="MS",
