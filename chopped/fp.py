@@ -22,7 +22,7 @@ from . import fpart as FA
 from . import sim as S
 from . import protocol as PR
 from .art import P, PLAYER_COLORS, SKINS, HAIRS, SHIRTS, PixelFont, shade
-from .parts import SLOT_ANCHOR
+from .parts import SLOT_ANCHOR, NO_PART
 
 T = C.TILE_M
 FLOOR_PPM = 4
@@ -31,6 +31,9 @@ TWO_PI = 2 * math.pi
 # particle kinds (same idea as render.py, but in 3D)
 SPARK, SMOKE, FIRE, DEBRIS, CONFETTI, DUST = range(6)
 CONFETTI_COLS = [(255, 80, 80), (80, 200, 255), (255, 230, 60), (120, 230, 110), (236, 90, 206)]
+MARK_STEAL = (120, 236, 90)     # green arrow: nobody's driving it, go on
+MARK_JACK = (255, 150, 40)      # orange arrow: traffic that's stopped. Drag them out.
+TRACER_COL = (255, 240, 170)
 
 
 def time_of_day(day_left):
@@ -83,6 +86,7 @@ class FPRenderer:
         self.icon_big = {}
         self.particles = []
         self.explosions = []
+        self.tracers = []          # [x0, y0, x1, y1, weapon, life]
         self.skid_prev = {}
         self.flash = None          # (colour, strength)
         self.shake = 0.0
@@ -169,6 +173,7 @@ class FPRenderer:
         for sp in statics:
             key = (int(sp[0] // 24), int(sp[1] // 24))
             self.static_cells.setdefault(key, []).append(sp)
+        self.crates = list(getattr(cm, "market", ()))
         self.benches = []
         for rect, is_sell in ((cm.sell_bench, True), (cm.tune_bench, False)):
             bx, by, bw, bh = rect
@@ -205,14 +210,14 @@ class FPRenderer:
             self.person_keys[(eid, kind)] = k
         return k
 
-    def _person_sprite(self, shirt, skin, hair, frame, extra, down, az):
+    def _person_sprite(self, shirt, skin, hair, frame, extra, down, az, gun=0):
         idx = int(round(az / (TWO_PI / 8))) % 8
-        key = (shirt, skin, hair, frame, extra, down, idx)
+        key = (shirt, skin, hair, frame, extra, down, idx, gun)
         spr = self.person_cache.get(key)
         if spr is None:
             if len(self.person_cache) > 2000:
                 self.person_cache.clear()
-            boxes = FA.person_boxes(shirt, skin, hair, frame, extra)
+            boxes = FA.person_boxes(shirt, skin, hair, frame, extra, gun=gun)
             if down:
                 boxes = FA.lying(boxes)
             spr = self.person_cache[key] = FA.render_boxes(boxes, idx * TWO_PI / 8, 16)
@@ -272,6 +277,23 @@ class FPRenderer:
             self.flash = ((255, 40, 30), 90)
         elif sid == S.S_ARREST and d < 3:
             self.flash = ((80, 120, 255), 140)
+        elif sid == S.S_TIRE:
+            self.burst(DEBRIS, x, y, 0.4, 10, 5, 0.8, P["tire"])
+            self.burst(SMOKE, x, y, 0.4, 4, 2, 0.8)
+        elif sid == S.S_TRAP:
+            self.burst(DUST, x, y, 0.3, 10, 3, 0.6)
+        elif sid == S.S_PUNCH and d < 2.5:
+            self.shake = max(self.shake, 1.5)
+        elif sid == S.S_ROB:
+            self.burst(CONFETTI, x, y, 1.0, 6, 3, 0.7, P["money"])
+        elif sid in (S.S_PISTOL, S.S_SHOTGUN) and d < 1.0:
+            self.shake = max(self.shake, 2.5 if sid == S.S_SHOTGUN else 1.0)    # your own shot
+
+    def on_shot(self, weapon, x0, y0, x1, y1):
+        """A bullet's path, from the server. A streak, sparks where it landed."""
+        self.tracers.append([x0, y0, x1, y1, weapon, 0.07 if weapon == S.ARM_PISTOL else 0.05])
+        self.burst(SPARK, x1, y1, 1.1, 3 if weapon == S.ARM_SHOTGUN else 5, 5, 0.25)
+        self.emit(FIRE, x0, y0, 1.35, 0, 0, 0, 0.06)          # muzzle flash (for other people's guns)
 
     def emit(self, kind, x, y, z, vx, vy, vz, life, color=None):
         if len(self.particles) < 600:
@@ -303,6 +325,7 @@ class FPRenderer:
         self._floor(surf, cx, cy, yaw, eye, dark)
         self._walls(surf, cx, cy, yaw, eye, dark, night)
         self._sprites(surf, view, cx, cy, yaw, eye, me_pid, now, dt, dark, night, bank, hide_car)
+        self._tracers(surf, cx, cy, yaw, eye, dt)
         self._particles(surf, cx, cy, yaw, eye, dt)
         if self.flash is not None:
             col, a = self.flash
@@ -476,17 +499,42 @@ class FPRenderer:
             az = math.atan2(by - cy, bx - cx)
             add(bx, by, lambda a=az, s=is_sell, w=bw, h=bh: self._model_sprite(
                 ("bench", s), lambda: FA.bench_boxes(s, w, h), a, 8, 10))
+        for (x, y, item) in self.crates:
+            az = math.atan2(y - cy, x - cx) - math.pi       # the crates face into the shop
+            add(x, y, lambda a=az, it=item: self._model_sprite(("crate", it), lambda: FA.crate_boxes(it), a, 8, 16),
+                tag=("crate", item))
+        for t in getattr(view, "traps", {}).values():
+            if t[5] < 0.1 and int(now * 6) % 2:
+                continue                                        # about to be towed: blink
+            spikes = t[1] == S.TRAP_SPIKES
+            along = 0.0 if abs(math.cos(t[4])) > 0.5 else math.pi / 2   # which way the traffic runs
+            length = C.SPIKE_LEN if spikes else C.ROADBLOCK_LEN
+            segs = 2 if spikes else 4
+            seg = length / segs
+            px, py = -math.sin(along), math.cos(along)
+            for k in range(segs):
+                off = -length / 2 + (k + 0.5) * seg
+                x, y = t[2] + px * off, t[3] + py * off
+                az = math.atan2(y - cy, x - cx) - along
+                if spikes:
+                    add(x, y, lambda a=az, L=seg: self._model_sprite(("spikes", L), lambda: FA.spike_boxes(L), a, 8, 16))
+                else:
+                    lamp = k % 2 == 1
+                    add(x, y, lambda a=az, L=seg, lp=lamp: self._model_sprite(
+                        ("barrier", L, lp), lambda: FA.barrier_boxes(L, lp), a, 8, 16))
         # the living
         for row in view.cars.values():
             if row[0] == hide_car:
                 continue
             az = math.atan2(row[8] - cy, row[7] - cx) - row[11]
-            add(row[7], row[8], lambda r=row, a=az: self._car_sprite(r, a))
+            add(row[7], row[8], lambda r=row, a=az: self._car_sprite(r, a), tag=self._car_marker(row))
         frame = int(now * 7) % 2
         for n in view.npcs.values():
             shirt, skin, hair, extra = self._person_look(n[0], n[1])
             az = math.atan2(n[4] - cy, n[3] - cx) - n[5]
-            fr = frame if n[2] != 1 else 0
+            fr = frame if n[2] not in (1, 3) else 0
+            if n[2] == 3:
+                extra = "handsup"
             add(n[3], n[4], lambda s=shirt, k=skin, h=hair, e=extra, f=fr, dn=(n[2] == 1), a=az:
                 self._person_sprite(s, k, h, f, e, dn, a))
         for p in view.players.values():
@@ -496,8 +544,10 @@ class FPRenderer:
             extra = "cuffed" if p[2] == S.CUFFED else None
             az = math.atan2(p[5] - cy, p[4] - cx) - p[8]
             fr = frame if p[3] & PR.PF_MOVING else 0
+            gun = {S.ARM_PISTOL: 1, S.ARM_SHOTGUN: 2}.get(p[14] if len(p) > 14 else 0, 0) \
+                if p[2] == S.FOOT and p[9] == NO_PART and not p[3] & PR.PF_DOLLY else 0
             add(p[4], p[5], lambda s=shirt, k=SKINS[p[0] % 4], h=HAIRS[p[0] % 6], f=fr, e=extra,
-                dn=(p[2] == S.TUMBLE), a=az: self._person_sprite(s, k, h, f, e, dn, a), tag=("name", p))
+                dn=(p[2] == S.TUMBLE), a=az, g=gun: self._person_sprite(s, k, h, f, e, dn, a, g), tag=("name", p))
         for pk in view.pickups.values():
             ic = self._icon(bank, pk[1])
             bob = 0.12 + 0.06 * math.sin(now * 3 + pk[0])
@@ -563,12 +613,73 @@ class FPRenderer:
                     self.font.draw(surf, p[13], int(sx), top - 8, col, align="center")
                     if p[2] == S.CUFFED:
                         self.font.draw(surf, "BUSTED", int(sx), top - 15, P["danger"], align="center")
+                elif tag[0] == "mark" and depth < 70:
+                    bob = math.sin(now * 4 + tag[2]) * 0.12
+                    my = int(ground - (2.3 + bob) * D / depth)
+                    r = max(3, min(8, int(0.35 * D / depth)))
+                    pygame.draw.polygon(surf, P["ink"], [(sx - r - 1, my - r - 1), (sx + r + 1, my - r - 1), (sx, my + 1)])
+                    pygame.draw.polygon(surf, tag[1], [(sx - r, my - r), (sx + r, my - r), (sx, my)])
+                elif tag[0] == "crate" and depth < 9:
+                    label, price = S.MARKET[tag[1]]
+                    self.font.draw(surf, "%s $%d" % (label.split(" (")[0], price), int(sx),
+                                   int(ground - 1.3 * D / depth), P["gold"], align="center")
                 elif tag[0] == "dolly" and tag[1] != 255:
                     ic = self._icon(bank, tag[1])
                     kk = D / depth / 14
                     iw = max(1, int(ic.get_width() * kk))
                     icon = pygame.transform.scale(ic, (iw, iw))
                     surf.blit(icon, (int(sx - iw / 2), int(ground - 0.9 * D / depth) - iw))
+
+    @staticmethod
+    def _car_marker(row):
+        """A bobbing arrow over anything you could drive off in right now."""
+        kind, state, flags, drv = row[1], row[3], row[4], row[12]
+        if kind == S.CIV and state != S.DELIVERED and not drv:
+            col = P["gold"] if flags & PR.CF_WANTED else MARK_STEAL
+            return ("mark", col, row[0])
+        if kind == S.TRAFFIC and math.hypot(row[9], row[10]) < C.CARJACK_MAX_SPEED:
+            return ("mark", MARK_JACK, row[0])
+        return None
+
+    def _tracers(self, surf, cx, cy, yaw, eye, dt):
+        if not self.tracers:
+            return
+        ca, sa = math.cos(yaw), math.sin(yaw)
+        hor, D, vw = self.hor, self.D, self.vw
+        near = 0.3
+        keep = []
+        for tr in self.tracers:
+            tr[5] -= dt
+            if tr[5] <= 0:
+                continue
+            keep.append(tr)
+            x0, y0, x1, y1 = tr[0], tr[1], tr[2], tr[3]
+            length = math.hypot(x1 - x0, y1 - y0)
+            if math.hypot(x0 - cx, y0 - cy) < 1.2 and length > 0.1:
+                # your own shot: from your eyes it's a line from under your chin to the
+                # target. Only draw the far end, where you can see the round land.
+                k = min(0.5, 2.0 / length)
+                x0, y0 = x0 + (x1 - x0) * k, y0 + (y1 - y0) * k
+            ends = []
+            for x, y, z in ((x0, y0, 1.35), (x1, y1, 1.15)):
+                dx, dy = x - cx, y - cy
+                ends.append([dx * ca + dy * sa, -dx * sa + dy * ca, z])
+            (d0, l0, z0), (d1, l1, z1) = ends
+            if d0 < near and d1 < near:
+                continue
+            if d0 < near or d1 < near:                   # clip to the near plane
+                t = (near - d0) / (d1 - d0)
+                clipped = (near, l0 + (l1 - l0) * t, z0 + (z1 - z0) * t)
+                if d0 < near:
+                    d0, l0, z0 = clipped
+                else:
+                    d1, l1, z1 = clipped
+            pts = []
+            for d, l, z in ((d0, l0, z0), (d1, l1, z1)):
+                pts.append((max(-5000, min(5000, int(vw / 2 + l / d * D))),
+                            max(-5000, min(5000, int(hor + (eye - z) * D / d)))))
+            pygame.draw.line(surf, TRACER_COL, pts[0], pts[1], 1)
+        self.tracers = keep
 
     def _draw_boom(self, surf, e, sx, depth, eye, dt):
         t = e[2]                                   # (aged in _particles)

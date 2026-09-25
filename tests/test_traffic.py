@@ -106,23 +106,31 @@ class TestTraffic(unittest.TestCase):
         self.assertIsNone(key)
         self.assertNotIn(str(car.id), label)
 
-    def test_hard_hit_makes_the_driver_bail_and_lock_it(self):
+    def test_hard_hit_makes_the_driver_bail_and_leave_it_running(self):
         w = S.World(map_seed=99, rng_seed=5)
         car = lone_traffic_car(w)
         n0 = len(w.npcs)
         w._crash(car, C.CRASH_EJECT_DV + 1.0, 0.0, 1.0)
         self.assertEqual(car.kind, S.CIV)
-        self.assertEqual(car.state, S.LOCKED, "the driver took the keys: break in as usual")
+        self.assertEqual(car.state, S.RUNNING, "the driver legged it with the engine running")
         self.assertFalse(car.stolen)
         runners = [n for n in w.npcs.values() if n.ttl > 0]
         self.assertEqual(len(w.npcs), n0 + 1)
         self.assertEqual(len(runners), 1)
         self.assertGreater(runners[0].flee_t, 0)
         w.pickups.clear()                    # (the crash may have dropped a door right there)
+        car.vx = car.vy = 0.0
         p = w.add_player("OPPORTUNIST")
         p.x, p.y = car.to_world(0.0, 2.0)
         p.ang = math.atan2(car.y - p.y, car.x - p.x)
-        self.assertIn("BREAK IN", w._find_interaction(p)[1])
+        key, label, _, act = w._find_interaction(p)
+        self.assertIn("DRIVE", label)
+        heat0 = w.heat
+        act()
+        self.assertEqual(p.state, S.DRIVER)
+        self.assertTrue(car.stolen, "hopping in makes it a stolen car")
+        self.assertGreaterEqual(w.heat, heat0 + C.HEAT_BREAKIN - 0.01)
+        w._leave_car(p)
         step(w, 41.0)
         self.assertNotIn(runners[0].id, w.npcs, "the runner eventually runs off the map")
 

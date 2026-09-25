@@ -223,13 +223,13 @@ class Server:
             return
         conn.last_heard = now
         if ptype == P.P_INPUT and len(data) >= off + P.INPUT.size:
-            seq, cms, ack, buttons, use, drop, ex, yaw = P.INPUT.unpack_from(data, off)
+            seq, cms, ack, buttons, use, drop, ex, yaw, fire, weapon = P.INPUT.unpack_from(data, off)
             if seq <= conn.input_seq:
                 return                     # stale/out-of-order: newer state already applied
             conn.input_seq = seq
             conn.echo_ms = cms
             conn.ack_event = max(conn.ack_event, ack)
-            self.world.set_input(conn.pid, InputState(buttons, use, drop, ex, P.unang16(yaw)))
+            self.world.set_input(conn.pid, InputState(buttons, use, drop, ex, P.unang16(yaw), fire, weapon))
         elif ptype == P.P_LEAVE:
             self._drop(conn, "left")
 
@@ -266,7 +266,7 @@ def lerp_angle(a, b, t):
 class View:
     """What the renderer draws this frame: interpolated copies of snapshot
     entity rows (same field layout as protocol.decode_snapshot)."""
-    __slots__ = ("snap", "cars", "players", "npcs", "pickups", "dollies", "me", "my_car")
+    __slots__ = ("snap", "cars", "players", "npcs", "pickups", "dollies", "traps", "me", "my_car")
 
 
 class Client:
@@ -409,7 +409,8 @@ class Client:
             y16 = P.ang16(i.yaw)
             self._send(P.header(P.P_INPUT) + P.INPUT.pack(
                 self.input_seq, ms_now(), self.last_event, i.buttons & 0xFF,
-                i.use_count & 0xFF, i.drop_count & 0xFF, i.exit_count & 0xFF, y16))
+                i.use_count & 0xFF, i.drop_count & 0xFF, i.exit_count & 0xFF, y16,
+                i.fire_count & 0xFF, i.weapon & 0xFF))
             if self.predictor is not None:
                 # predict with the yaw exactly as the server will decode it
                 self.predictor.push_input(self.input_seq, i.buttons & 0xFF, P.unang16(y16))
@@ -484,6 +485,7 @@ class Client:
         v.npcs = self._blend(latest.npcs, s0.npcs, s1.npcs if s1 else None, t, 0.0, 3, 4, 5, None, None)
         v.pickups = self._blend(latest.pickups, s0.pickups, s1.pickups if s1 else None, t, 0.0, 2, 3, None, None, None)
         v.dollies = self._blend(latest.dollies, s0.dollies, s1.dollies if s1 else None, t, 0.0, 1, 2, 3, None, None)
+        v.traps = latest.traps
         v.me = v.players.get(self.pid)
         v.my_car = None
         if v.me is not None and v.me[12]:

@@ -39,6 +39,9 @@ BIG_GOLD = ((255, 236, 120), (240, 200, 70), (220, 170, 50), (190, 140, 40), (15
 BIG_BLUE = ((170, 200, 255), (130, 170, 255), (90, 130, 240), (60, 100, 210), (40, 70, 170))
 
 
+WEAPON_LABELS = ("HANDS", "PISTOL", "SHOTGUN", "SPIKES", "BLOCKS")
+
+
 def mmss(t):
     t = max(0, int(math.ceil(t)))
     return "%d:%02d" % (t // 60, t % 60)
@@ -123,8 +126,8 @@ class DoomHud:
         self.toasts.append((text, TOAST_COLORS.get(color, P["white"]), now))
 
     # ------------------------------------------------------------------ first-person overlays
-    def draw_overlay(self, surf, view, now, speed_bob, steer):
-        """Hands / held parts / dolly / car interior, over the 3D view."""
+    def draw_overlay(self, surf, view, now, speed_bob, steer, weapon=S.ARM_FISTS, fire_t=-9.0):
+        """Hands / held parts / dolly / weapon / car interior, over the 3D view."""
         me = view.me
         if me is None:
             return
@@ -150,6 +153,9 @@ class DoomHud:
             return
         hands = [h for h in (me[9], me[10]) if h != NO_PART]
         by = vh - 24 + int(bob)
+        if not hands:
+            self._weapon_view(surf, view, weapon, now - fire_t, bob, sway, skin, sleeve)
+            return
         if len(hands) == 1 and PART_DEFS[PART_IDS[hands[0]]][2] == 2:
             ic = self._icon6(hands[0])
             surf.blit(ic, (vw // 2 - ic.get_width() // 2 + int(sway), by - ic.get_height() + 12))
@@ -163,6 +169,78 @@ class DoomHud:
                 ic = self._icon6(held)
                 surf.blit(ic, (x - ic.get_width() // 2, by - ic.get_height() + 6))
             self._fist(surf, x, by, skin, sleeve, side)
+
+    def _weapon_view(self, surf, view, weapon, since, bob, sway, skin, sleeve):
+        """Doom's weapon sprites, done with rectangles. `since` = seconds since
+        you last pulled the trigger (locally, so it feels instant)."""
+        vw, vh = surf.get_size()
+        cx = vw // 2 + int(sway)
+        ars = view.snap.arsenal if view.snap is not None else None
+        ammo = 1
+        if ars and weapon in (S.ARM_PISTOL, S.ARM_SHOTGUN):
+            ammo = ars[2] if weapon == S.ARM_PISTOL else ars[3]
+        if weapon == S.ARM_PISTOL:
+            # seen from behind and a bit above: the slide's top recedes toward the horizon
+            kick = max(0.0, 1.0 - since / 0.14) if ammo or since < 0.02 else 0.0
+            base = vh - 26 + int(bob) + int(kick * 12)
+            top = base - 38 + int(kick * 6)
+            if kick > 0.55 and ammo:
+                self._flash(surf, cx, top - 4, 12)
+            pygame.draw.polygon(surf, (26, 26, 32), [(cx - 13, base), (cx + 13, base), (cx + 7, top), (cx - 7, top)])
+            pygame.draw.polygon(surf, (58, 58, 70), [(cx - 13, base), (cx - 8, base), (cx - 4, top), (cx - 7, top)])
+            pygame.draw.polygon(surf, (44, 44, 54), [(cx - 9, base - 2), (cx + 9, base - 2), (cx + 5, top + 2), (cx - 5, top + 2)])
+            surf.fill((70, 70, 84), (cx - 1, top + 3, 2, base - top - 8))                   # the rib down the middle
+            surf.fill((20, 20, 26), (cx - 9, base - 7, 5, 5))                               # rear sight, left
+            surf.fill((20, 20, 26), (cx + 4, base - 7, 5, 5))                               # rear sight, right
+            surf.fill((230, 230, 230), (cx - 1, top - 3, 2, 4))                             # front sight dot
+            self._fist(surf, cx, base + 14, skin, sleeve, 1)
+            return
+        if weapon == S.ARM_SHOTGUN:
+            kick = max(0.0, 1.0 - since / 0.25) if ammo or since < 0.02 else 0.0
+            pump = math.sin(min(1.0, max(0.0, (since - 0.25) / 0.4)) * math.pi) if ammo else 0.0
+            top = vh - 104 + int(bob) + int(kick * 24)
+            if kick > 0.7 and ammo:
+                self._flash(surf, cx, top - 10, 26)
+            pygame.draw.polygon(surf, (30, 30, 38), [(cx - 22, vh), (cx + 22, vh), (cx + 9, top), (cx - 9, top)])
+            pygame.draw.polygon(surf, (62, 62, 76), [(cx - 22, vh), (cx - 14, vh), (cx - 5, top), (cx - 9, top)])
+            surf.fill((18, 18, 22), (cx - 5, top, 10, 3))                                   # the business end
+            py_ = top + 40 + int(pump * 22)
+            pygame.draw.polygon(surf, FA.GUN_WOOD, [(cx - 20, py_ + 26), (cx + 20, py_ + 26), (cx + 15, py_), (cx - 15, py_)])
+            for k in range(3):
+                surf.fill(shade(FA.GUN_WOOD, 0.7), (cx - 14, py_ + 5 + k * 7, 28, 2))
+            self._fist(surf, cx - 44, vh - 6 + int(bob) + int(kick * 12), skin, sleeve, -1)
+            self._fist(surf, cx + 26, py_ + 30, skin, sleeve, 1)
+            return
+        if weapon in (S.ARM_SPIKES, S.ARM_BLOCK):
+            top = vh - 58 + int(bob)
+            if weapon == S.ARM_SPIKES:
+                pygame.draw.rect(surf, (26, 24, 30), (cx - 60, top, 120, 26))
+                surf.fill((230, 190, 40), (cx - 60, top + 22, 120, 4))
+                for k in range(12):
+                    pygame.draw.polygon(surf, P["chrome"], [(cx - 56 + k * 10, top), (cx - 50 + k * 10, top),
+                                                            (cx - 53 + k * 10, top - 8)])
+            else:
+                for k in range(8):
+                    col = FA.BARRIER_ORANGE if k % 2 == 0 else FA.BARRIER_WHITE
+                    surf.fill(col, (cx - 64 + k * 16, top + 6, 16, 22))
+                surf.fill((60, 60, 70), (cx - 64, top + 28, 128, 3))
+            self._fist(surf, cx - 60, vh - 12 + int(bob), skin, sleeve, -1)
+            self._fist(surf, cx + 60, vh - 12 + int(bob), skin, sleeve, 1)
+            return
+        # fists: the right one jabs at the middle of the screen
+        by = vh - 24 + int(bob)
+        jab = math.sin(min(1.0, since / 0.22) * math.pi) if since < 0.22 else 0.0
+        self._fist(surf, vw // 2 - 120 - int(sway), by, skin, sleeve, -1)
+        self._fist(surf, vw // 2 + 120 + int(sway) - int(jab * 100), by - int(jab * 46), skin, sleeve, 1)
+
+    @staticmethod
+    def _flash(surf, x, y, r):
+        pygame.draw.circle(surf, (255, 200, 60), (x, y), r)
+        pygame.draw.circle(surf, (255, 250, 210), (x, y), max(2, r // 2))
+        for a in range(0, 360, 45):
+            t = math.radians(a)
+            pygame.draw.line(surf, (255, 230, 120), (x, y), (x + int(math.cos(t) * r * 1.6),
+                                                             y + int(math.sin(t) * r * 1.6)), 2)
 
     def _icon6(self, idx):
         ic = self.icons6.get(idx)
@@ -275,11 +353,22 @@ class DoomHud:
             elif len(hands) == 1 and PART_DEFS[PART_IDS[hands[0]]][2] == 2:
                 pygame.draw.rect(low, P["gold"], (hx, by + 3, 48, 18), 1)
                 low.blit(self.icons2[hands[0]], (hx + 16, by + 4))
+            elif not hands and info.get("weapon", S.ARM_FISTS) != S.ARM_FISTS and snap.arsenal:
+                w = info["weapon"]
+                n = {S.ARM_PISTOL: snap.arsenal[2], S.ARM_SHOTGUN: snap.arsenal[3],
+                     S.ARM_SPIKES: snap.arsenal[4], S.ARM_BLOCK: snap.arsenal[5]}[w]
+                low.fill((92, 90, 96), (hx, by + 2, 52, 20))
+                num = self.big("%d" % n, BIG_RED if n else BIG_BLUE)
+                low.blit(num, (198 - num.get_width() // 2, by + 3))
             else:
                 for i, h in enumerate(hands):
                     low.blit(self.icons2[h], (hx + 3 + i * 26, by + 4))
-        f.draw(low, "DOLLY" if (me is not None and me[3] & PR.PF_DOLLY) else "HANDS", 198, by + 23,
-               P["white"], align="center")
+        label = "HANDS"
+        if me is not None and me[3] & PR.PF_DOLLY:
+            label = "DOLLY"
+        elif me is not None and me[9] == NO_PART and info.get("weapon", S.ARM_FISTS) != S.ARM_FISTS:
+            label = WEAPON_LABELS[info["weapon"]]
+        f.draw(low, label, 198, by + 23, P["white"], align="center")
         # FACE
         if me is not None:
             if now > self.look_t:
@@ -344,14 +433,18 @@ class DoomHud:
                 low.fill(P["white"], (W // 2 - 1, VIEW_H // 2, 3, 1))
             if info.get("fp"):
                 self._shop_compass(low, view, info, now)
+                self._car_compass(low, view, info, now)
+            self._arms(low, snap, info)
         self._banners(low, snap, me, now, flash)
         if now < self.help_until and not info.get("paused"):
             lines = ["MOUSE LOOK  WASD MOVE/DRIVE  SHIFT SPRINT  E USE (HOLD)  G DROP  F EXIT CAR",
-                     "SPACE HANDBRAKE  H HORN  TAB MAP  M MUSIC  ESC MENU  F11 FULLSCREEN",
-                     "STEAL CARS. PARK THEM IN THE SHOP. STRIP. SELL. RENT'S DUE AT MIDNIGHT."]
-            low.blit(self._panel(360, 27, 170), (W // 2 - 180, 30))
+                     "CLICK/CTRL PUNCH/SHOOT/PLACE  1-5, WHEEL OR Q: WEAPONS  SPACE HANDBRAKE  H HORN",
+                     "TAB MAP  M MUSIC  ESC MENU  F11 FULLSCREEN",
+                     "STEAL CARS (FOLLOW THE GREEN ARROWS). PARK THEM IN THE SHOP. STRIP. SELL.",
+                     "GUNS AND TRAPS: THE CRATES IN THE SHOP. RENT'S DUE AT MIDNIGHT."]
+            low.blit(self._panel(370, 43, 170), (W // 2 - 185, 30))
             for i, l in enumerate(lines):
-                f.draw(low, l, W // 2, 33 + i * 8, P["white"] if i < 2 else P["gold"], align="center")
+                f.draw(low, l, W // 2, 33 + i * 8, P["white"] if i < 3 else P["gold"], align="center")
 
     def _toasts(self, low, now):
         y = 3
@@ -435,6 +528,45 @@ class DoomHud:
         if arrow == "V":
             pygame.draw.polygon(low, col, [(x - 4, 22), (x + 4, 22), (x, 27)])
 
+    def _arms(self, low, snap, info):
+        """Doom's ARMS panel: 1-5, lit if you own it, gold if it's in your hands."""
+        ars = snap.arsenal
+        if not ars or not (ars[1] & ~1 or ars[4] or ars[5]):
+            return                                   # just fists: nothing worth showing
+        cur = info.get("weapon", S.ARM_FISTS)
+        for k in range(5):
+            owned = S.arsenal_owns(ars, k)
+            col = P["gold"] if k == cur and owned else P["white"] if owned else (70, 68, 76)
+            self.font.draw(low, str(k + 1), 4 + k * 7, VIEW_H - 9, col)
+        self.font.draw(low, S.ARM_NAMES[cur] if S.arsenal_owns(ars, cur) else "FISTS", 42, VIEW_H - 9, P["gold"])
+
+    def _car_compass(self, low, view, info, now):
+        """Can't find anything to steal? Follow the green arrow."""
+        me = view.me
+        if me[2] != S.FOOT or me[9] != NO_PART or me[3] & PR.PF_DOLLY:
+            return
+        best, bd = None, None
+        for c in view.cars.values():
+            if c[1] == S.CIV and c[3] != S.DELIVERED and not c[12] and not c[4] & PR.CF_WANTED:
+                d = math.hypot(c[7] - me[4], c[8] - me[5])
+                if bd is None or d < bd:
+                    best, bd = c, d
+        if best is None or bd < 7:
+            return
+        yaw = info.get("yaw", 0.0)
+        bearing = (math.atan2(best[8] - me[5], best[7] - me[4]) - yaw + math.pi) % (2 * math.pi) - math.pi
+        half = math.radians(C.FP_FOV) / 2
+        x = W / 2 + max(-1.0, min(1.0, bearing / half)) * (W / 2 - 40)
+        col = (120, 236, 90)
+        if bearing < -half:
+            text = "< CAR TO STEAL %dM" % bd
+        elif bearing > half:
+            text = "CAR TO STEAL %dM >" % bd
+        else:
+            text = "CAR TO STEAL %dM" % bd
+            pygame.draw.polygon(low, col, [(x - 4, 22), (x + 4, 22), (x, 27)])
+        self.font.draw(low, text, int(x), 14, col, align="center")
+
     def _banners(self, low, snap, me, now, flash):
         f = self.font
         if self.day_seen != snap.day:
@@ -473,6 +605,10 @@ class DoomHud:
         for l in ("MOUSE / ARROWS LOOK     WASD MOVE (IN A CAR: DRIVE)     SHIFT SPRINT",
                   "E USE (HOLD FOR TIMED ACTIONS)     G DROP / LET GO OF THE DOLLY     F EXIT CAR",
                   "SPACE HANDBRAKE     H HORN (CONFUSES COPS)     TAB MAP     M MUSIC ON/OFF",
+                  "CLICK / CTRL: PUNCH, SHOOT OR DROP A TRAP     1-5 / WHEEL / Q: PICK A WEAPON",
+                  "PUNCH SOMEONE OR POINT A GUN AT THEM, THEN HOLD E TO ROB THEM",
+                  "TRAFFIC WON'T STOP FOR YOU: SPIKES OR A ROADBLOCK, THEN HOLD E TO CARJACK",
+                  "SHOOT THE TYRES OUT. SHOOTING COPS IS... AN OPTION",
                   "ENGINES ARE TOO HEAVY TO CARRY: USE THE DOLLY IN THE SHOP",
                   "TUNE-UP BENCH WITH EMPTY HANDS = PARTS COUNTER (NO CREDIT)",
                   "RENT IS DUE AT MIDNIGHT AND GOES UP EVERY DAY",

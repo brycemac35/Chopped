@@ -107,6 +107,31 @@ class Audio:
         # ka-ching... in reverse. The sound of money leaving.
         self.sounds[S.S_BUY] = self._mk(self._tone(0.35, lambda t, p: sq(1320 if p < 0.4 else 880, t) * 0.35 * (1 - p)), 0.6)
         self.sounds[S.S_IGNITE] = self._mk(self._tone(0.4, lambda t, p: rnd.uniform(-1, 1) * 0.5 * p), 0.6)
+        # v0.6: violence. A punch is a thud with a slap on top.
+        self.sounds[S.S_PUNCH] = self._mk(self._tone(0.12, lambda t, p: (math.sin(2 * math.pi * (140 - 80 * p) * t)
+                                                                          + rnd.uniform(-1, 1) * 0.6 * (1 - p) ** 6)
+                                                     * (1 - p) ** 2), 0.8)
+
+        # gunshots: a crack of white noise, a low body, and a tail that rings off the buildings
+        def shot(dur, body, crack):
+            last = [0.0]
+            def fn(t, p):
+                last[0] += (rnd.uniform(-1, 1) - last[0]) * (0.5 if p < 0.1 else 0.18)
+                c = rnd.uniform(-1, 1) * crack * max(0.0, 1 - t / 0.012)
+                return (c + last[0] * 1.4 * (1 - p) ** 3 + math.sin(2 * math.pi * body * (1 - 0.5 * p) * t)
+                        * 0.8 * (1 - p) ** 4)
+            return self._tone(dur, fn)
+        self.sounds[S.S_PISTOL] = self._mk(shot(0.3, 120, 1.0), 0.8)
+        self.sounds[S.S_SHOTGUN] = self._mk(shot(0.6, 70, 1.4), 1.0)
+        # *click*. The loneliest sound in the game.
+        self.sounds[S.S_EMPTY] = self._mk(self._tone(0.03, lambda t, p: sq(2400, t) * 0.4 * (1 - p)), 0.5)
+        # a tyre going: bang, then a hiss that runs out of air
+        self.sounds[S.S_TIRE] = self._mk(self._tone(0.7, lambda t, p: (rnd.uniform(-1, 1) * (1.0 if p < 0.05 else 0.35)
+                                                                       * (1 - p))), 0.8)
+        self.sounds[S.S_TRAP] = self._mk(self._tone(0.25, lambda t, p: (sq(90, t) * 0.3 + rnd.uniform(-1, 1) * 0.3)
+                                                    * (1 - p) ** 2), 0.7)
+        # the wallet chime: two coins and a guilty conscience
+        self.sounds[S.S_ROB] = self._mk(self._tone(0.3, lambda t, p: sq(1568 if p < 0.3 else 2093, t) * 0.25 * (1 - p)), 0.6)
         # loops
         self.loops["alarm"] = self._mk(self._tone(0.5, lambda t, p: sq(1100 if p < 0.5 else 750, t) * 0.22), 0.8)
         self.loops["siren"] = self._mk(self._tone(1.2, lambda t, p: sq(650 + 250 * math.sin(p * 2 * math.pi), t) * 0.18), 0.8)

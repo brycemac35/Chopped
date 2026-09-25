@@ -2,7 +2,7 @@
 
 You're picking up **Chopped**, Bryce MacKenzie's co-op car-theft chop-shop game. Two codebases exist:
 
-1. **This folder — the Python version.** A top-down pixel-art game for 1–4 players online. It works and its tests pass. **Your main job is here.**
+1. **This folder — the Python version.** A Doom-style first-person pixel-art game (with a top-down automap) for 1–4 players online. It works and its tests pass. **Your main job is here.**
 2. **The Unity version** at `F:\Unity\Projects\Chopped`. It's first-person, uses Unity 6.6 with Netcode for GameObjects (NGO), and its game-loop scripts are written but have never been compiled. See the section at the bottom.
 
 Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why each tuning value is what it is. Keep that style.
@@ -11,7 +11,16 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
 
 ## 1. Status and your tasks, in order
 
-### Where things stand (Sept 25, 2026, session 2, second round)
+### Where things stand (Sept 25, 2026, session 2, third round: v0.6)
+- **v0.6 is crime** (Bryce: "i want the ability to punch and rob people also add guns. and please add traps for us to buy to actually stop the cars, currently i cant seem to rob a car"):
+  - **Why "can't rob a car":** parked cars worked, but moving traffic showed no prompt at all, and there was nothing to point you at a stealable car. Fixed with carjacking, a "IT'S MOVING. STOP IT FIRST" hint, green arrows over stealable cars (orange over stopped traffic) and a **CAR TO STEAL** compass.
+  - **Fists** (click/Ctrl): knock peds down, knock crewmates over. **Robbing:** hold E on a downed or hands-up ped.
+  - **Guns** (pistol, shotgun), hitscan (`World._ray_hit`): drop people, shoot out tyres, burn cop cars. Pointing one makes peds surrender.
+  - **Black market:** 5 crates in the shop (`CityMap.market`): pistol, shotgun, ammo, spike strip, roadblock.
+  - **Traps** (`sim.Trap`, `World.traps`): spikes knock wheels off (traffic with 2 missing wheels bails); roadblocks are solid (`World.extra_rects`, used by `Physics` and so by the predictor) and traffic stops at them.
+  - **Carjacking:** hold E on stopped traffic.
+  - Weapons select with 1–5 / wheel / Q, client-side; the server validates ownership (`Player.owns`).
+- **Protocol VERSION 6:** inputs carry a fire counter and the selected weapon; the SELF block adds 6 arsenal bytes; player rows add the weapon; snapshots carry traps and shot (tracer) events.
 - **v0.5 is Doom-style first person**, at Bryce's request ("more of a doom style game"). The top-down view is kept as the Tab automap.
   - `fp.py`: the raycaster (textured walls, mode-7 floor, skies, sprites)
   - `fpart.py`: all first-person art, generated in code
@@ -25,7 +34,7 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
 - **Music** (Bryce asked for "pouya / suicide boys type beat"): `music.py` renders an original dark trap / Memphis beat at startup, with no files. Layers switch at loop boundaries depending on heat. M toggles it; `--no-music` turns it off.
 - **Protocol VERSION 5:** inputs carry the view yaw; snapshots carry the day number and rent due.
 - **Windows exe:** built by GitHub Actions (`.github/workflows/build.yml`) on every push, and smoke-tested as an exe. Build #1 (v0.4) was green on Windows. Check the Actions tab for the latest run.
-- **Tests:** 61, all OK. Both processes of the game-loop test render first person with music at about 55–60 fps on one machine.
+- **Tests:** 77, all OK (v0.6 added `tests/test_combat.py`). Both processes of the game-loop test render first person with music at about 55–60 fps on one machine.
 - **Performance budget:** `fp.draw` is about 6 ms per frame at 480×238. The beat takes about 0.8 s to render in a background thread at startup, while you're in the menu.
 
 ### Task 1: Play the exe on a real Windows PC
@@ -49,7 +58,7 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
   - gamepad support (pygame-ce `_sdl2.controller`)
   - a second dolly for 3–4 player crews
   - a proper parts-counter menu instead of "next best upgrade"
-  - day/night
+  - more weapons/traps (a tow hook? caltrops?), a way to earn guns back after an arrest other than buying them again
 
 ---
 
@@ -65,11 +74,11 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
   ```
   set SDL_VIDEODRIVER=dummy & set SDL_AUDIODRIVER=dummy & python -m unittest discover -s tests -v
   ```
-  (On Linux/macOS: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests -v`.) At handoff (session 2): **61 tests, all OK**, and `--selftest` ran at about 61 fps.
+  (On Linux/macOS: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests -v`.) At handoff (session 2, v0.6): **77 tests, all OK**, and both game-loop processes ran at about 55 fps with the bot shooting.
 
 ## 3. Architecture (details in README.md)
 - `main.py` is the command line: `--host`, `--join IP[:PORT]`, `--server` (headless), `--selftest`, `--port`, `--name`, `--mute`, `--no-upnp`, `--log FILE`, `--fake-lag MS`, `--no-predict`.
-- **Networking model (protocol VERSION 4):**
+- **Networking model (protocol VERSION 6):**
   - The host runs the simulation at 60 Hz in-process.
   - Clients send one input per 60 Hz tick. One-shot keys are sent as counters, so a lost packet can't eat a tap.
   - The server sends each client its own zlib snapshot at 20 Hz. Far-away peds, pickups and traffic are culled beyond 95 m.
@@ -124,6 +133,12 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
   - **Dolly:** there's one. Stripping an engine onto it uses the existing 20 s engine strip time, and the hood must come off first. Speed is ×0.85 empty and ×0.62 loaded. Loaded counts as two-handed for stamina. It returns home after 90 s abandoned outside the shop. Crushing still pays 50% for engines left in.
   - **Parts counter:** at the tune-up bench with empty hands, it sells the next tier at 1.6× base value, condition 1.0. The replaced part drops on the floor. No credit.
   - Pedestrians flee but still witness.
+- **v0.6 decisions, flagged for Bryce** (all tunable in `config.py`):
+  - **Changed from session 2:** a traffic driver who bails after a hard crash (or after losing 2 tyres) now **leaves the engine running** instead of locking the car. Getting in counts as a theft: +10 heat (`HEAT_BREAKIN`), no alarm. This was the most direct fix for "I can't rob a car".
+  - Punch +5 heat, rob +4, carjack +12, a gunshot +8 if a ped or cop is within 50 m, hitting a cop sets heat to 100. The crime heat is added directly (no line-of-sight check); the normal witness heat still applies on top.
+  - Guns need empty hands (same as punching). Getting busted confiscates guns and ammo; traps in your pocket are kept.
+  - Shooting a player tumbles them and makes them drop what they're carrying. There's no health anywhere: getting shot is a 1.8 s nap.
+  - Traps: at most 12 in the world, towed after 150 s. Spike strips wear out after 3 cars.
 - **Decisions the builder made and flagged** (fine to keep):
   - Cop dispatch stays on until heat reaches 0.
   - The horn has a 7 s cooldown per cop.

@@ -148,6 +148,9 @@ class CityMap:
         self.bay = (gx + 3.4, gy + gh - 6.0, math.pi / 2)
         # the hand dolly's parking spot, tucked in the north-east corner
         self.dolly_spot = (gx + gw - 2.5, gy + 4.5)
+        # the black market: a row of crates along the west wall. Don't ask where they came from.
+        self.market = [(gx + 1.0, gy + 5.0 + k * 1.9, item)
+                       for k, item in enumerate(("pistol", "shotgun", "ammo", "spikes", "roadblock"))]
         self.sell_bench = (gx + 5.0, gy, 6.0, 1.6)
         self.tune_bench = (gx + gw - 11.0, gy, 6.0, 1.6)
         self.static_rects.append(self.sell_bench)

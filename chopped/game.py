@@ -50,6 +50,8 @@ class Bot:
         self.buttons = 0
         self.next_change = 0.0
         self.use = self.drop = self.exit = 0
+        self.fire = 0
+        self.weapon = S.ARM_FISTS
         self.yaw = 0.0
         self.turn = 0.0
 
@@ -74,8 +76,12 @@ class Bot:
                 self.exit += 1
             if r.random() < 0.05:
                 self.drop += 1
+            if r.random() < 0.35:
+                self.fire += 1                 # trigger discipline: none
+            if r.random() < 0.1:
+                self.weapon = r.randrange(5)   # the server ignores what it doesn't own
             self.turn = r.choice((0.0, 0.0, -2.0, 2.0))
-        return self.buttons, self.use, self.drop, self.exit, self.yaw
+        return self.buttons, self.use, self.drop, self.exit, self.yaw, self.fire, self.weapon
 
 
 class App:
@@ -110,6 +116,9 @@ class App:
         ips = get_lan_ips()
         self.lan_ip, self.other_ips = ips[0], ips[1:3]
         self.use_c = self.drop_c = self.exit_c = 0
+        self.fire_c = 0                # LMB / Ctrl taps, sent as a counter like E
+        self.weapon = S.ARM_FISTS      # what you *want* in your hands; the server has the final say
+        self.fire_anim = -9.0          # when you last pulled the trigger (for the view-model kick)
         self.bot = Bot() if self.selftest else None
         self.yaw = 0.0                 # where you're looking (first person); sent with every input
         self.fp_mode = True            # Tab flips to the top-down automap
@@ -149,6 +158,8 @@ class App:
             self.menu.set_error("CAN'T OPEN UDP PORT %d (%s). ALREADY HOSTING?" % (port, e.__class__.__name__.upper()))
             self.server = None
             return
+        if self.selftest:
+            self.server.world.give_loadout = True     # the bot came tooled up so every code path gets a go
         self.server.start()
         if not self.selftest and not getattr(self.args, "no_upnp", False):
             self.upnp = UPnP(self.server.port).start()
@@ -275,7 +286,12 @@ class App:
                 if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
                     self.leave("CANCELLED")
             elif self.state == "play" and ev.type == pygame.MOUSEBUTTONDOWN and not self.paused:
-                self._grab_mouse(True)          # clicked back into the window
+                if not self.mouse_grabbed:
+                    self._grab_mouse(True)      # clicked back into the window; that click isn't a punch
+                elif ev.button == 1:
+                    self._fire()
+            elif self.state == "play" and ev.type == pygame.MOUSEWHEEL and not self.paused:
+                self._cycle_weapon(-1 if ev.y > 0 else 1)
             elif self.state == "play" and ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_ESCAPE:
                     self.paused = not self.paused
@@ -291,10 +307,44 @@ class App:
                         self.exit_c += 1
                     elif ev.key == pygame.K_TAB:
                         self.fp_mode = not self.fp_mode
+                    elif ev.key in (pygame.K_LCTRL, pygame.K_RCTRL):
+                        self._fire()
+                    elif pygame.K_1 <= ev.key <= pygame.K_5:
+                        self._select_weapon(ev.key - pygame.K_1)
+                    elif ev.key == pygame.K_q:
+                        self._cycle_weapon(1)
                     elif ev.key == pygame.K_m:
                         on = self.audio.toggle_music()
                         if self.hud is not None:
                             self.hud.add_toast("MUSIC ON" if on else "MUSIC OFF", S.T_INFO, time.perf_counter())
+
+    # ------------------------------------------------------------------ weapons
+    def _arsenal(self):
+        snap = self.client.latest if self.client is not None else None
+        return snap.arsenal if snap is not None else None
+
+    def _select_weapon(self, slot):
+        if S.arsenal_owns(self._arsenal(), slot):
+            self.weapon = slot
+        elif self.hud is not None:
+            self.hud.add_toast("NO %s. THE CRATES IN THE SHOP SELL THEM." % S.ARM_NAMES[slot], S.T_INFO,
+                               time.perf_counter())
+
+    def _cycle_weapon(self, step):
+        ars = self._arsenal()
+        for k in range(1, 6):
+            slot = (self.weapon + step * k) % 5
+            if S.arsenal_owns(ars, slot):
+                self.weapon = slot
+                return
+
+    def _held_weapon(self):
+        """What the view model shows: your pick, unless you ran out of it."""
+        return self.weapon if S.arsenal_owns(self._arsenal(), self.weapon) else S.ARM_FISTS
+
+    def _fire(self):
+        self.fire_c += 1
+        self.fire_anim = time.perf_counter()
 
     def toggle_fullscreen(self):
         self.fullscreen = not self.fullscreen
@@ -306,10 +356,14 @@ class App:
 
     def _gather_input(self, dt, view):
         if self.bot is not None:
-            b, u, d, e, yaw = self.bot.step(dt, view)
-            return S.InputState(b, u, d, e, yaw)
+            b, u, d, e, yaw, f, w = self.bot.step(dt, view)
+            if f != self.fire_c:
+                self.fire_c, self.fire_anim = f, time.perf_counter()
+            self.weapon = w
+            return S.InputState(b, u, d, e, yaw, f, w)
+        weapon = self._held_weapon()
         if self.paused:
-            return S.InputState(0, self.use_c, self.drop_c, self.exit_c, self.yaw)
+            return S.InputState(0, self.use_c, self.drop_c, self.exit_c, self.yaw, self.fire_c, weapon)
         me = view.me if view is not None else None
         in_car = me is not None and me[2] in (S.DRIVER, S.PASSENGER)
         k = pygame.key.get_pressed()
@@ -330,7 +384,7 @@ class App:
         else:
             turn = (1 if k[pygame.K_RIGHT] else 0) - (1 if k[pygame.K_LEFT] else 0)
             self.yaw = (self.yaw + turn * C.FP_TURN_SPEED * dt + rel * C.MOUSE_SENS) % (2 * math.pi)
-        return S.InputState(b, self.use_c, self.drop_c, self.exit_c, self.yaw)
+        return S.InputState(b, self.use_c, self.drop_c, self.exit_c, self.yaw, self.fire_c, weapon)
 
     def _update(self, now, dt):
         level = 0
@@ -396,6 +450,9 @@ class App:
         for kind, payload in self.client.pop_events():
             if kind == 0:
                 self.hud.add_toast(payload[1], payload[0], now)
+            elif kind == 2:
+                r.on_shot(*payload)
+                self.fp.on_shot(*payload)
             else:
                 sid, x, y = payload
                 r.on_sfx(sid, x, y, me[4], me[5])
@@ -407,7 +464,7 @@ class App:
             r.draw(low.subsurface((0, 0, W, VIEW_H)), view, now, dt)
         info = {"lines": self._info_lines(), "help_until": self.hud.help_until, "paused": self.paused,
                 "fp": self.fp_mode, "yaw": self.yaw, "garage": self.client.map.garage_center,
-                "in_garage": self.client.map.in_garage(me[4], me[5])}
+                "in_garage": self.client.map.in_garage(me[4], me[5]), "weapon": self._held_weapon()}
         self.hud.draw(low, view, now, info)
         if self.server and now < self.host_banner_until and not self.paused:
             lines = self._host_lines()
@@ -442,7 +499,7 @@ class App:
         if self.client.inp is not None:
             b = self.client.inp.buttons
             steer = (1.0 if b & S.B_RIGHT else 0.0) - (1.0 if b & S.B_LEFT else 0.0)
-        self.hud.draw_overlay(surf, view, now, moving, steer)
+        self.hud.draw_overlay(surf, view, now, moving, steer, self._held_weapon(), self.fire_anim)
         low.blit(surf, (0, 0))
 
     def _host_lines(self):

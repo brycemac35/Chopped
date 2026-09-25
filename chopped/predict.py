@@ -19,7 +19,7 @@ import math
 from collections import deque
 
 from . import config as C
-from .sim import Physics, Car, drive_input
+from .sim import Physics, Car, Trap, TRAP_BLOCK, drive_input
 from .parts import SLOTS, SLOT_INDEX
 from .protocol import ME_NONE, ME_FOOT, ME_DRIVER, SF_EXHAUSTED
 
@@ -56,6 +56,11 @@ class Body:
         return self.mult
 
 
+def trap_rect(row):
+    """Same rect the server uses, from a snapshot TRAP row (id, kind, x, y, ang, life)."""
+    return Trap(row[0], row[1], row[2], row[3], row[4]).rect()
+
+
 def _car_from_row(row, power=100):
     """Rebuild a physics car from a snapshot CAR row
     (id, kind, color, state, flags, mask, tuned, x, y, vx, vy, ang, driver, passenger, damage)."""
@@ -73,6 +78,7 @@ class Predictor(Physics):
         self.map = cmap
         self.cars = {}
         self._rects = []
+        self.extra_rects = []            # roadblocks from the snapshot: solid for us too
         self.mode = ME_NONE
         self.car = None
         self.car_id = 0
@@ -140,7 +146,8 @@ class Predictor(Physics):
             self.car = None
             self.err_x = self.err_y = self.err_a = 0.0
             return
-        # things to bump into: other cars near us, as of this snapshot
+        # things to bump into: roadblocks, and other cars near us, as of this snapshot
+        self.extra_rects = [trap_rect(t) for t in snap.traps.values() if t[1] == TRAP_BLOCK]
         self.cars = {}
         r2 = C.PREDICT_OBSTACLE_RANGE ** 2
         for crow in snap.cars.values():

@@ -43,6 +43,7 @@ class Renderer:
         self.shake = 0.0
         self.particles = []
         self.explosions = []       # [x, y, t]
+        self.tracers = []          # [x0, y0, x1, y1, life]
         self.skid_prev = {}
         self.rng = random.Random(5)
         self.smoke_acc = 0.0
@@ -99,6 +100,14 @@ class Renderer:
             self.burst(FIRE, x, y, 20, 6, 0.6)
         elif sid == S.S_SELL:
             self.burst(CONFETTI, x, y, 6, 4, 0.8, P["money"])
+        elif sid == S.S_TIRE:
+            self.burst(DEBRIS, x, y, 8, 5, 0.8, P["tire"])
+        elif sid == S.S_ROB:
+            self.burst(CONFETTI, x, y, 5, 3, 0.7, P["money"])
+
+    def on_shot(self, weapon, x0, y0, x1, y1):
+        self.tracers.append([x0, y0, x1, y1, 0.08])
+        self.burst(SPARK, x1, y1, 3, 5, 0.2)
 
     # ------------------------------------------------------------------ camera
     def update_camera(self, view, dt):
@@ -133,11 +142,13 @@ class Renderer:
         low.blit(self.map_surf, (0, 0), pygame.Rect(left, top, W, H))
         phase = int(now * 6) % 2
         self._skids(view)
+        self._traps_and_crates(low, view, now)
         self._pickups(low, view, now)
         self._dollies(low, view)
         self._npcs(low, view, now)
         self._cars(low, view, now, dt, phase)
         self._players(low, view, now)
+        self._tracers(low, dt)
         self._particles(low, dt)
         self._explosions(low, dt)
         self._cameras(low, now)
@@ -201,6 +212,45 @@ class Renderer:
         for k in list(self.skid_prev):
             if k not in seen:
                 del self.skid_prev[k]
+
+    def _traps_and_crates(self, low, view, now):
+        for (x, y, item) in getattr(self.map, "market", ()):
+            sx, sy = self.to_screen(x, y)
+            if -10 < sx < W + 10 and -10 < sy < H + 10:
+                low.fill(P["wood_d"], (sx - 4, sy - 4, 9, 9))
+                low.fill(P["wood"], (sx - 3, sy - 3, 7, 7))
+                low.fill(P["ink"], (sx - 3, sy, 7, 1))
+        blink = int(now * 6) % 2
+        for t in getattr(view, "traps", {}).values():
+            if t[5] < 0.1 and blink:
+                continue
+            tr = S.Trap(t[0], t[1], t[2], t[3], t[4]).rect()
+            x0, y0 = self.to_screen(tr[0], tr[1])
+            w, h = max(1, int(tr[2] * PPM)), max(1, int(tr[3] * PPM))
+            if x0 > W or y0 > H or x0 + w < 0 or y0 + h < 0:
+                continue
+            if t[1] == S.TRAP_SPIKES:
+                low.fill((26, 24, 30), (x0, y0, w, h))
+                step = 2
+                for k in range(0, max(w, h), step):
+                    px, py = (x0 + k, y0 + h // 2) if w > h else (x0 + w // 2, y0 + k)
+                    low.fill(P["chrome"], (px, py, 1, 1))
+            else:
+                for k in range(0, max(w, h), 3):
+                    col = (255, 120, 20) if (k // 3) % 2 == 0 else (245, 245, 240)
+                    if w > h:
+                        low.fill(col, (x0 + k, y0, min(3, w - k), h))
+                    else:
+                        low.fill(col, (x0, y0 + k, w, min(3, h - k)))
+
+    def _tracers(self, low, dt):
+        keep = []
+        for tr in self.tracers:
+            tr[4] -= dt
+            if tr[4] > 0:
+                keep.append(tr)
+                pygame.draw.line(low, (255, 240, 170), self.to_screen(tr[0], tr[1]), self.to_screen(tr[2], tr[3]))
+        self.tracers = keep
 
     def _pickups(self, low, view, now):
         icons = self.bank.icons
@@ -304,7 +354,7 @@ class Renderer:
     def _players(self, low, view, now):
         frame = int(now * 8) % 2
         for p in view.players.values():
-            (pid, color, state, flags, x, y, vx, vy, ang, h0, h1, stam, car_id, name) = p
+            (pid, color, state, flags, x, y, vx, vy, ang, h0, h1, stam, car_id, name) = p[:14]
             if state in (S.DRIVER, S.PASSENGER):
                 continue
             sx, sy = self.to_screen(x, y)
@@ -323,6 +373,11 @@ class Renderer:
                 if h1 != 255:
                     ic = self.bank.icons_small[h1]
                     low.blit(ic, (sx + int(fx * 5 - fy * 4) - 3, sy + int(fy * 5 + fx * 4) - 3))
+            elif state == S.FOOT and len(p) > 14 and p[14] in (S.ARM_PISTOL, S.ARM_SHOTGUN):
+                fx, fy = math.cos(ang), math.sin(ang)
+                n = 6 if p[14] == S.ARM_SHOTGUN else 4
+                pygame.draw.line(low, (40, 40, 48), (sx + int(fx * 2), sy + int(fy * 2)),
+                                 (sx + int(fx * n), sy + int(fy * n)), 2)
             if flags & PR.PF_SPRINT and self.rng.random() < 0.3:
                 self.emit(DUST, x, y, -vx * 0.1, -vy * 0.1, 0.4)
 

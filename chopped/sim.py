@@ -33,7 +33,33 @@ T_WHITE, T_MONEY, T_BAD, T_INFO, T_COP = range(5)
 # sound ids (client maps these to procedural sfx)
 (S_CRASH, S_CRASH_BIG, S_BOOM, S_SELL, S_PICKUP, S_BREAKIN, S_HOTWIRE, S_STRIP,
  S_HONK, S_ARREST, S_RENT, S_CRUSH, S_DELIVER, S_DROP, S_INSTALL, S_YELP,
- S_IGNITE, S_BUY) = range(18)
+ S_IGNITE, S_BUY, S_PUNCH, S_PISTOL, S_SHOTGUN, S_EMPTY, S_TIRE, S_TRAP, S_ROB) = range(25)
+
+# what's in your hands when you click: keys 1-5
+ARM_FISTS, ARM_PISTOL, ARM_SHOTGUN, ARM_SPIKES, ARM_BLOCK = range(5)
+ARM_NAMES = ("FISTS", "PISTOL", "SHOTGUN", "SPIKE STRIP", "ROADBLOCK")
+TRAP_SPIKES, TRAP_BLOCK = range(2)
+
+
+def arsenal_owns(arsenal, slot):
+    """Client-side Player.owns(), from the 6-byte arsenal in the SELF block:
+    (weapon, arms bitmask, pistol ammo, shotgun ammo, spikes, roadblocks)."""
+    if not arsenal:
+        return slot == ARM_FISTS
+    if slot == ARM_SPIKES:
+        return arsenal[4] > 0
+    if slot == ARM_BLOCK:
+        return arsenal[5] > 0
+    return bool(arsenal[1] & (1 << slot))
+
+
+MARKET = {  # crate -> (label, price)
+    "pistol": ("PISTOL (+%d ROUNDS)" % C.PISTOL_AMMO, C.PRICE_PISTOL),
+    "shotgun": ("SHOTGUN (+%d SHELLS)" % C.SHOTGUN_AMMO, C.PRICE_SHOTGUN),
+    "ammo": ("AMMO FOR YOUR GUNS", C.PRICE_AMMO),
+    "spikes": ("SPIKE STRIP", C.PRICE_SPIKES),
+    "roadblock": ("ROADBLOCK", C.PRICE_ROADBLOCK),
+}
 
 SLOT_LABEL = {
     "Engine": "ENGINE", "Transmission": "GEARBOX", "ECU": "ECU", "Exhaust": "EXHAUST",
@@ -53,6 +79,14 @@ OWNER_YELLS = [
     "OWNER: THAT'S A 2004! IT'S A CLASSIC!",
 ]
 CLOWN_LINES = ["HONK!", "HONK HONK!", "*SAD TROMBONE*", "A CLOWN SQUEAKS ANGRILY"]
+PUNCH_LINES = ["PEDESTRIAN: OW! MY EVERYTHING!", "PEDESTRIAN: WHAT WAS THAT FOR?!",
+               "PEDESTRIAN: I'M TELLING EVERYONE ON THE BUS", "PEDESTRIAN: THAT'S IT, I'M MOVING TO SURREY"]
+SHOT_LINES = ["PEDESTRIAN: I'VE BEEN SHOT! (IT'S A GRAZE) (IT'S FINE)", "PEDESTRIAN: MY GOOD JACKET!",
+              "PEDESTRIAN: I'M CALLING 911 AND MY LAWYER", "PEDESTRIAN: WHY?! I'M A DENTIST!"]
+SURRENDER_LINES = ["PEDESTRIAN: OKAY OKAY! TAKE IT!", "PEDESTRIAN: DON'T SHOOT! I HAVE A PODCAST!",
+                   "PEDESTRIAN: HANDS UP! SEE? HANDS! UP!"]
+WALLET_EXTRAS = ["(AND A BUS PASS)", "(AND A GYM CARD, NEVER USED)", "(AND A PHOTO OF SOMEONE'S CAT)",
+                 "(AND THREE LOTTERY TICKETS, ALL LOSERS)", "(AND A COUPON FOR TIM'S)"]
 BAIL_LINES = ["DRIVER: I'M NOT PAID ENOUGH FOR THIS!", "DRIVER: KEEP IT! IT'S LEASED!",
               "DRIVER: I'M CALLING MY INSURANCE (AND MY MOM)", "DRIVER: NOPE. NOPE NOPE NOPE."]
 DIRS = ((1, 0), (-1, 0), (0, 1), (0, -1))
@@ -78,14 +112,16 @@ class InputState:
     """What a player is pressing, and where they're looking. Counters (not
     booleans) for one-shot keys so a tap survives a dropped packet: if the
     number changed, it happened. yaw is the first-person view direction."""
-    __slots__ = ("buttons", "use_count", "drop_count", "exit_count", "yaw")
+    __slots__ = ("buttons", "use_count", "drop_count", "exit_count", "yaw", "fire_count", "weapon")
 
-    def __init__(self, buttons=0, use_count=0, drop_count=0, exit_count=0, yaw=0.0):
+    def __init__(self, buttons=0, use_count=0, drop_count=0, exit_count=0, yaw=0.0, fire_count=0, weapon=0):
         self.buttons = buttons
         self.use_count = use_count
         self.drop_count = drop_count
         self.exit_count = exit_count
         self.yaw = yaw
+        self.fire_count = fire_count      # clicks, counted (like E) so a dropped packet can't eat a shot
+        self.weapon = weapon              # ARM_* slot you've got selected
 
 
 class Car:
@@ -95,7 +131,7 @@ class Car:
                  "impact_ny", "damage", "pull", "mass", "inertia", "confused_t", "confuse_cd",
                  "stuck_t", "rev_t", "abandon_t", "flow_key", "flow_t", "last_target",
                  "special_fired", "route", "route_prev", "tdir", "node", "blocked_t", "shaken_t",
-                 "overtake_t")
+                 "overtake_t", "hits")
 
     def __init__(self, cid, kind, x, y, ang, parts, color=0):
         self.id = cid
@@ -139,6 +175,7 @@ class Car:
         self.blocked_t = 0.0
         self.shaken_t = 0.0
         self.overtake_t = 0.0
+        self.hits = 0                 # bullets taken (cop cars burn after COP_CAR_HITS)
 
     def power(self):
         # Sum of every part's power. Worn engine alone = 45 = sad trombone.
@@ -170,7 +207,8 @@ class Player:
                  "stamina", "exhausted", "regen_delay", "tumble_t", "spin", "spin_rate",
                  "cuffed_t", "arrest_t", "input", "prev_use", "prev_drop", "prev_exit",
                  "hold_key", "hold", "need_release", "prompt", "hold_frac", "sprinting",
-                 "moving", "last_seen", "addr", "dolly")
+                 "moving", "last_seen", "addr", "dolly", "weapon", "arms", "ammo", "gear", "fire_cd",
+                 "prev_fire")
 
     def __init__(self, pid, name, color):
         self.id = pid
@@ -200,6 +238,12 @@ class Player:
         self.sprinting = False
         self.moving = False
         self.dolly = None             # the Dolly you're pushing (it takes both hands)
+        self.weapon = ARM_FISTS
+        self.arms = 1 << ARM_FISTS    # bitmask of what you own; everyone owns fists
+        self.ammo = [0, 0, 0]         # per ARM_ slot (fists don't need any)
+        self.gear = [0, 0]            # spike strips, roadblocks
+        self.fire_cd = 0.0
+        self.prev_fire = 0
 
     def hands_used(self):
         if self.dolly is not None:
@@ -215,6 +259,13 @@ class Player:
             return 2 if self.dolly.part is not None else 1
         return min(2, self.hands_used())
 
+    def owns(self, slot):
+        if slot == ARM_SPIKES:
+            return self.gear[0] > 0
+        if slot == ARM_BLOCK:
+            return self.gear[1] > 0
+        return bool(self.arms & (1 << slot))
+
     def speed_mult(self):
         if self.dolly is not None:
             return C.DOLLY_LOADED_SPEED_MULT if self.dolly.part is not None else C.DOLLY_SPEED_MULT
@@ -223,7 +274,8 @@ class Player:
 
 class NPC:
     __slots__ = ("id", "kind", "x", "y", "vx", "vy", "ang", "tumble_t", "life_t", "dirx", "diry",
-                 "turn_t", "target", "yell_t", "complain_cd", "spin", "flee_t", "fx", "fy", "ttl")
+                 "turn_t", "target", "yell_t", "complain_cd", "spin", "flee_t", "fx", "fy", "ttl", "wallet",
+                 "wallet_t", "surrender_t")
 
     def __init__(self, nid, kind, x, y):
         self.id = nid
@@ -242,6 +294,9 @@ class NPC:
         self.flee_t = 0.0             # > 0: running away from something loud and fast
         self.fx, self.fy = 1.0, 0.0
         self.ttl = 0.0                # > 0: temporary extra (a driver who bailed); gone when it runs out
+        self.wallet = (C.WALLET_MIN + C.WALLET_MAX) // 2   # World rolls a proper one for pedestrians
+        self.wallet_t = 0.0           # counts down to a refilled wallet after a robbery
+        self.surrender_t = 0.0        # > 0: hands up, someone's pointing a gun at them
 
 
 class Dolly:
@@ -256,6 +311,31 @@ class Dolly:
         self.part = None
         self.holder = None            # player id
         self.idle_t = 0.0
+
+
+class Trap:
+    """A spike strip or a roadblock, lying across the road. ang is the way the
+    traffic it's meant for is travelling (0 or pi/2 or ...), so the long side
+    is across the lane."""
+    __slots__ = ("id", "kind", "x", "y", "ang", "age", "uses", "hit")
+
+    def __init__(self, tid, kind, x, y, ang):
+        self.id = tid
+        self.kind = kind
+        self.x, self.y, self.ang = x, y, ang
+        self.age = 0.0
+        self.uses = C.SPIKE_USES
+        self.hit = set()
+
+    def rect(self):
+        """Axis-aligned (x, y, w, h): traps only ever go down square to the street grid."""
+        long_, short = ((C.SPIKE_LEN, C.SPIKE_WID) if self.kind == TRAP_SPIKES
+                        else (C.ROADBLOCK_LEN, C.ROADBLOCK_WID))
+        if abs(math.cos(self.ang)) > 0.5:          # traffic runs along x: the trap spans y
+            w, h = short, long_
+        else:
+            w, h = long_, short
+        return (self.x - w / 2, self.y - h / 2, w, h)
 
 
 class Pickup:
@@ -422,7 +502,8 @@ class Physics:
     trick of prediction: if the client ran different maths, it would predict a
     different car and the server would keep yanking it back.
 
-    Subclasses provide self.map, self.cars and self._rects (a scratch list)."""
+    Subclasses provide self.map, self.cars, self._rects (a scratch list) and
+    self.extra_rects (roadblocks: solid for cars and people alike)."""
 
     # ------------------------------------------------------------------ cars
     def _drive(self, car, dt):
@@ -517,6 +598,7 @@ class Physics:
         rects = self._rects
         rects.clear()
         self.map.solid_rects_near(car.x, car.y, CAR_BOUND_R, rects)
+        rects.extend(self.extra_rects)             # roadblocks (few; the SAT test rejects far ones fast)
         for rect in rects:
             hit = obb_rect_contact(car.x, car.y, car.ang, rect)
             if hit:
@@ -610,6 +692,7 @@ class Physics:
         rects = self._rects
         rects.clear()
         self.map.solid_rects_near(b.x, b.y, r, rects)
+        rects.extend(self.extra_rects)
         for rect in rects:
             hit = circle_rect_contact(b.x, b.y, r, rect)
             if hit:
@@ -679,6 +762,9 @@ class World(Physics):
         self.npcs = {}
         self.pickups = {}
         self.dollies = {}
+        self.traps = {}
+        self.extra_rects = []       # roadblocks, as solid rects (rebuilt when traps change)
+        self.give_loadout = False   # --selftest: everyone joins armed, so the bot exercises the guns
         self.events = []            # (seq, time, kind, payload)
         self.event_seq = 0
         self.cash = C.START_CASH
@@ -720,7 +806,8 @@ class World(Physics):
         while True:
             i = self._next_id
             self._next_id = (self._next_id % 65000) + 1
-            if i not in self.cars and i not in self.npcs and i not in self.pickups and i not in self.dollies:
+            if (i not in self.cars and i not in self.npcs and i not in self.pickups and i not in self.dollies
+                    and i not in self.traps):
                 return i
 
     def toast(self, text, color=T_WHITE):
@@ -730,6 +817,11 @@ class World(Physics):
     def sfx(self, sid, x, y):
         self.event_seq += 1
         self.events.append((self.event_seq, self.time, 1, (sid, x, y)))
+
+    def tracer(self, weapon, x0, y0, x1, y1):
+        """A bullet's path, for the muzzle flash and tracer on everyone's screen."""
+        self.event_seq += 1
+        self.events.append((self.event_seq, self.time, 2, (weapon, x0, y0, x1, y1)))
 
     def _prune_events(self):
         cutoff = self.time - C.EVENT_KEEP_S
@@ -768,6 +860,7 @@ class World(Physics):
     def _spawn_ped(self):
         tx, ty = self.rng.choice(self.map.sidewalk_tiles)
         n = NPC(self.new_id(), PED, (tx + 0.5) * C.TILE_M, (ty + 0.5) * C.TILE_M)
+        n.wallet = self.rng.randint(C.WALLET_MIN, C.WALLET_MAX)
         n.dirx, n.diry = self.rng.choice(((1, 0), (-1, 0), (0, 1), (0, -1)))
         self.npcs[n.id] = n
         return n
@@ -810,6 +903,10 @@ class World(Physics):
         p = Player(pid, (name or "PLAYER%d" % pid)[:12].upper(), (pid - 1) % 4)
         sx, sy = self.map.player_spawns[(pid - 1) % 4]
         p.x, p.y = sx, sy
+        if self.give_loadout:
+            p.arms |= (1 << ARM_PISTOL) | (1 << ARM_SHOTGUN)
+            p.ammo = [0, C.MAX_AMMO, C.MAX_AMMO]
+            p.gear = [C.MAX_TRAPS_EACH, C.MAX_TRAPS_EACH]
         self.players[pid] = p
         self.toast("%s JOINED THE CREW" % p.name, T_INFO)
         return p
@@ -838,6 +935,11 @@ class World(Physics):
 
     def _enter_car(self, p, car, seat):
         self._release_dolly(p)        # it'd never fit in a Kei anyway
+        if seat == DRIVER and car.kind == CIV and not car.stolen and car.state == RUNNING:
+            # a car whose driver bailed, engine still running: finders keepers, says nobody
+            car.stolen = True
+            self._crime(C.HEAT_BREAKIN)
+            self.toast("%s TOOK A CAR IN BROAD DAYLIGHT. +%d HEAT" % (p.name, C.HEAT_BREAKIN), T_BAD)
         if seat == DRIVER:
             car.driver = p.id
         else:
@@ -921,6 +1023,7 @@ class World(Physics):
                 self._traffic_ai(car, dt)
         self._horns(dt)
         self._physics_cars(dt)
+        self._update_traps(dt)
         self._sync_occupants()
         for p in self.players.values():
             self._move_player(p, dt)
@@ -996,6 +1099,8 @@ class World(Physics):
         else:
             self._spawn_personal(personal_loadout())
         self.pickups.clear()
+        self.traps.clear()
+        self.extra_rects = []
         for k, d in enumerate(self.dollies.values()):
             d.holder, d.part, d.idle_t = None, None, 0.0
             d.x, d.y = self.map.dolly_spot[0] - k * 1.6, self.map.dolly_spot[1]
@@ -1017,6 +1122,7 @@ class World(Physics):
             p.hold = 0.0
             p.hold_key = None
             p.dolly = None
+            p.arms, p.ammo, p.gear, p.weapon = 1 << ARM_FISTS, [0, 0, 0], [0, 0], ARM_FISTS
         for _ in range(C.MAX_CIVILIAN_CARS):
             self._spawn_civilian()
         for _ in range(self.traffic_target):
@@ -1031,6 +1137,9 @@ class World(Physics):
         drop_tap = inp.drop_count != p.prev_drop
         exit_tap = inp.exit_count != p.prev_exit
         p.prev_use, p.prev_drop, p.prev_exit = inp.use_count, inp.drop_count, inp.exit_count
+        fire_tap = inp.fire_count != p.prev_fire
+        p.prev_fire = inp.fire_count        # (consumed in every state: no queued-up shots after a car ride)
+        p.fire_cd -= dt
         b = inp.buttons
         p.prompt = ""
         p.hold_frac = 0.0
@@ -1066,6 +1175,11 @@ class World(Physics):
 
         # ---- on foot --------------------------------------------------------
         p.ang = inp.yaw               # you face wherever your mouse points
+        p.weapon = inp.weapon if (0 <= inp.weapon <= ARM_BLOCK and p.owns(inp.weapon)) else ARM_FISTS
+        if p.weapon in (ARM_PISTOL, ARM_SHOTGUN) and not p.hands and p.dolly is None:
+            self._menace(p)
+        if fire_tap and p.fire_cd <= 0:
+            self._attack(p)
         if drop_tap and p.dolly is not None:
             self._release_dolly(p)
             self.sfx(S_DROP, p.x, p.y)
@@ -1129,8 +1243,17 @@ class World(Physics):
                 verb = "SWAP IN" if replaced else "INSTALL"
                 return (("install", id(part)), "HOLD E: %s %s ON YOUR RIDE" % (verb, part.name.upper()),
                         C.INSTALL_TIME, lambda: self._install(p, part, slot))
+        market = self._market_interaction(p, ax, ay)
+        if market is not None:
+            return market
         if p.dolly is not None:
             return self._dolly_interaction(p, p.dolly)
+        # someone on the floor, or with their hands up: help yourself
+        mark = self._robbable_near(ax, ay)
+        if mark is not None:
+            if mark.wallet <= 0:
+                return (None, "THEY'RE BROKE. A BUS PASS AND HALF A SANDWICH.", 0, None)
+            return (("rob", mark.id), "HOLD E: ROB THEM", C.ROB_TIME, lambda: self._rob(p, mark))
         # a dolly to grab
         dl = self._nearest_dolly(ax, ay, C.INTERACT_RANGE_DOLLY)
         if dl is not None:
@@ -1155,8 +1278,8 @@ class World(Physics):
         # cars: the one whose bodywork is closest to where you're looking
         best, bd = None, 99.0
         for car in self.cars.values():
-            if car.kind == COP or car.kind == TRAFFIC:
-                continue              # you can't steal a car someone is driving. Yet.
+            if car.kind == COP:
+                continue
             if abs(car.x - ax) > 6 or abs(car.y - ay) > 6:
                 continue
             d = box_distance(car, ax, ay)
@@ -1165,6 +1288,11 @@ class World(Physics):
         car = best
         if car is None or bd > C.CAR_AIM_RANGE + (0.8 if car.state == DELIVERED else 0):
             return (None, "", 0, None)
+        if car.kind == TRAFFIC:
+            if car.speed() > C.CARJACK_MAX_SPEED:
+                return (None, "IT'S MOVING. STOP IT FIRST: STAND IN THE ROAD, SPIKES, A ROADBLOCK...", 0, None)
+            return (("carjack", car.id), "HOLD E: DRAG THE DRIVER OUT (CARJACK)", C.CARJACK_TIME,
+                    lambda: self._carjack(p, car))
         if car.kind == PERSONAL:
             if car.driver is None:
                 return (("drive", car.id), "E: DRIVE YOUR RIDE", 0, lambda: self._enter_car(p, car, DRIVER))
@@ -1503,6 +1631,356 @@ class World(Physics):
         self.sfx(S_BUY, p.x, p.y)
         self.toast("BOUGHT %s: -$%d. YOUR RIDE: %d POWER" % (PART_DEFS[tid][0].upper(), price, car.power()), T_INFO)
 
+
+    # ------------------------------------------------------------------ violence
+    def _crime(self, heat):
+        """Something loud and illegal just happened."""
+        self.heat = min(C.HEAT_MAX, self.heat + heat)
+        self.unseen_t = 0.0
+
+    def _in_front(self, p, x, y, reach, cone):
+        dx, dy = x - p.x, y - p.y
+        d = math.hypot(dx, dy)
+        if d > reach or d < 1e-6:
+            return None
+        if math.cos(math.atan2(dy, dx) - p.ang) < math.cos(cone):
+            return None
+        return d
+
+    def _menace(self, p):
+        """Point a gun at someone and their hands go up (so you can rob them)."""
+        for n in self.npcs.values():
+            if n.kind != CLOWN and n.tumble_t <= 0 and \
+                    self._in_front(p, n.x, n.y, C.SURRENDER_RANGE, C.SURRENDER_CONE) is not None \
+                    and self.map.los(p.x, p.y, n.x, n.y):
+                if n.surrender_t <= 0 and n.complain_cd <= 0:
+                    n.complain_cd = 5.0
+                    self.toast(self.rng.choice(SURRENDER_LINES), T_WHITE)
+                n.surrender_t = 0.6
+
+    def _attack(self, p):
+        if p.hands or p.dolly is not None:
+            p.fire_cd = 0.3
+            self.toast("HANDS FULL - DROP IT (G) TO FIGHT", T_INFO)
+            return
+        w = p.weapon
+        if w == ARM_FISTS:
+            p.fire_cd = C.PUNCH_COOLDOWN
+            self._punch(p)
+        elif w in (ARM_PISTOL, ARM_SHOTGUN):
+            if p.ammo[w] <= 0:
+                p.fire_cd = 0.3
+                self.sfx(S_EMPTY, p.x, p.y)
+                self.toast("*CLICK* OUT OF AMMO. THE CRATES IN THE SHOP SELL MORE.", T_INFO)
+                return
+            p.ammo[w] -= 1
+            self._shoot(p, w)
+        else:
+            p.fire_cd = 0.5
+            self._place_trap(p, TRAP_SPIKES if w == ARM_SPIKES else TRAP_BLOCK)
+
+    def _punch(self, p):
+        best, bd = None, None
+        for n in self.npcs.values():
+            d = self._in_front(p, n.x, n.y, C.PUNCH_RANGE, C.PUNCH_CONE)
+            if d is not None and (bd is None or d < bd):
+                best, bd = n, d
+        for q in self.players.values():
+            if q is not p and q.state in (FOOT, CUFFED):
+                d = self._in_front(p, q.x, q.y, C.PUNCH_RANGE, C.PUNCH_CONE)
+                if d is not None and (bd is None or d < bd):
+                    best, bd = q, d
+        if best is None:
+            return                     # a mighty swing at thin air
+        fx, fy = math.cos(p.ang), math.sin(p.ang)
+        self.sfx(S_PUNCH, best.x, best.y)
+        if isinstance(best, Player):
+            if best.state == FOOT:
+                self._tumble(best, fx * 5, fy * 5, C.PUNCH_PLAYER_TUMBLE)
+                self.toast("%s DECKED %s. FRIENDSHIP: TESTED." % (p.name, best.name), T_WHITE)
+            return
+        best.tumble_t = max(best.tumble_t, C.PUNCH_KNOCKDOWN)
+        best.vx, best.vy = fx * 5, fy * 5
+        best.surrender_t = 0.0
+        self._crime(C.PUNCH_HEAT)
+        if best.complain_cd <= 0:
+            best.complain_cd = 3.0
+            self.toast(self.rng.choice(CLOWN_LINES if best.kind == CLOWN else PUNCH_LINES), T_WHITE)
+
+    def _shoot(self, p, w):
+        shotgun = w == ARM_SHOTGUN
+        p.fire_cd = C.SHOTGUN_COOLDOWN if shotgun else C.PISTOL_COOLDOWN
+        self.sfx(S_SHOTGUN if shotgun else S_PISTOL, p.x, p.y)
+        rng_ = C.SHOTGUN_RANGE if shotgun else C.PISTOL_RANGE
+        pellets = C.SHOTGUN_PELLETS if shotgun else 1
+        for k in range(pellets):
+            spread = ((k / (pellets - 1)) * 2 - 1) * C.SHOTGUN_SPREAD if pellets > 1 else 0.0
+            ang = p.ang + spread + (self.rng.uniform(-0.02, 0.02) if shotgun else 0.0)
+            dist, target = self._ray_hit(p, ang, rng_)
+            ex, ey = p.x + math.cos(ang) * dist, p.y + math.sin(ang) * dist
+            if k == 0 or k == pellets - 1 or k == pellets // 2:
+                self.tracer(w, p.x, p.y, ex, ey)
+            if target is not None:
+                self._shot_hits(p, target, ex, ey, ang, shotgun)
+        # gunshots carry: anyone within earshot notices, everyone nearby runs
+        near = any((n.x - p.x) ** 2 + (n.y - p.y) ** 2 < C.GUNSHOT_EARSHOT ** 2 for n in self.npcs.values()) or \
+            any(c.kind == COP and (c.x - p.x) ** 2 + (c.y - p.y) ** 2 < C.GUNSHOT_EARSHOT ** 2
+                for c in self.cars.values())
+        if near:
+            self._crime(C.GUNSHOT_HEAT)
+        self._scare(p.x, p.y, C.PED_FLEE_CRASH_RADIUS * 1.6)
+
+    def _ray_hit(self, p, ang, reach):
+        """Hitscan, Doom style: first thing along the ray -> (distance, thing or None)."""
+        dx, dy = math.cos(ang), math.sin(ang)
+        best_d = self.map.ray_clear(p.x, p.y, ang, reach, step=0.25)
+        best = None
+        for car in self.cars.values():
+            if car.id == p.car_id:
+                continue
+            ox, oy = p.x - car.x, p.y - car.y
+            if ox * ox + oy * oy > (best_d + CAR_BOUND_R) ** 2:
+                continue
+            c, s_ = math.cos(car.ang), math.sin(car.ang)
+            lx, ly = ox * c + oy * s_, -ox * s_ + oy * c
+            ldx, ldy = dx * c + dy * s_, -dx * s_ + dy * c
+            t0, t1 = 0.0, best_d
+            for o, dd, h in ((lx, ldx, HL), (ly, ldy, HW)):
+                if abs(dd) < 1e-9:
+                    if abs(o) > h:
+                        t0, t1 = 1.0, 0.0
+                        break
+                    continue
+                ta, tb = (-h - o) / dd, (h - o) / dd
+                if ta > tb:
+                    ta, tb = tb, ta
+                t0, t1 = max(t0, ta), min(t1, tb)
+            if t0 <= t1 and t0 < best_d:
+                best_d, best = t0, car
+        for q in list(self.npcs.values()) + [q for q in self.players.values()
+                                             if q is not p and q.state in (FOOT, CUFFED)]:
+            ox, oy = q.x - p.x, q.y - p.y
+            t = ox * dx + oy * dy
+            if 0 < t < best_d:
+                perp = abs(-ox * dy + oy * dx)
+                if perp < 0.45:
+                    best_d, best = t, q
+        return best_d, best
+
+    def _shot_hits(self, p, target, ex, ey, ang, shotgun):
+        fx, fy = math.cos(ang), math.sin(ang)
+        if isinstance(target, Car):
+            car = target
+            # which bit did we hit? a wheel if we landed close to one
+            c, s_ = math.cos(car.ang), math.sin(car.ang)
+            lx, ly = (ex - car.x) * c + (ey - car.y) * s_, -(ex - car.x) * s_ + (ey - car.y) * c
+            wheel = min(WHEEL_SLOTS, key=lambda w: (SLOT_ANCHOR[w][0] - lx) ** 2 + (SLOT_ANCHOR[w][1] - ly) ** 2)
+            wx, wy = SLOT_ANCHOR[wheel]
+            if car.parts.get(wheel) is not None and math.hypot(wx - lx, wy - ly) < C.TIRE_HIT_RADIUS:
+                car.parts[wheel].condition *= 0.3            # shredded
+                self._knock_off(car, wheel)
+                self.sfx(S_TIRE, ex, ey)
+            if shotgun:
+                car.vx += fx * 0.6
+                car.vy += fy * 0.6
+            if car.kind == COP:
+                car.hits += 1
+                self._crime(C.SHOOT_COP_HEAT)
+                if car.hits >= C.COP_CAR_HITS and car.fire_t <= 0:
+                    car.fire_t = C.COP_BURN_TIME
+                    self.sfx(S_IGNITE, car.x, car.y)
+                    self.toast("THE COP CAR'S ON FIRE! GET CLEAR!", T_COP)
+            elif car.kind == TRAFFIC:
+                car.shaken_t = max(car.shaken_t, C.TRAFFIC_SHAKEN_TIME)
+            return
+        if isinstance(target, Player):
+            if target.state == FOOT:
+                self._drop_all(target)
+                self._release_dolly(target)
+                self._tumble(target, fx * 7, fy * 7, C.SHOT_PLAYER_TUMBLE)
+                self.toast("%s SHOT %s. THEY'RE FINE. THEY'RE FURIOUS." % (p.name, target.name), T_BAD)
+            return
+        n = target
+        n.tumble_t = max(n.tumble_t, C.SHOT_KNOCKDOWN)
+        n.vx, n.vy = fx * 6, fy * 6
+        n.surrender_t = 0.0
+        self.sfx(S_YELP, n.x, n.y)
+        if n.complain_cd <= 0:
+            n.complain_cd = 3.0
+            self.toast(self.rng.choice(SHOT_LINES), T_WHITE)
+
+    # ------------------------------------------------------------------ robbing people
+    def _robbable_near(self, x, y):
+        best, bd = None, 1.7
+        for n in self.npcs.values():
+            if n.tumble_t > 0 or n.surrender_t > 0:
+                d = math.hypot(n.x - x, n.y - y)
+                if d < bd:
+                    best, bd = n, d
+        return best
+
+    def _rob(self, p, n):
+        if n.id not in self.npcs or n.wallet <= 0:
+            return
+        cash, n.wallet = n.wallet, 0
+        n.wallet_t = C.WALLET_REFILL
+        self._earn(cash)
+        self._crime(C.ROB_HEAT)
+        self.sfx(S_ROB, n.x, n.y)
+        self.toast("%s LIFTED A WALLET: +$%d %s" % (p.name, cash, self.rng.choice(WALLET_EXTRAS)), T_MONEY)
+        n.surrender_t = 0.0
+        self._flee(n, n.x - p.x, n.y - p.y)
+
+    # ------------------------------------------------------------------ carjacking
+    def _carjack(self, p, car):
+        if car.id not in self.cars or car.kind != TRAFFIC or car.speed() > C.CARJACK_MAX_SPEED:
+            return
+        x, y = car.to_world(0.0, -2.2)
+        if self.map.solid_at(x, y):
+            x, y = car.to_world(0.0, 2.2)
+        n = NPC(self.new_id(), PED, x, y)
+        n.ttl = 40.0
+        n.tumble_t = 1.2
+        n.vx, n.vy = (x - car.x) * 2, (y - car.y) * 2
+        self.npcs[n.id] = n
+        self._flee(n, x - car.x, y - car.y)
+        car.kind, car.state, car.route = CIV, RUNNING, []
+        car.stolen, car.alarm, car.special = True, False, None
+        car.throttle = car.steer = 0.0
+        car.handbrake = car.horn = False
+        self._crime(C.CARJACK_HEAT)
+        self.sfx(S_PUNCH, x, y)
+        self.toast("%s DRAGGED THE DRIVER OUT. CARJACKED! +%d HEAT" % (p.name, C.CARJACK_HEAT), T_BAD)
+        self._enter_car(p, car, DRIVER)
+
+    # ------------------------------------------------------------------ black market
+    def _market_interaction(self, p, ax, ay):
+        best, bd = None, 1.8            # crates are 1.9 m apart: nearest wins, no mis-buys
+        for (x, y, item) in self.map.market:
+            d = math.hypot(x - ax, y - ay)
+            if d < bd:
+                best, bd = item, d
+        if best is None:
+            return None
+        label, price = MARKET[best]
+        if best == "pistol" and p.arms & (1 << ARM_PISTOL):
+            return (None, "BLACK MARKET: YOU'VE GOT A PISTOL. AMMO'S TWO CRATES DOWN.", 0, None)
+        if best == "shotgun" and p.arms & (1 << ARM_SHOTGUN):
+            return (None, "BLACK MARKET: YOU'VE GOT A SHOTGUN. AMMO'S NEXT DOOR.", 0, None)
+        if best == "ammo" and not (p.arms & ((1 << ARM_PISTOL) | (1 << ARM_SHOTGUN))):
+            return (None, "BLACK MARKET: AMMO. BUY A GUN FIRST, GENIUS.", 0, None)
+        if best in ("spikes", "roadblock") and p.gear[0 if best == "spikes" else 1] >= C.MAX_TRAPS_EACH:
+            return (None, "BLACK MARKET: YOU CAN'T CARRY MORE OF THOSE", 0, None)
+        if self.cash < price:
+            return (None, "BLACK MARKET: %s $%d - CAN'T AFFORD IT" % (label, price), 0, None)
+        return (("buy_" + best, p.id), "HOLD E: BUY %s - $%d" % (label, price), C.BUY_TIME,
+                lambda: self._market_buy(p, best, price))
+
+    def _market_buy(self, p, item, price):
+        if self.cash < price:
+            return
+        self.cash -= price
+        if item == "pistol":
+            p.arms |= 1 << ARM_PISTOL
+            p.ammo[ARM_PISTOL] = min(C.MAX_AMMO, p.ammo[ARM_PISTOL] + C.PISTOL_AMMO)
+            tip = "PRESS 2 TO DRAW IT"
+        elif item == "shotgun":
+            p.arms |= 1 << ARM_SHOTGUN
+            p.ammo[ARM_SHOTGUN] = min(C.MAX_AMMO, p.ammo[ARM_SHOTGUN] + C.SHOTGUN_AMMO)
+            tip = "PRESS 3 TO DRAW IT"
+        elif item == "ammo":
+            if p.arms & (1 << ARM_PISTOL):
+                p.ammo[ARM_PISTOL] = min(C.MAX_AMMO, p.ammo[ARM_PISTOL] + C.PISTOL_AMMO)
+            if p.arms & (1 << ARM_SHOTGUN):
+                p.ammo[ARM_SHOTGUN] = min(C.MAX_AMMO, p.ammo[ARM_SHOTGUN] + C.SHOTGUN_AMMO)
+            tip = "LOCKED AND LOADED"
+        elif item == "spikes":
+            p.gear[0] += 1
+            tip = "PRESS 4, CLICK TO LAY IT ACROSS THE ROAD"
+        else:
+            p.gear[1] += 1
+            tip = "PRESS 5, CLICK TO BLOCK THE ROAD"
+        self.sfx(S_BUY, p.x, p.y)
+        self.toast("BOUGHT %s: -$%d. %s" % (MARKET[item][0].split(" (")[0], price, tip), T_INFO)
+
+    # ------------------------------------------------------------------ traps
+    def _place_trap(self, p, kind):
+        slot = 0 if kind == TRAP_SPIKES else 1
+        if p.gear[slot] <= 0:
+            return
+        if len(self.traps) >= C.MAX_TRAPS:
+            self.toast("TOO MANY TRAPS OUT ALREADY. THE CITY HAS LIMITS.", T_INFO)
+            return
+        # square to the street, and centred on the road it's dropped on
+        ang = round(p.ang / (math.pi / 2)) * (math.pi / 2)
+        x = p.x + math.cos(p.ang) * C.TRAP_PLACE_DIST
+        y = p.y + math.sin(p.ang) * C.TRAP_PLACE_DIST
+        if self.map.solid_at(x, y):
+            self.toast("CAN'T PUT IT THERE", T_INFO)
+            return
+        along_x = abs(math.cos(ang)) > 0.5
+        if kind == TRAP_BLOCK:
+            k = round(((y if along_x else x) / C.TILE_M - C.ROAD_TILES / 2.0) / C.PITCH)
+            centre = self.map.road_centre(k)
+            if along_x and abs(centre - y) < 6.5:
+                y = centre
+            elif not along_x and abs(centre - x) < 6.5:
+                x = centre
+        t = Trap(self.new_id(), kind, x, y, ang)
+        self.traps[t.id] = t
+        p.gear[slot] -= 1
+        self._rebuild_trap_rects()
+        self.sfx(S_TRAP, x, y)
+        if kind == TRAP_SPIKES:
+            self.toast("SPIKE STRIP DOWN. TYRES BEWARE.", T_INFO)
+        else:
+            self.toast("ROADBLOCK UP. NOBODY'S GETTING THROUGH HERE.", T_INFO)
+
+    def _rebuild_trap_rects(self):
+        self.extra_rects = [t.rect() for t in self.traps.values() if t.kind == TRAP_BLOCK]
+
+    def _update_traps(self, dt):
+        if not self.traps:
+            return
+        dead = []
+        for t in self.traps.values():
+            t.age += dt
+            if t.age > C.TRAP_LIFETIME:
+                dead.append(t.id)
+                continue
+            rx, ry, rw, rh = t.rect()
+            if t.kind == TRAP_SPIKES:
+                for car in self.cars.values():
+                    if abs(car.x - t.x) > 8 or abs(car.y - t.y) > 8 or car.speed() < 1.5:
+                        continue
+                    for w in WHEEL_SLOTS:
+                        if car.parts.get(w) is None:
+                            continue
+                        wx, wy = car.to_world(*SLOT_ANCHOR[w])
+                        if rx - 0.2 <= wx <= rx + rw + 0.2 and ry - 0.2 <= wy <= ry + rh + 0.2:
+                            car.parts[w].condition *= 0.3
+                            self._knock_off(car, w)
+                            self.sfx(S_TIRE, wx, wy)
+                            if car.id not in t.hit:
+                                t.hit.add(car.id)
+                                if car.kind == COP:
+                                    self.toast("SPIKED A COP CAR. BEAUTIFUL.", T_COP)
+                if len(t.hit) >= t.uses and t.age < C.TRAP_LIFETIME - 1.0:
+                    t.age = C.TRAP_LIFETIME - 1.0          # worn out: gone in a second
+            else:
+                # anything that ploughs into a roadblock hard enough turns it into kindling
+                for car in self.cars.values():
+                    if car.impact_dv >= C.ROADBLOCK_BREAK_DV and \
+                            obb_rect_contact(car.x, car.y, car.ang, (rx - 0.3, ry - 0.3, rw + 0.6, rh + 0.6)):
+                        dead.append(t.id)
+                        self.sfx(S_CRASH_BIG, t.x, t.y)
+                        self.toast("THE ROADBLOCK IS NOW MATCHSTICKS", T_INFO)
+                        break
+        if dead:
+            for tid in dead:
+                self.traps.pop(tid, None)
+            self._rebuild_trap_rects()
+
     # ------------------------------------------------------------------ horns
     def _horns(self, dt):
         cops = [c for c in self.cars.values() if c.kind == COP]
@@ -1760,6 +2238,15 @@ class World(Physics):
                 if n.ttl <= 0:
                     dead.append(n.id)     # rounded a corner and kept running. Forever.
                     continue
+            if n.wallet <= 0:
+                n.wallet_t -= dt
+                if n.wallet_t <= 0:
+                    n.wallet = self.rng.randint(C.WALLET_MIN, C.WALLET_MAX)   # payday
+            if n.surrender_t > 0:
+                n.surrender_t -= dt
+                if n.surrender_t <= 0 and n.tumble_t <= 0:
+                    # the gun's gone: run for it, away from wherever it was
+                    self._flee(n, self.rng.uniform(-1, 1), self.rng.uniform(-1, 1))
             if n.kind != PED:
                 n.life_t += dt
                 if n.kind == CLOWN and n.life_t > C.CLOWN_LIFETIME:
@@ -1771,6 +2258,8 @@ class World(Physics):
                 dec = math.exp(-2.5 * dt)
                 n.vx *= dec
                 n.vy *= dec
+            elif n.surrender_t > 0:
+                n.vx = n.vy = 0.0         # frozen, hands up, reconsidering their life choices
             elif n.kind == PED and n.flee_t > 0:
                 n.flee_t -= dt
                 n.vx, n.vy = self._flee_velocity(n)
@@ -2043,6 +2532,11 @@ class World(Physics):
     def arrest(self, p):
         self._drop_all(p)
         self._release_dolly(p)        # engine and all, right there for your partner
+        if p.arms & ~1:
+            self.toast("THE COPS KEPT %s'S GUNS" % p.name, T_COP)
+        p.arms = 1 << ARM_FISTS       # guns: confiscated. Fists: they tried.
+        p.ammo = [0, 0, 0]
+        p.weapon = ARM_FISTS
         p.state = CUFFED
         p.cuffed_t = C.CUFFED_TIME
         p.arrest_t = 0.0
@@ -2226,6 +2720,17 @@ class World(Physics):
                 f = dx * fx + dy * fy
                 if 0.5 < f < bf + 0.5 and abs(-dx * fy + dy * fx) < 1.8:
                     best, bf = p, f - 0.5
+        for t in self.traps.values():
+            if t.kind != TRAP_BLOCK:
+                continue
+            rx, ry, rw, rh = t.rect()
+            # the nearest point of the barrier to our lane line
+            qx = clamp(car.x + fx * 6, rx, rx + rw)
+            qy = clamp(car.y + fy * 6, ry, ry + rh)
+            dx, dy = qx - car.x, qy - car.y
+            f = dx * fx + dy * fy
+            if 0.5 < f < bf + 0.5 and abs(-dx * fy + dy * fx) < 2.0:
+                best, bf = t, f - 0.5
         for n in self.npcs.values():
             dx, dy = n.x - car.x, n.y - car.y
             f = dx * fx + dy * fy
@@ -2242,6 +2747,9 @@ class World(Physics):
         car.handbrake = False
         if car.fire_t > 0:
             car.throttle, car.steer = 0.0, 0.0
+            return
+        if car.missing_wheels() >= 2:
+            self._traffic_bail(car)             # riding on rims: the driver's done
             return
         if car.shaken_t > 0:
             # somebody hit them. They sit there. They honk. It's what we'd all do.
@@ -2290,7 +2798,9 @@ class World(Physics):
             car.handbrake = vf <= 0.5
             if car.blocked_t > C.TRAFFIC_HONK_AFTER:
                 car.horn = True
-            if math.hypot(blocker.vx, blocker.vy) < 1.0 and car.blocked_t > C.TRAFFIC_OVERTAKE_AFTER:
+            if isinstance(blocker, Trap):
+                pass                    # a roadblock across the whole road: sit there and honk
+            elif math.hypot(blocker.vx, blocker.vy) < 1.0 and car.blocked_t > C.TRAFFIC_OVERTAKE_AFTER:
                 # a stalled car or someone loitering in the road: swing out and go round
                 car.overtake_t = 3.5
                 car.blocked_t = 0.0
@@ -2310,11 +2820,12 @@ class World(Physics):
             car.stuck_t = 0.0
 
     def _traffic_bail(self, car):
-        """A hard enough hit and the driver has had enough: they grab the keys,
-        lock it and run. What's left is an ordinary parked car -- break in the
-        usual way (and yes, the alarm still goes off)."""
+        """A hard enough hit (or two shredded tyres) and the driver has had
+        enough: they leg it and leave the engine running. Anyone can hop in --
+        and the moment they do, it's a stolen car (+heat, like a break-in)."""
         car.kind = CIV
-        car.state = LOCKED
+        car.state = RUNNING
+        car.stolen = False
         car.route = []
         car.throttle = car.steer = 0.0
         car.handbrake = car.horn = False

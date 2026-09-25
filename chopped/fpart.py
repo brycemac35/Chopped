@@ -315,9 +315,23 @@ def car_boxes(kind, color, mask, tuned, damage, lights):
     return b
 
 
-def person_boxes(shirt, skin, hair, frame, extra=None, pants=(52, 56, 78)):
+GUN_METAL = (44, 44, 52)
+GUN_WOOD = (110, 70, 40)
+
+
+def gun_boxes(gun, x, y, z):
+    """A pistol (1) or a shotgun (2) whose grip sits at (x, y, z), barrel along +x."""
+    if gun == 1:
+        return [(x - 0.03, x + 0.22, y - 0.03, y + 0.03, z + 0.03, z + 0.1, GUN_METAL),
+                (x - 0.03, x + 0.03, y - 0.03, y + 0.03, z - 0.08, z + 0.05, GUN_METAL)]
+    return [(x - 0.3, x - 0.02, y - 0.04, y + 0.04, z - 0.05, z + 0.06, GUN_WOOD),        # stock
+            (x - 0.02, x + 0.62, y - 0.03, y + 0.03, z + 0.02, z + 0.08, GUN_METAL),       # barrel
+            (x + 0.2, x + 0.42, y - 0.04, y + 0.04, z - 0.03, z + 0.03, GUN_WOOD)]         # pump
+
+
+def person_boxes(shirt, skin, hair, frame, extra=None, pants=(52, 56, 78), gun=0):
     """A little blocky crook, about 1.75 m, facing +x. frame 0/1 = legs
-    together/apart for the walk cycle."""
+    together/apart for the walk cycle. gun 1/2 = pistol/shotgun out in front."""
     swing = 0.16 if frame else 0.0
     shoe = (30, 26, 30)
     b = []
@@ -335,6 +349,14 @@ def person_boxes(shirt, skin, hair, frame, extra=None, pants=(52, 56, 78)):
         y0, y1 = (-0.35, -0.24) if side < 0 else (0.24, 0.35)
         if extra == "cuffed":
             b.append((-0.26, -0.12, y0 + side * -0.05, y1 + side * -0.05, 0.9, 1.35, shirt))
+        elif extra == "handsup":
+            b.append((-0.06, 0.08, y0, y1, 1.3, 1.92, shirt))                             # don't shoot
+            b.append((-0.06, 0.08, y0, y1, 1.92, 2.04, skin))
+        elif gun and side > 0:
+            # arm straight out, gun at the end: the international sign for "wallet. Now."
+            b.append((0.0, 0.42, 0.18, 0.29, 1.24, 1.35, shirt))
+            b.append((0.42, 0.52, 0.18, 0.29, 1.23, 1.35, skin))
+            b.extend(gun_boxes(gun, 0.5, 0.23, 1.3))
         elif extra == "owner" and side > 0:
             b.append((-0.06, 0.08, y0, y1, 1.3, 1.95, shirt))                             # fist in the air
             b.append((-0.06, 0.08, y0, y1, 1.85, 1.98, skin))
@@ -360,6 +382,74 @@ def lying(boxes):
     for x0, x1, y0, y1, z0, z1, c in boxes:
         out.append((-z1 + 0.9, -z0 + 0.9, y0, y1, x0 + 0.2, x1 + 0.2, c))
     return out
+
+
+def spike_boxes(length):
+    """One stretch of stinger strip, lying across the lane (along model y):
+    a black hinged base bristling with steel teeth. Tyres hate this one trick."""
+    hl = length / 2
+    b = [(-0.32, 0.32, -hl, hl, 0.0, 0.05, (26, 24, 30)),
+         (-0.34, -0.3, -hl, hl, 0.0, 0.07, (230, 190, 40))]                               # yellow edge
+    n = max(2, int(length / 0.3))
+    for k in range(n):
+        y = -hl + (k + 0.5) * length / n
+        for x in (-0.18, 0.0, 0.18):
+            b.append((x - 0.03, x + 0.03, y - 0.03, y + 0.03, 0.05, 0.18, P["chrome"]))
+    return b
+
+
+BARRIER_ORANGE = (255, 120, 20)
+BARRIER_WHITE = (245, 245, 240)
+
+
+def barrier_boxes(length, lamp=False):
+    """One stretch of road barrier (along model y): A-frame legs and a striped
+    board at knee and chest height. Orange and white, the colours of 'no'."""
+    hl = length / 2
+    b = []
+    for y in (-hl + 0.18, hl - 0.18):
+        for x in (-0.32, 0.32):
+            b.append((x - 0.05, x + 0.05, y - 0.05, y + 0.05, 0.0, 1.02, P["metal_l"]))
+        b.append((-0.34, 0.34, y - 0.05, y + 0.05, 0.0, 0.06, P["metal"]))
+    stripes = max(2, int(round(length / 0.5)))
+    for k in range(stripes):
+        ya = -hl + k * length / stripes
+        yb = ya + length / stripes
+        col = BARRIER_ORANGE if k % 2 == 0 else BARRIER_WHITE
+        b.append((-0.06, 0.06, ya, yb, 0.66, 0.98, col))
+        b.append((-0.06, 0.06, ya, yb, 0.26, 0.4, BARRIER_WHITE if k % 2 == 0 else BARRIER_ORANGE))
+    if lamp:
+        b.append((-0.06, 0.06, hl - 0.34, hl - 0.18, 0.98, 1.14, (255, 200, 40)))
+    return b
+
+
+CRATE_BANDS = {"pistol": (60, 60, 70), "shotgun": GUN_WOOD, "ammo": (200, 170, 60),
+               "spikes": (230, 190, 40), "roadblock": BARRIER_ORANGE}
+
+
+def crate_boxes(item):
+    """A black-market crate with a sample of the goods on the lid."""
+    wood, dark = P["wood"], shade(P["wood"], 0.7)
+    band = CRATE_BANDS.get(item, P["metal"])
+    b = [(-0.42, 0.42, -0.42, 0.42, 0.0, 0.75, {"*": wood, "+z": shade(wood, 1.15)}),
+         (-0.43, 0.43, -0.43, 0.43, 0.3, 0.42, band),
+         (-0.43, 0.43, -0.43, 0.43, 0.0, 0.06, dark),
+         (-0.43, 0.43, -0.43, 0.43, 0.69, 0.75, dark)]
+    if item == "pistol":
+        b.extend(gun_boxes(1, -0.1, 0.0, 0.8))
+    elif item == "shotgun":
+        b.extend(gun_boxes(2, -0.15, 0.0, 0.82))
+    elif item == "ammo":
+        for k, y in enumerate((-0.2, 0.0, 0.2)):
+            b.append((-0.1, 0.1, y - 0.07, y + 0.07, 0.75, 0.9 + 0.04 * k, (60, 90, 50)))
+    elif item == "spikes":
+        for y in (-0.25, -0.08, 0.09, 0.26):
+            b.append((-0.3, 0.3, y - 0.06, y + 0.06, 0.75, 0.8, (26, 24, 30)))
+            b.append((-0.25, 0.25, y - 0.02, y + 0.02, 0.8, 0.86, P["chrome"]))
+    else:
+        b.append((-0.3, 0.3, -0.35, 0.35, 0.75, 0.84, BARRIER_ORANGE))
+        b.append((-0.3, 0.3, -0.12, 0.12, 0.75, 0.845, BARRIER_WHITE))
+    return b
 
 
 def dolly_boxes():

@@ -9,8 +9,8 @@ engine and exactly no maths textbooks).
 import math
 
 GAME_TITLE = "Chopped"
-VERSION = 5  # bump when the wire protocol changes so old clients get a polite "no"
-RELEASE = (0, 5, 0)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
+VERSION = 6  # bump when the wire protocol changes so old clients get a polite "no"
+RELEASE = (0, 6, 0)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
 
 # --------------------------------------------------------------------------
 # Rendering scale
@@ -223,6 +223,61 @@ BREAKIN_TIME = 4.0               # (v0.5: halved from 8) smash, grab, go
 HOTWIRE_TIME = 3.0               # (v0.5: halved from 6)
 DELIVER_MAX_SPEED = 4.0
 CRUSH_TIME = 2.0
+
+# --------------------------------------------------------------------------
+# Violence (v0.6: Bryce wants to punch people, rob them, and have guns).
+# Nobody dies: everyone just hits the deck, cartoon-style, and gets back up
+# furious. Every act of violence is loud, so it all costs heat.
+# --------------------------------------------------------------------------
+PUNCH_RANGE = 1.9                # metres from you, in front of you
+PUNCH_CONE = 0.8                 # radians either side of where you look
+PUNCH_COOLDOWN = 0.4
+PUNCH_KNOCKDOWN = 3.0            # a punched pedestrian stays down this long: long enough to rob
+PUNCH_PLAYER_TUMBLE = 1.0        # punching your mate just knocks them over. Co-op!
+PUNCH_HEAT = 5.0                 # they scream. People hear.
+ROB_TIME = 0.8                   # rifling through a wallet, hold E
+WALLET_MIN, WALLET_MAX = 15, 90  # dollars on an average pedestrian
+WALLET_REFILL = 180.0            # a robbed pedestrian hits an ATM eventually
+ROB_HEAT = 4.0
+SURRENDER_RANGE = 10.0           # point a gun at someone this close and their hands go up
+SURRENDER_CONE = 0.22
+PISTOL_RANGE = 60.0
+PISTOL_COOLDOWN = 0.3
+SHOTGUN_RANGE = 25.0
+SHOTGUN_COOLDOWN = 0.85
+SHOTGUN_PELLETS = 7
+SHOTGUN_SPREAD = 0.13            # radians either side
+SHOT_KNOCKDOWN = 5.0             # hit by a bullet: down, dazed, very upset
+SHOT_PLAYER_TUMBLE = 1.8         # ...and your mate drops whatever they were carrying
+GUNSHOT_HEAT = 8.0               # per shot, if any pedestrian or cop is within earshot
+GUNSHOT_EARSHOT = 50.0
+SHOOT_COP_HEAT = 100.0           # shooting at a police car: straight to maximum. Obviously.
+COP_CAR_HITS = 8                 # pistol rounds (pellets count too) until a cop car catches fire
+TIRE_HIT_RADIUS = 0.9            # a round landing this close to a wheel shreds that tyre
+
+# --------------------------------------------------------------------------
+# Black market (crates along the shop's west wall) and traps
+# --------------------------------------------------------------------------
+PRICE_PISTOL = 350               # comes loaded with PISTOL_AMMO
+PRICE_SHOTGUN = 800
+PRICE_AMMO = 60                  # tops up whatever guns you own
+PRICE_SPIKES = 120
+PRICE_ROADBLOCK = 200
+PISTOL_AMMO = 24
+SHOTGUN_AMMO = 10
+MAX_AMMO = 99
+MAX_TRAPS_EACH = 5
+BUY_TIME = 0.6
+TRAP_PLACE_DIST = 3.5            # traps go down this far in front of you, snapped across the road
+SPIKE_LEN, SPIKE_WID = 6.0, 0.7  # half a road: spikes shred the lane they're in
+SPIKE_USES = 3                   # cars it can shred before the strip is scrap
+ROADBLOCK_LEN, ROADBLOCK_WID = 11.0, 1.0   # the whole road: traffic stops dead and honks
+ROADBLOCK_BREAK_DV = 11.0        # hit it this hard and it's matchwood (same as the eject threshold)
+TRAP_LIFETIME = 150.0
+MAX_TRAPS = 12
+CARJACK_TIME = 1.5               # yank the door, yank the driver
+CARJACK_MAX_SPEED = 2.0          # it has to be (nearly) stopped
+CARJACK_HEAT = 12.0              # worse than a quiet break-in: there's a witness in the gutter
 
 # --------------------------------------------------------------------------
 # Economy (shared wallet)

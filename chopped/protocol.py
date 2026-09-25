@@ -21,7 +21,8 @@ P_JOIN, P_WELCOME, P_REJECT, P_INPUT, P_SNAPSHOT, P_LEAVE, P_SHUTDOWN = range(1,
 HDR = struct.Struct("<2sBB")
 JOIN = struct.Struct("<IB")               # nonce, is_local
 WELCOME = struct.Struct("<BII")           # pid, map_seed, nonce
-INPUT = struct.Struct("<IIIBBBBH")        # seq, client_ms, ack_event, buttons, use, drop, exit, yaw16
+INPUT = struct.Struct("<IIIBBBBHBB")      # seq, client_ms, ack_event, buttons, use, drop, exit, yaw16,
+                                          # fire (click counter), weapon slot
 
 SNAP_HDR = struct.Struct("<IIBiHHBBBBHBBIHI")
 # tick, echo_ms, your_pid, cash, day_left_ds, debt_ds, heat, witness(|128 cooling),
@@ -31,17 +32,20 @@ SNAP_HDR = struct.Struct("<IIBiHHBBBBHBBIHI")
 # Your own physics state at full precision, for client-side prediction. The
 # regular entity rows are 1/16 m fixed point; rewinding to a rounded position
 # and replaying 10 inputs on top of it would make your own car shimmer.
-SELF = struct.Struct("<BBHfffffffffHbB")
+SELF_MOTION = struct.Struct("<BBHfffffffffHbB")
 # mode (0 none / 1 on foot / 2 driving), walk_load, car_id, x, y, vx, vy, ang, w,
 # stamina, regen_delay, speed_mult, power, pull, flags
+# ...followed by 6 bytes of arsenal: weapon, arms bitmask, pistol ammo, shotgun ammo, spikes, roadblocks
 ME_NONE, ME_FOOT, ME_DRIVER = 0, 1, 2
 SF_EXHAUSTED = 1
-COUNTS = struct.Struct("<BBBBBB")
+COUNTS = struct.Struct("<BBBBBBB")
 CAR = struct.Struct("<HBBBBHHHHhhHBBB")
-PLAYER = struct.Struct("<BBBBHHhhHBBBH")
+PLAYER = struct.Struct("<BBBBHHhhHBBBHB")    # ... + weapon
 NPC = struct.Struct("<HBBHHB")
 PICKUP = struct.Struct("<HBHHB")
 DOLLY = struct.Struct("<HHHBBB")        # id, x, y, ang8, part_idx (255 empty), holder pid (0 none)
+TRAP = struct.Struct("<HBHHBB")         # id, kind, x, y, ang8, life left (255 = fresh)
+EV_SHOT = struct.Struct("<BHHHH")       # weapon, from x, y, to x, y
 EV = struct.Struct("<IB")
 EV_SFX = struct.Struct("<BHH")
 
@@ -98,19 +102,26 @@ def encode_text(s, maxlen=80):
 
 # ---------------------------------------------------------------------------
 def encode_self(world, me):
-    """The SELF block: exactly what the client's Predictor needs to rewind to."""
+    """The SELF block: exactly what the client's Predictor needs to rewind to,
+    plus your arsenal (only you need to know how many bullets you've got)."""
+    arsenal = (me.weapon, me.arms, min(255, me.ammo[1]), min(255, me.ammo[2]), me.gear[0], me.gear[1]) \
+        if me is not None else (0, 1, 0, 0, 0, 0)
+    return _encode_motion(world, me) + bytes(arsenal)
+
+
+def _encode_motion(world, me):
     if world.gameover_t > 0:
         me = None             # the world is frozen for the SHOP SEIZED banner: nothing to predict
     if me is not None and me.state == DRIVER:
         car = world.cars.get(me.car_id)
         if car is not None:
-            return SELF.pack(ME_DRIVER, 0, car.id, car.x, car.y, car.vx, car.vy, car.ang, car.w,
-                             0.0, 0.0, 1.0, min(65535, car.power()), -1 if car.pull < 0 else 1, 0)
+            return SELF_MOTION.pack(ME_DRIVER, 0, car.id, car.x, car.y, car.vx, car.vy, car.ang, car.w,
+                                    0.0, 0.0, 1.0, min(65535, car.power()), -1 if car.pull < 0 else 1, 0)
     if me is not None and me.state == FOOT:
-        return SELF.pack(ME_FOOT, me.walk_load(), 0, me.x, me.y, me.vx, me.vy, me.ang, 0.0,
-                         me.stamina, me.regen_delay, me.speed_mult(), 0, 0,
-                         SF_EXHAUSTED if me.exhausted else 0)
-    return SELF.pack(ME_NONE, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0, 0, 0)
+        return SELF_MOTION.pack(ME_FOOT, me.walk_load(), 0, me.x, me.y, me.vx, me.vy, me.ang, 0.0,
+                                me.stamina, me.regen_delay, me.speed_mult(), 0, 0,
+                                SF_EXHAUSTED if me.exhausted else 0)
+    return SELF_MOTION.pack(ME_NONE, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0, 0, 0)
 
 
 def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
@@ -155,12 +166,12 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
         ang = p.spin if p.state == TUMBLE else p.ang
         players.append(PLAYER.pack(p.id, p.color, p.state, flags, _pos(p.x), _pos(p.y),
                                    _vel(p.vx), _vel(p.vy), _ang(ang), h0, h1,
-                                   int(p.stamina * 2.55), p.car_id or 0) + encode_text(p.name, 12))
+                                   int(p.stamina * 2.55), p.car_id or 0, p.weapon) + encode_text(p.name, 12))
     npcs = []
     for n in world.npcs.values():
         d2 = (n.x - px) ** 2 + (n.y - py) ** 2
         if d2 < r2:
-            state = 1 if n.tumble_t > 0 else 2 if n.flee_t > 0 else 0
+            state = 1 if n.tumble_t > 0 else 3 if n.surrender_t > 0 else 2 if n.flee_t > 0 else 0
             npcs.append((d2, NPC.pack(n.id, n.kind, state, _pos(n.x), _pos(n.y),
                                       _ang8(n.spin if state else n.ang))))
     picks = []
@@ -174,22 +185,28 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
     dollies = [DOLLY.pack(d.id, _pos(d.x), _pos(d.y), _ang8(d.ang),
                           PART_INDEX[d.part.type_id] if d.part is not None else NO_PART, d.holder or 0)
                for d in world.dollies.values()]
+    traps = [TRAP.pack(t.id, t.kind, _pos(t.x), _pos(t.y), _ang8(t.ang),
+                       max(0, min(255, int(255 * (1 - t.age / C.TRAP_LIFETIME)))))
+             for t in world.traps.values()]
     evs = []
     for (seq, _t, kind, payload) in world.events:
         if seq <= ack_event:
             continue
         if kind == 0:
             evs.append(EV.pack(seq, 0) + bytes((payload[0],)) + encode_text(payload[1], 60))
-        else:
+        elif kind == 1:
             evs.append(EV.pack(seq, 1) + EV_SFX.pack(payload[0], _pos(payload[1]), _pos(payload[2])))
+        else:
+            w, x0, y0, x1, y1 = payload
+            evs.append(EV.pack(seq, 2) + EV_SHOT.pack(w, _pos(x0), _pos(y0), _pos(x1), _pos(y1)))
         if len(evs) >= 10:
             break
 
     n_np, n_pk = min(len(npcs), 60), min(len(picks), 120)
     while True:
         body = b"".join((head, prompt,
-                         COUNTS.pack(len(cars), len(players), n_np, n_pk, len(evs), len(dollies)),
-                         b"".join(cars), b"".join(players), b"".join(dollies),
+                         COUNTS.pack(len(cars), len(players), n_np, n_pk, len(evs), len(dollies), len(traps)),
+                         b"".join(cars), b"".join(players), b"".join(dollies), b"".join(traps),
                          b"".join(t[1] for t in npcs[:n_np]),
                          b"".join(t[1] for t in picks[:n_pk]),
                          b"".join(evs)))
@@ -205,7 +222,7 @@ class Snapshot:
     __slots__ = ("tick", "time", "echo_ms", "pid", "cash", "rent", "debt", "heat", "witness",
                  "cooling", "cops", "gameover", "run", "hold", "nplayers", "prompt", "ack_input", "day",
                  "rent_due",
-                 "me", "cars", "players", "npcs", "pickups", "dollies", "events", "arrival")
+                 "me", "arsenal", "cars", "players", "npcs", "pickups", "dollies", "traps", "events", "arrival")
 
 
 def _text(data, off):
@@ -225,9 +242,12 @@ def decode_snapshot(payload):
     off = SNAP_HDR.size
     s.prompt, off = _text(data, off)
     # (mode, walk_load, car_id, x, y, vx, vy, ang, w, stamina, regen, speed_mult, power, pull, flags)
-    s.me = SELF.unpack_from(data, off)
-    off += SELF.size
-    nc, npl, nn, npk, nev, ndl = COUNTS.unpack_from(data, off)
+    s.me = SELF_MOTION.unpack_from(data, off)
+    off += SELF_MOTION.size
+    # (weapon, arms bitmask, pistol ammo, shotgun ammo, spike strips, roadblocks)
+    s.arsenal = tuple(data[off:off + 6])
+    off += 6
+    nc, npl, nn, npk, nev, ndl, ntr = COUNTS.unpack_from(data, off)
     off += COUNTS.size
     s.cars = {}
     for _ in range(nc):
@@ -241,15 +261,21 @@ def decode_snapshot(payload):
         f = PLAYER.unpack_from(data, off)
         off += PLAYER.size
         name, off = _text(data, off)
-        # (id, color, state, flags, x, y, vx, vy, ang, h0, h1, stamina, car_id, name)
+        # (id, color, state, flags, x, y, vx, vy, ang, h0, h1, stamina, car_id, name, weapon)
         s.players[f[0]] = [f[0], f[1], f[2], f[3], f[4] / 16.0, f[5] / 16.0, f[6] / 64.0, f[7] / 64.0,
-                           f[8] / 65536.0 * 2 * math.pi, f[9], f[10], f[11] / 2.55, f[12], name]
+                           f[8] / 65536.0 * 2 * math.pi, f[9], f[10], f[11] / 2.55, f[12], name, f[13]]
     s.dollies = {}
     for _ in range(ndl):
         f = DOLLY.unpack_from(data, off)
         off += DOLLY.size
         # (id, x, y, ang, part_idx, holder)
         s.dollies[f[0]] = [f[0], f[1] / 16.0, f[2] / 16.0, f[3] / 256.0 * 2 * math.pi, f[4], f[5]]
+    s.traps = {}
+    for _ in range(ntr):
+        f = TRAP.unpack_from(data, off)
+        off += TRAP.size
+        # (id, kind, x, y, ang, life 0..1)
+        s.traps[f[0]] = [f[0], f[1], f[2] / 16.0, f[3] / 16.0, f[4] / 256.0 * 2 * math.pi, f[5] / 255.0]
     s.npcs = {}
     for _ in range(nn):
         f = NPC.unpack_from(data, off)
@@ -270,8 +296,12 @@ def decode_snapshot(payload):
             color = data[off]
             text, off = _text(data, off + 1)
             s.events.append((seq, 0, (color, text)))
-        else:
+        elif kind == 1:
             sid, x, y = EV_SFX.unpack_from(data, off)
             off += EV_SFX.size
             s.events.append((seq, 1, (sid, x / 16.0, y / 16.0)))
+        else:
+            w, x0, y0, x1, y1 = EV_SHOT.unpack_from(data, off)
+            off += EV_SHOT.size
+            s.events.append((seq, 2, (w, x0 / 16.0, y0 / 16.0, x1 / 16.0, y1 / 16.0)))
     return s
