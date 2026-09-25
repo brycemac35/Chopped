@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from chopped import config as C
 from chopped import sim as S
-from chopped.mapgen import ROAD, LOT, SIDEWALK
+from chopped.mapgen import ROAD, LOT
 from chopped.parts import SLOTS
 
 DT = 1.0 / C.SIM_HZ

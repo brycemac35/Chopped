@@ -13,7 +13,7 @@ import zlib
 
 from . import config as C
 from .parts import SLOTS, PART_INDEX, NO_PART, part_tuned
-from .sim import COP, TRAFFIC, TUMBLE, CUFFED, FOOT, DRIVER
+from .sim import COP, TRAFFIC, TUMBLE, FOOT, DRIVER
 
 MAGIC = b"CH"
 P_JOIN, P_WELCOME, P_REJECT, P_INPUT, P_SNAPSHOT, P_LEAVE, P_SHUTDOWN = range(1, 8)
@@ -89,6 +89,8 @@ def encode_text(s, maxlen=80):
 # ---------------------------------------------------------------------------
 def encode_self(world, me):
     """The SELF block: exactly what the client's Predictor needs to rewind to."""
+    if world.gameover_t > 0:
+        me = None             # the world is frozen for the SHOP SEIZED banner: nothing to predict
     if me is not None and me.state == DRIVER:
         car = world.cars.get(me.car_id)
         if car is not None:

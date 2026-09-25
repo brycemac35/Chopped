@@ -17,7 +17,7 @@ from . import art
 from .art import P, PixelFont
 from .audio import Audio
 from .mapgen import CityMap
-from .net import Server, Client, get_lan_ip
+from .net import Server, Client, get_lan_ips
 from .render import Renderer
 from .ui import Hud, Menu
 from .upnp import UPnP
@@ -100,7 +100,8 @@ class App:
         self.hud = None
         self.paused = False
         self.running = True
-        self.lan_ip = get_lan_ip()
+        ips = get_lan_ips()
+        self.lan_ip, self.other_ips = ips[0], ips[1:3]
         self.use_c = self.drop_c = self.exit_c = 0
         self.bot = Bot() if self.selftest else None
         self.frames = 0
@@ -332,7 +333,6 @@ class App:
         self.hud.draw(low, view, now, info)
         if self.server and now < self.host_banner_until and not self.paused:
             lines = self._host_lines()
-            self.hud._panel((0, 0, 300, 8 * len(lines) + 4), 170)
             low.blit(self.hud._panel((0, 0, 300, 8 * len(lines) + 4), 170), (W // 2 - 150, 64))
             for i, (l, col) in enumerate(lines):
                 self.font.draw(low, l, W // 2, 67 + i * 8, col, align="center")
@@ -343,6 +343,8 @@ class App:
     def _host_lines(self):
         lines = [("YOU ARE HOSTING - TELL YOUR CREW:", P["gold"]),
                  ("LAN: %s:%d" % (self.lan_ip, self.server.port), P["white"])]
+        if self.other_ips:
+            lines.append(("ALSO (VPN/OTHER NETWORKS): %s" % ", ".join(self.other_ips), P["metal_l"]))
         if self.upnp:
             if self.upnp.public_ip:
                 lines.append(("INTERNET: %s:%d" % (self.upnp.public_ip, self.server.port), P["white"]))

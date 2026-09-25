@@ -9,7 +9,6 @@ four-player car-crime game needs.
 """
 
 import math
-import os
 import random
 import socket
 import sys
@@ -61,18 +60,40 @@ def _recv_all(sock, limit=256):
     return out
 
 
-def get_lan_ip():
-    """Best guess at our LAN address: 'connect' a UDP socket to a public IP
-    (no packet is actually sent) and see which interface the OS picked."""
+def _route_ip(probe):
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        s.connect(("10.255.255.255", 1))
-        ip = s.getsockname()[0]
+        s.connect((probe, 1))          # UDP "connect" sends nothing; it just picks a route
+        return s.getsockname()[0]
     except OSError:
-        ip = "127.0.0.1"
+        return None
     finally:
         s.close()
-    return ip
+
+
+def get_lan_ips():
+    """Every IPv4 address a friend might reach us on, best guess first: the
+    interface with the default route, then the rest (a Tailscale/ZeroTier/
+    Radmin address shows up here too, which is exactly what you'd read out
+    to a friend on one). Loopback and link-local junk is filtered out."""
+    found = []
+    for ip in [_route_ip("192.0.2.1"), _route_ip("10.255.255.255")]:
+        if ip:
+            found.append(ip)
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            found.append(info[4][0])
+    except OSError:
+        pass
+    out = []
+    for ip in found:
+        if ip not in out and not ip.startswith(("127.", "169.254.", "0.")):
+            out.append(ip)
+    return out or ["127.0.0.1"]
+
+
+def get_lan_ip():
+    return get_lan_ips()[0]
 
 
 def ms_now():

@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from chopped import config as C
 from chopped import sim as S
 from chopped import protocol as P
-from chopped.parts import Part, SLOTS, SLOT_ANCHOR
+from chopped.parts import Part, SLOT_ANCHOR
 
 DT = 1.0 / C.SIM_HZ
 
