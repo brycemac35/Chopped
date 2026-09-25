@@ -9,36 +9,52 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
 
 ---
 
-## 1. Your tasks, in order
+## 1. Status and your tasks, in order
 
-### Task 1: Build `dist\Chopped.exe` on Windows (never done yet)
-The code was written and tested in a Linux cloud box. PyInstaller only builds for the operating system it runs on, and that box couldn't download a Windows Python, so **no Windows build has ever been made.**
+### Where things stand (Sept 25, 2026, session 2)
+- **Windows exe:** it's built by GitHub Actions (`.github/workflows/build.yml`) on `windows-latest`. The workflow:
+  - runs all tests on Windows and Linux
+  - generates the icon, builds from `Chopped.spec`, and smoke-tests the built exe (`tools/smoke_exe.py`: a solo selftest, then a host exe and a client exe over UDP)
+  - uploads the **Chopped-windows** artifact. A `v*` tag also publishes a GitHub Release.
+  - The same recipe was verified locally on Linux: build, then smoke test, **passed**.
+  - **Whether it has run green on GitHub yet: check the Actions tab.** Session 2 couldn't push at first, because the Claude GitHub App lacked access to `brycemac35/Chopped`.
+- **Gaps closed in session 2:**
+  - client-side prediction
+  - box collision
+  - moving traffic and fleeing pedestrians
+  - the hand dolly and the parts counter
+  - exe icon and version info
+  - VPN-proof host IP display
+  - racing stripes on the wrong car kind
+  - unobtainable exploded-cop engines
+- **Tests:** 56, all OK on Linux with Python 3.12, including the 2-process game loop at about 61 fps.
 
-1. Check Python: `py -3.12 --version`. If it's missing, install Python 3.12 from python.org and tick "Add to PATH". Use 3.12 specifically: `miniupnpc` has Windows wheels only up to 3.13, and `pygame-ce` supports 3.10–3.15.
-2. Run `build_windows.bat`. It creates `.venv`, installs pinned deps plus `pyinstaller==6.22.3`, builds a one-file windowed exe, then runs `dist\Chopped.exe --selftest --frames 300`.
-3. If the selftest fails, the likely causes are:
-   - a missing hidden import (check `Chopped.spec` or the `--collect-submodules chopped` flag)
-   - SDL audio on a machine without an output device (audio is supposed to disable itself quietly)
-   - antivirus quarantining the onefile exe (a false positive that's common with PyInstaller)
-4. Test by hand. Run `dist\Chopped.exe --host`, then in a second window `dist\Chopped.exe --join 127.0.0.1 --name TWO`. Two instances on one PC work because the client uses an ephemeral port. Play the loop once: break in, hotwire, drive into the garage, strip, sell.
-5. Accept the Windows Firewall prompt (Private networks).
+### Task 1: Confirm the Windows build on GitHub
+1. Actions tab: the latest **Build** run should be green. Download the **Chopped-windows** artifact.
+2. If it failed, the smoke logs are the **smoke-logs** artifact. The likely causes are the same as before:
+   - a missing hidden import
+   - SDL audio on a headless runner (it should disable itself)
+   - a Windows-only path or socket difference in the tests
+3. By hand on a real PC: run `Chopped.exe --host`, then `Chopped.exe --join 127.0.0.1 --name TWO --fake-lag 150`. With prediction the joiner's own car should feel instant. Compare with `--no-predict`.
+4. Accept the Windows Firewall prompt (Private networks). SmartScreen will warn because the exe is unsigned: click "More info", then "Run anyway".
 
 ### Task 2: Real two-PC test
-- LAN first. Then over the internet: UPnP auto-forwards UDP 27015; the fallbacks are manual port forwarding or Tailscale/ZeroTier.
+- Try LAN first, then the internet: UPnP, then a manual forward of UDP 27015, then Tailscale/ZeroTier (the host banner now lists VPN addresses too).
 - Watch for:
-  - input lag on the joining player: expected ~1 round trip, since there's no prediction yet (see Task 3)
-  - rubber-banding
-  - toasts arriving twice
-  - any disagreement in cash or heat between players
+  - prediction corrections on the joining player (they should only show when something the host knew about hit you)
+  - traffic behaving oddly around the shop entrance
+  - dolly handoffs between players
+  - any disagreement in cash or heat
 
-### Task 3: Known gaps, in rough order of player impact
-- **No client-side prediction.** The host feels no lag, but remote players feel a round trip of delay on their own car and avatar. The biggest improvement would be predicting the local player's own car or avatar with `sim.py`'s physics and reconciling it against snapshots.
-- **Traffic and AI:** no moving civilian traffic, and pedestrians don't flee chases.
-- **Collision:** cars collide as two circles, so buildings feel slightly round.
-- **Content:**
-  - no hand dolly, so engines only pay out via "crush shell"
-  - no buying parts
-  - no exe icon
+### Task 3: Remaining gaps / ideas, in rough order of player impact
+- **Code signing:** SmartScreen warnings scare friends. An EV certificate or Azure Trusted Signing would fix it; that's Bryce's call because it costs money.
+- **Remote entities are drawn 100 ms in the past.** That's fine for most things, but hitting a moving car another player is driving can look late. Lag compensation for car-vs-car would be the next step.
+- **Traffic:** there are no traffic lights, and traffic never uses the shop's driveway. Ask Bryce whether traffic drivers should be heat witnesses; they aren't, on purpose (see section 4).
+- **Content ideas:**
+  - gamepad support (pygame-ce `_sdl2.controller`)
+  - a second dolly for 3–4 player crews
+  - a proper parts-counter menu instead of "next best upgrade"
+  - day/night
 
 ---
 
@@ -48,21 +64,26 @@ The code was written and tested in a Linux cloud box. PyInstaller only builds fo
 - **`sim.py` must not import pygame.** It's the authoritative, testable simulation.
 - **All tuning numbers live in `chopped/config.py`**, each with a comment explaining why.
 - **Bump `config.VERSION`** whenever the wire protocol changes. Clients with a different version get rejected politely.
-- **Keep packets under `MAX_PACKET` (1150 bytes).** `tests/test_misc.py` checks a worst-case snapshot.
+- **Keep packets under `MAX_PACKET` (1150 bytes).** `tests/test_misc.py` checks a worst-case snapshot, rush-hour traffic included.
+- **Movement and collision code lives in `sim.Physics`** (`_drive`, `_car_vs_world`, `_car_pair`, `_walk`, `_body_vs_*`). The client's `predict.Predictor` inherits the same class. If the server's physics reads anything the client doesn't get, prediction silently diverges. Anything new that affects your own movement must go in the SELF block (`protocol.encode_self`). `tests/test_predict.py` fails loudly if the two drift apart.
 - **Run the tests before claiming anything works:**
   ```
   set SDL_VIDEODRIVER=dummy & set SDL_AUDIODRIVER=dummy & python -m unittest discover -s tests -v
   ```
-  (On Linux/macOS: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests -v`.) At handoff: **25 tests, all OK**, and `--selftest` ran at about 61 fps.
+  (On Linux/macOS: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests -v`.) At handoff (session 2): **56 tests, all OK**, and `--selftest` ran at about 61 fps.
 
 ## 3. Architecture (details in README.md)
-- `main.py` is the command line: `--host`, `--join IP[:PORT]`, `--server` (headless), `--selftest`, `--port`, `--name`, `--mute`, `--no-upnp`.
-- **Networking model:**
+- `main.py` is the command line: `--host`, `--join IP[:PORT]`, `--server` (headless), `--selftest`, `--port`, `--name`, `--mute`, `--no-upnp`, `--log FILE`, `--fake-lag MS`, `--no-predict`.
+- **Networking model (protocol VERSION 4):**
   - The host runs the simulation at 60 Hz in-process.
-  - Clients send inputs at 30 Hz. One-shot keys are sent as counters, so a lost packet can't eat a tap.
-  - The server sends each client its own zlib snapshot at 20 Hz, with far-away entities culled beyond 95 m.
-  - Remote entities are interpolated 100 ms in the past. The host's own window is a 60 Hz loopback client.
+  - Clients send one input per 60 Hz tick. One-shot keys are sent as counters, so a lost packet can't eat a tap.
+  - The server sends each client its own zlib snapshot at 20 Hz. Far-away peds, pickups and traffic are culled beyond 95 m.
+  - Each snapshot carries `ack_input` (the last input seq applied) and a SELF block: your full-precision car or avatar state, walk load and speed multiplier.
+  - Every client, the host's loopback included, predicts its own entity with `sim.Physics`, rewinds and replays unacked inputs, and decays leftover error at `PREDICT_CORRECT_RATE`.
+  - Everything else is interpolated 100 ms in the past.
   - Toasts and sound events are resent until acknowledged.
+- **Collision:** cars are 4.4 × 2.4 m oriented boxes (SAT). The map's solid tiles are greedy-merged into 116 rectangles, so walls have no seams to snag on. People are circles.
+- **Traffic:** `TRAFFIC` kind cars follow waypoints on the road grid (right-hand lanes, pure pursuit). Cars that drift more than 140 m from every player are recycled off-screen. `World.traffic_target = 0` turns traffic off (the tests do this).
 - **City:** generated deterministically from a seed (`mapgen.py`), so clients rebuild it locally and it's never sent over the network.
 - **Rendering:** the game draws to a 480×270 surface and scales it up with nearest-neighbour. F11 toggles fullscreen.
 
@@ -91,7 +112,7 @@ The code was written and tested in a Linux cloud box. PyInstaller only builds fo
 - **Delivery:** the car must be fully inside the garage and moving under 4 m/s. Heat drops to 0, the cops leave, and the car never drives again.
 - **Carrying:**
   - Two hands. Wheels, ECUs and bucket seats take one hand; panels, exhausts, gearboxes and stock seats take both.
-  - Engines are dolly-only: they can't be carried.
+  - Engines are dolly-only: they can't be carried. Use the hand dolly in the shop.
   - Stamina pool is 100. Sprint drain is 12, 22 or 38 per second (empty, one-handed, two-handed). Walking two-handed drains 8/s.
   - Loose parts vanish after 10 minutes.
 - **Money:**
@@ -99,6 +120,12 @@ The code was written and tested in a Linux cloud box. PyInstaller only builds fo
   - 120 s below $0 means SHOP SEIZED. The new run resets cash, city cars, heat and loose parts, but **the personal car keeps its mods**.
   - A stock Kei Hatch is worth about $1,070 in parts.
 - **Specials:** 12% of cars are clown cars (4 clowns burst out). 15% have an angry owner who chases at 5.5 m/s and counts as a heat witness.
+- **Session 2 decisions, flagged for Bryce** (all tunable in `config.py`):
+  - **Traffic drivers are not heat witnesses**, and their horns don't confuse cops. This keeps the agreed heat balance. Making them witnesses would be a one-line change in `_witness_scan`.
+  - **Traffic can't be stolen while driven.** A hard crash (at or above the eject delta-v) makes the driver bail and lock it. It becomes a normal LOCKED civilian car: 8 s break-in, alarm, +10 heat.
+  - **Dolly:** there's one. Stripping an engine onto it uses the existing 20 s engine strip time, and the hood must come off first. Speed is ×0.85 empty and ×0.62 loaded. Loaded counts as two-handed for stamina. It returns home after 90 s abandoned outside the shop. Crushing still pays 50% for engines left in.
+  - **Parts counter:** at the tune-up bench with empty hands, it sells the next tier at 1.6× base value, condition 1.0. The replaced part drops on the floor. No credit.
+  - Pedestrians flee but still witness.
 - **Decisions the builder made and flagged** (fine to keep):
   - Cop dispatch stays on until heat reaches 0.
   - The horn has a 7 s cooldown per cop.
