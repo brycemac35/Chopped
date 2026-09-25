@@ -159,12 +159,12 @@ class TestPredictionOverUDP(unittest.TestCase):
         x0 = v0.me[4]
         server_x0 = c.latest.players[c.pid][4]
         # press RIGHT: within 50 ms (well under one round trip) we should see it
-        pump([c], 0.05, [S.InputState(S.B_RIGHT)])
+        pump([c], 0.05, [S.InputState(S.B_UP)])        # yaw 0 = looking east
         moved = c.view().me[4] - x0
         self.assertGreater(moved, 0.08, "own avatar should move before the server has even heard")
         self.assertAlmostEqual(c.latest.players[c.pid][4], server_x0, delta=0.01,
                                msg="(sanity) the server's version hasn't moved yet")
-        pump([c], 0.8, [S.InputState(S.B_RIGHT)])
+        pump([c], 0.8, [S.InputState(S.B_UP)])
         pump([c], 0.8, [S.InputState(0)])
         v = c.view()
         sx = c.latest.players[c.pid][4]

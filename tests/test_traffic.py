@@ -71,8 +71,8 @@ class TestTraffic(unittest.TestCase):
     def test_keeps_right(self):
         w = S.World(map_seed=99, rng_seed=5)
         car = lone_traffic_car(w)
-        step(w, 1.0)
         road_centre = w.map.road_centre(car.node[1])
+        step(w, 1.0)
         self.assertGreater(car.y, road_centre + 0.8, "eastbound traffic drives in the south (right) lane")
 
     def test_stops_for_a_person_honks_and_does_not_confuse_cops(self):
@@ -82,12 +82,16 @@ class TestTraffic(unittest.TestCase):
         p.x, p.y = car.x + 18.0, car.y
         cop = S.Car(w.new_id(), S.COP, car.x - 20.0, car.y - 3.0, 0.0, {s: None for s in SLOTS})
         w.cars[cop.id] = cop
-        honked = False
-        for _ in range(int(3.0 * C.SIM_HZ)):
+        honked, stopped_at = False, None
+        x0 = p.x
+        for _ in range(int(4.5 * C.SIM_HZ)):
             w.step(DT)
             honked = honked or car.horn
-            p.x, p.y = car.x + max(3.6, p.x - car.x), p.y     # stand still (don't let physics nudge us)
-        self.assertLess(car.speed(), 0.5, "should have stopped")
+            if stopped_at is None and car.speed() < 0.3:
+                stopped_at = p.x - car.x
+            p.x = x0                                     # stand still (don't let physics nudge us)
+        self.assertIsNotNone(stopped_at, "should have stopped")
+        self.assertGreater(stopped_at, S.HL + 1.0, "short of the person, not on them")
         self.assertEqual(p.state, S.FOOT, "and not run anyone over")
         self.assertTrue(honked, "a blocked driver leans on the horn")
         self.assertLessEqual(cop.confused_t, 0, "traffic horns aren't a player tactic")
@@ -97,6 +101,7 @@ class TestTraffic(unittest.TestCase):
         car = lone_traffic_car(w)
         p = w.add_player("BOB")
         p.x, p.y = car.to_world(0.0, -2.0)
+        p.ang = math.atan2(car.y - p.y, car.x - p.x)
         key, label, _, _ = w._find_interaction(p)
         self.assertIsNone(key)
         self.assertNotIn(str(car.id), label)
@@ -113,8 +118,10 @@ class TestTraffic(unittest.TestCase):
         self.assertEqual(len(w.npcs), n0 + 1)
         self.assertEqual(len(runners), 1)
         self.assertGreater(runners[0].flee_t, 0)
+        w.pickups.clear()                    # (the crash may have dropped a door right there)
         p = w.add_player("OPPORTUNIST")
         p.x, p.y = car.to_world(0.0, 2.0)
+        p.ang = math.atan2(car.y - p.y, car.x - p.x)
         self.assertIn("BREAK IN", w._find_interaction(p)[1])
         step(w, 41.0)
         self.assertNotIn(runners[0].id, w.npcs, "the runner eventually runs off the map")

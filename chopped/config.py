@@ -9,8 +9,8 @@ engine and exactly no maths textbooks).
 import math
 
 GAME_TITLE = "Chopped"
-VERSION = 4  # bump when the wire protocol changes so old clients get a polite "no"
-RELEASE = (0, 4, 0)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
+VERSION = 5  # bump when the wire protocol changes so old clients get a polite "no"
+RELEASE = (0, 5, 0)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
 
 # --------------------------------------------------------------------------
 # Rendering scale
@@ -65,8 +65,10 @@ NET_CULL_RADIUS = 95.0           # peds/pickups farther than this aren't sent to
 # On-foot
 # --------------------------------------------------------------------------
 PLAYER_RADIUS = 0.4
-WALK_SPEED = 4.6                 # brisk "I'm definitely not stealing anything" pace
-SPRINT_SPEED = 7.8               # Usain Bolt with a car door
+# (v0.5: everything faster -- Bryce wanted it to play quicker, and first-person
+# at jogging pace feels like wading through soup)
+WALK_SPEED = 6.0                 # brisk "I'm definitely not stealing anything" pace
+SPRINT_SPEED = 10.0              # Usain Bolt with a car door
 TWO_HAND_SPEED_MULT = 0.82       # hoods are awkward, doors are worse
 EXHAUSTED_SPEED_MULT = 0.55
 STAMINA_MAX = 100.0
@@ -81,12 +83,14 @@ INTERACT_RANGE_PICKUP = 1.6
 INTERACT_RANGE_BENCH = 2.2
 INTERACT_RANGE_DOLLY = 1.8
 TAP_HOLD = 0.2                   # holds shorter than this fire on a single tap
+AIM_REACH = 1.0                  # you interact with whatever's this far in front of your face
+CAR_AIM_RANGE = 1.5              # ...if the car's bodywork is within this of that point
 
 # The hand dolly: the only way to move an engine without crushing the car.
 DOLLY_COUNT = 1                  # one hand truck. Co-op means taking turns. And arguing.
 DOLLY_SPEED_MULT = 0.85          # pushing an empty dolly is basically a brisk walk
 DOLLY_LOADED_SPEED_MULT = 0.62   # an engine on a hand truck: slow, heavy, deeply satisfying
-DOLLY_LOAD_TIME = 2.0            # tipping a loose engine onto it
+DOLLY_LOAD_TIME = 1.0            # tipping a loose engine onto it
 DOLLY_OFFSET = 1.1               # it rolls along this far in front of you
 DOLLY_RETURN_TIME = 90.0         # left unattended outside the shop this long -> "someone" brings it back
 
@@ -179,8 +183,8 @@ CUFFED_TIME = 5.0
 # --------------------------------------------------------------------------
 # Traffic & NPCs
 # --------------------------------------------------------------------------
-MAX_CIVILIAN_CARS = 4
-CIV_RESPAWN_DELAY = 5.0
+MAX_CIVILIAN_CARS = 6            # (v0.5: was 4) more marks on the street = less wandering around
+CIV_RESPAWN_DELAY = 3.0
 CIV_SPAWN_MIN_DIST = 25.0
 ABANDON_TOW_TIME = 60.0          # (our call) stolen cars left far from everyone get towed so the city refills
 ABANDON_DIST = 110.0
@@ -213,25 +217,29 @@ CLOWN_LIFETIME = 40.0
 CLOWN_SPEED = 3.2
 OWNER_CHANCE = 0.15
 OWNER_SPAWN_DIST = 8.0
-OWNER_SPEED = 5.5                # faster than walking, slower than sprinting: he's in slippers
+OWNER_SPEED = 7.0                # faster than walking, slower than sprinting: he's in slippers
 OWNER_GIVE_UP = 90.0
-BREAKIN_TIME = 8.0
-HOTWIRE_TIME = 6.0
+BREAKIN_TIME = 4.0               # (v0.5: halved from 8) smash, grab, go
+HOTWIRE_TIME = 3.0               # (v0.5: halved from 6)
 DELIVER_MAX_SPEED = 4.0
-CRUSH_TIME = 4.0
+CRUSH_TIME = 2.0
 
 # --------------------------------------------------------------------------
 # Economy (shared wallet)
 # --------------------------------------------------------------------------
 START_CASH = 300
-RENT_AMOUNT = 150
-RENT_PERIOD = 60.0
+# Rent is due once a day, at midnight, and the landlord gets greedier every day:
+# day 1 is $100, day 2 $175, day 3 $250... Early days are a breather, by day 6
+# you're paying more than the old $150-a-minute and it only goes up.
+DAY_LENGTH = 180.0               # seconds: dawn to midnight
+RENT_BASE = 100
+RENT_PER_DAY = 75
 DEBT_GRACE = 120.0               # two minutes in the red and the landlord changes the locks
 GAMEOVER_BANNER = 6.0
 SHELL_VALUE = 150
 CRUSH_DOLLY_FRACTION = 0.5
-SELL_TIME = 1.0
-INSTALL_TIME = 3.0
+SELL_TIME = 0.5                  # (v0.5: halved)
+INSTALL_TIME = 1.5               # (v0.5: halved)
 PICKUP_TIME = 0.3
 BUY_MARKUP = 1.6                 # the parts counter charges 60% over street value: stealing stays
                                  # the better deal, buying is for when you want it NOW
@@ -240,6 +248,10 @@ PICKUP_SHRINK = 30.0             # last 30 s it visibly shrinks
 MAX_PICKUPS = 90
 
 TOAST_TIME = 3.5
+
+
+def rent_for_day(day):
+    return RENT_BASE + RENT_PER_DAY * (max(1, day) - 1)
 
 
 def lerp(a, b, t):

@@ -223,13 +223,13 @@ class Server:
             return
         conn.last_heard = now
         if ptype == P.P_INPUT and len(data) >= off + P.INPUT.size:
-            seq, cms, ack, buttons, use, drop, ex = P.INPUT.unpack_from(data, off)
+            seq, cms, ack, buttons, use, drop, ex, yaw = P.INPUT.unpack_from(data, off)
             if seq <= conn.input_seq:
                 return                     # stale/out-of-order: newer state already applied
             conn.input_seq = seq
             conn.echo_ms = cms
             conn.ack_event = max(conn.ack_event, ack)
-            self.world.set_input(conn.pid, InputState(buttons, use, drop, ex))
+            self.world.set_input(conn.pid, InputState(buttons, use, drop, ex, P.unang16(yaw)))
         elif ptype == P.P_LEAVE:
             self._drop(conn, "left")
 
@@ -406,11 +406,13 @@ class Client:
             due += 1
             self.input_seq += 1
             i = self.inp
+            y16 = P.ang16(i.yaw)
             self._send(P.header(P.P_INPUT) + P.INPUT.pack(
                 self.input_seq, ms_now(), self.last_event, i.buttons & 0xFF,
-                i.use_count & 0xFF, i.drop_count & 0xFF, i.exit_count & 0xFF))
+                i.use_count & 0xFF, i.drop_count & 0xFF, i.exit_count & 0xFF, y16))
             if self.predictor is not None:
-                self.predictor.push_input(self.input_seq, i.buttons & 0xFF)
+                # predict with the yaw exactly as the server will decode it
+                self.predictor.push_input(self.input_seq, i.buttons & 0xFF, P.unang16(y16))
         if now - self.last_input > 0.25:
             self.last_input = now      # window was dragged / laptop napped: don't machine-gun inputs
 

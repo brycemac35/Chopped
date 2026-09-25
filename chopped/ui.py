@@ -69,7 +69,7 @@ class Hud:
         cash = ("-$%s" % "{:,}".format(-snap.cash)) if snap.cash < 0 else "$%s" % "{:,}".format(snap.cash)
         f.draw(low, "CASH", 5, 5, P["white"])
         f.draw(low, cash, 26, 3, cash_col, scale=2)
-        f.draw(low, "RENT $%d IN %s" % (C.RENT_AMOUNT, mmss(snap.rent)), 5, 16, P["white"])
+        f.draw(low, "DAY %d  RENT $%d IN %s" % (snap.day, snap.rent_due, mmss(snap.rent)), 5, 16, P["white"])
         if snap.cash < 0:
             left = C.DEBT_GRACE - snap.debt
             f.draw(low, "IN THE RED! SEIZED IN %s" % mmss(left), 5, 23,

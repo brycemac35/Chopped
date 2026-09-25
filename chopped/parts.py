@@ -38,9 +38,10 @@ SLOT_ANCHOR = {
     "Hood": (1.7, 0.0), "DoorL": (0.0, -1.35), "DoorR": (0.0, 1.35),
     "BumperF": (2.3, 0.0), "BumperR": (-2.3, 0.3), "Seats": (-0.2, 0.6),
 }
-# How long (s) holding E takes to rip each slot out. Engines take forever on purpose.
-STRIP_TIME = {"wheel": 4.0, "hood": 6.0, "door": 6.0, "bumper": 6.0,
-              "engine": 20.0, "trans": 5.0, "ecu": 5.0, "exhaust": 5.0, "seat": 5.0}
+# How long (s) holding E takes to rip each slot out. Engines take ages on purpose.
+# (v0.5: all halved -- faster game.)
+STRIP_TIME = {"wheel": 2.0, "hood": 3.0, "door": 3.0, "bumper": 3.0,
+              "engine": 10.0, "trans": 2.5, "ecu": 2.5, "exhaust": 2.5, "seat": 2.5}
 
 DOLLY = 3  # bulk value meaning "you'd need a dolly"
 

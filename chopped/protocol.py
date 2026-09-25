@@ -21,11 +21,12 @@ P_JOIN, P_WELCOME, P_REJECT, P_INPUT, P_SNAPSHOT, P_LEAVE, P_SHUTDOWN = range(1,
 HDR = struct.Struct("<2sBB")
 JOIN = struct.Struct("<IB")               # nonce, is_local
 WELCOME = struct.Struct("<BII")           # pid, map_seed, nonce
-INPUT = struct.Struct("<IIIBBBB")         # seq, client_ms, ack_event, buttons, use, drop, exit
+INPUT = struct.Struct("<IIIBBBBH")        # seq, client_ms, ack_event, buttons, use, drop, exit, yaw16
 
-SNAP_HDR = struct.Struct("<IIBiHHBBBBHBBI")
-# tick, echo_ms, your_pid, cash, rent_ds, debt_ds, heat, witness(|128 cooling),
-# cops, gameover_ds, run, hold_byte, nplayers_total, ack_input (last input seq applied for you)
+SNAP_HDR = struct.Struct("<IIBiHHBBBBHBBIHI")
+# tick, echo_ms, your_pid, cash, day_left_ds, debt_ds, heat, witness(|128 cooling),
+# cops, gameover_ds, run, hold_byte, nplayers_total, ack_input (last input seq applied for you),
+# day, rent_due
 
 # Your own physics state at full precision, for client-side prediction. The
 # regular entity rows are 1/16 m fixed point; rewinding to a rounded position
@@ -77,6 +78,15 @@ def _ang(a):
     return int((a % (2 * math.pi)) / (2 * math.pi) * 65536) & 0xFFFF
 
 
+def ang16(a):
+    return int((a % (2 * math.pi)) / (2 * math.pi) * 65536) & 0xFFFF
+
+
+def unang16(v):
+    a = v / 65536.0 * 2 * math.pi
+    return a - 2 * math.pi if a > math.pi else a
+
+
 def _ang8(a):
     return int((a % (2 * math.pi)) / (2 * math.pi) * 256) & 0xFF
 
@@ -113,10 +123,10 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
                            world.unseen_t >= C.HEAT_COOL_DELAY else 0)
     head = SNAP_HDR.pack(
         world.tick & 0xFFFFFFFF, echo_ms & 0xFFFFFFFF, pid, int(world.cash),
-        min(65535, max(0, int(world.rent_t * 10))), min(65535, max(0, int(world.debt_t * 10))),
+        min(65535, max(0, int(world.day_t * 10))), min(65535, max(0, int(world.debt_t * 10))),
         int(round(world.heat)), wit, cops, min(255, max(0, int(world.gameover_t * 10))),
         world.run & 0xFFFF, int((me.hold_frac if me else 0) * 255), len(world.players),
-        max(0, ack_input) & 0xFFFFFFFF)
+        max(0, ack_input) & 0xFFFFFFFF, min(65535, world.day), min(0xFFFFFFFF, world.rent_due()))
     prompt = encode_text(me.prompt if me else "") + encode_self(world, me)
 
     r2 = C.NET_CULL_RADIUS ** 2
@@ -193,7 +203,8 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
 
 class Snapshot:
     __slots__ = ("tick", "time", "echo_ms", "pid", "cash", "rent", "debt", "heat", "witness",
-                 "cooling", "cops", "gameover", "run", "hold", "nplayers", "prompt", "ack_input",
+                 "cooling", "cops", "gameover", "run", "hold", "nplayers", "prompt", "ack_input", "day",
+                 "rent_due",
                  "me", "cars", "players", "npcs", "pickups", "dollies", "events", "arrival")
 
 
@@ -206,7 +217,7 @@ def decode_snapshot(payload):
     data = zlib.decompress(payload)
     s = Snapshot()
     (s.tick, s.echo_ms, s.pid, s.cash, rent, debt, s.heat, wit, s.cops, go, s.run, hold,
-     s.nplayers, s.ack_input) = SNAP_HDR.unpack_from(data, 0)
+     s.nplayers, s.ack_input, s.day, s.rent_due) = SNAP_HDR.unpack_from(data, 0)
     s.time = s.tick / C.SIM_HZ
     s.rent, s.debt, s.gameover = rent / 10.0, debt / 10.0, go / 10.0
     s.witness, s.cooling = wit & 127, bool(wit & 128)

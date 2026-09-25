@@ -21,7 +21,14 @@ def step(w, secs):
 
 def press(p, buttons):
     i = p.input
-    p.input = S.InputState(buttons, i.use_count, i.drop_count, i.exit_count)
+    p.input = S.InputState(buttons, i.use_count, i.drop_count, i.exit_count, i.yaw)
+
+
+def face(p, x, y):
+    """First person: look at (x, y)."""
+    i = p.input
+    p.input = S.InputState(i.buttons, i.use_count, i.drop_count, i.exit_count, math.atan2(y - p.y, x - p.x))
+    p.ang = p.input.yaw
 
 
 def quiet_world(seed=4242):
@@ -53,8 +60,9 @@ class TestCoreLoop(unittest.TestCase):
         car = civ_cars(w)[0]
         self.assertEqual(car.state, S.LOCKED)
         car.special = None
-        # --- break in: hold E 8 s at the driver door
+        # --- break in: hold E at the driver door, looking at it
         p.x, p.y = car.to_world(0.0, -2.0)
+        face(p, car.x, car.y)
         press(p, S.B_USE)
         step(w, C.BREAKIN_TIME - 0.5)
         self.assertEqual(car.state, S.LOCKED, "break-in finished too early")
@@ -95,9 +103,10 @@ class TestCoreLoop(unittest.TestCase):
         # --- strip the front-left wheel (4 s)
         car.vx = car.vy = car.w = 0.0
         p.x, p.y = car.to_world(1.4, -2.1)
+        face(p, *car.to_world(1.4, -1.3))
         wheel = car.parts["WheelFL"]
         press(p, S.B_USE)
-        step(w, 4.1)
+        step(w, S.STRIP_TIME["wheel"] + 0.1)
         self.assertIsNone(car.parts["WheelFL"])
         self.assertEqual(p.hands, [wheel])
         press(p, 0)
@@ -105,9 +114,10 @@ class TestCoreLoop(unittest.TestCase):
         # --- sell it (1 s at the sell bench)
         bx, by, bw, bh = w.map.sell_bench
         p.x, p.y = bx + bw / 2, by + bh + 1.0
+        face(p, bx + bw / 2, by)
         cash0 = w.cash
         press(p, S.B_USE)
-        step(w, 1.1)
+        step(w, C.SELL_TIME + 0.1)
         self.assertEqual(p.hands, [])
         self.assertEqual(w.cash, cash0 + wheel.value)
         press(p, 0)
@@ -118,20 +128,23 @@ class TestCoreLoop(unittest.TestCase):
         p.hands = [Part("ecu_tuned", 1.0)]
         tx, ty, tw, th = w.map.tune_bench
         p.x, p.y = tx + tw / 2, ty + th + 1.0
+        face(p, tx + tw / 2, ty)
         n_pick = len(w.pickups)
         press(p, S.B_USE)
-        step(w, 3.1)
+        step(w, C.INSTALL_TIME + 0.1)
         self.assertEqual(personal.parts["ECU"].type_id, "ecu_tuned")
         self.assertEqual(p.hands, [])
         self.assertEqual(len(w.pickups), n_pick + 1, "replaced ECU should drop out")
         self.assertIn(old_ecu, [pk.part for pk in w.pickups.values()])
         press(p, 0)
-        # --- rent tick
+        # --- midnight: rent for day 1, then day 2 costs more
         cash0 = w.cash
-        w.rent_t = 0.001
+        w.day_t = 0.001
         w.step(DT)
-        self.assertEqual(w.cash, cash0 - C.RENT_AMOUNT)
-        self.assertAlmostEqual(w.rent_t, C.RENT_PERIOD, delta=0.1)
+        self.assertEqual(w.cash, cash0 - C.RENT_BASE)
+        self.assertEqual(w.day, 2)
+        self.assertEqual(w.rent_due(), C.RENT_BASE + C.RENT_PER_DAY)
+        self.assertAlmostEqual(w.day_t, C.DAY_LENGTH, delta=0.1)
         # --- debt -> SHOP SEIZED -> new run
         personal.x += 30.0          # drive it off somewhere; it should come home
         w.cash = -10
@@ -143,6 +156,7 @@ class TestCoreLoop(unittest.TestCase):
         step(w, C.GAMEOVER_BANNER + 0.2)
         self.assertEqual(w.run, 2)
         self.assertEqual(w.cash, C.START_CASH)
+        self.assertEqual(w.day, 1, "a new run starts back on day 1")
         self.assertEqual(w.heat, 0.0)
         self.assertEqual(len(w.pickups), 0)
         self.assertNotIn(car.id, w.cars, "half-stripped cars are removed on reset")
@@ -163,7 +177,8 @@ class TestCoreLoop(unittest.TestCase):
             if s != "Engine":
                 car.parts[s] = None
         engine = car.parts["Engine"]
-        p.x, p.y = car.to_world(2.5, 0.0)
+        p.x, p.y = car.to_world(2.7, 0.0)
+        face(p, car.x, car.y)
         key, label, dur, act = w._find_interaction(p)
         self.assertIn("CRUSH", label)
         cash0 = w.cash
@@ -178,7 +193,8 @@ class TestCoreLoop(unittest.TestCase):
         car = civ_cars(w)[0]
         car.state = S.DELIVERED
         car.parts["Hood"] = None
-        p.x, p.y = car.to_world(1.3, 0.0)     # standing on the engine, basically
+        p.x, p.y = car.to_world(2.6, 0.0)     # at the nose, looking into the engine bay
+        face(p, car.x, car.y)
         key, label, dur, act = w._find_interaction(p)
         self.assertIsNone(key)
         self.assertIn("DOLLY", label)
@@ -324,6 +340,7 @@ class TestCops(unittest.TestCase):
         pk = near[0]
         step(w, 0.5)
         b.x, b.y = pk.x + 0.3, pk.y
+        face(b, pk.x, pk.y)
         press(b, S.B_USE)
         step(w, C.PICKUP_TIME + 0.1)
         self.assertEqual(len(b.hands), 1)
@@ -458,3 +475,28 @@ class TestSpecials(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDays(unittest.TestCase):
+    def test_rent_goes_up_every_day(self):
+        w = quiet_world()
+        cash = []
+        for day in range(1, 5):
+            self.assertEqual(w.day, day)
+            c0 = w.cash
+            w.day_t = 0.001
+            w.step(DT)
+            cash.append(c0 - w.cash)
+        self.assertEqual(cash, [C.rent_for_day(d) for d in range(1, 5)])
+        self.assertEqual(cash, sorted(cash), "the landlord only ever gets greedier")
+        self.assertLess(cash[0], 150, "day 1 is cheaper than the old $150-a-minute")
+
+    def test_day_summary_counts_the_haul(self):
+        w = quiet_world()
+        p = w.add_player("ALICE")
+        p.hands = [Part("whl_stock_alloy", 1.0)]
+        w._sell(p)
+        w.day_t = 0.001
+        w.step(DT)
+        texts = [e[3][1] for e in w.events if e[2] == 0]
+        self.assertTrue(any("DAY 1 DONE" in t and "1 PARTS" in t for t in texts), texts)

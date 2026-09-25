@@ -78,17 +78,17 @@ class Predictor(Physics):
         self.car_id = 0
         self.body = Body()
         self.err_x = self.err_y = self.err_a = 0.0
-        self.pending = deque(maxlen=C.PREDICT_MAX_REPLAY)   # (seq, buttons) the server hasn't applied
+        self.pending = deque(maxlen=C.PREDICT_MAX_REPLAY)   # (seq, buttons, yaw) the server hasn't applied
         self.corrections = 0          # stats, for tests and the curious
         self.last_miss = 0.0
 
     # ------------------------------------------------------------------ inputs
-    def push_input(self, seq, buttons):
+    def push_input(self, seq, buttons, yaw=0.0):
         """A new input just went out: remember it and predict its tick now."""
-        self.pending.append((seq, buttons))
-        self.tick(buttons)
+        self.pending.append((seq, buttons, yaw))
+        self.tick(buttons, yaw)
 
-    def tick(self, buttons):
+    def tick(self, buttons, yaw=0.0):
         if self.mode == ME_DRIVER:
             car = self.car
             drive_input(car, buttons)
@@ -108,6 +108,7 @@ class Predictor(Physics):
                 self._drive(c, DT)
                 self._car_vs_world(c)
             b = self.body
+            b.ang = yaw
             self._walk(b, buttons, DT)
             b.x += b.vx * DT
             b.y += b.vy * DT
@@ -158,8 +159,8 @@ class Predictor(Physics):
             b.stamina, b.regen_delay = stamina, regen
             b.exhausted = bool(flags & SF_EXHAUSTED)
             b.load, b.mult = load, mult
-        for _seq, buttons in self.pending:
-            self.tick(buttons)
+        for _seq, buttons, yaw in self.pending:
+            self.tick(buttons, yaw)
         new = self.pose()
         if old is not None and old_mode == mode and old_car == self.car_id:
             # keep what's on screen continuous: fold the jump into the error

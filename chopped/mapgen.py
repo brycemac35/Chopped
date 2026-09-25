@@ -168,13 +168,14 @@ class CityMap:
                     # horizontal roads: north curb faces west, south curb faces east
                     x = s0 + off
                     # keep the shop driveway clear
+                    # (1.5 m from the kerb: tucked in tight so moving traffic fits past)
                     if not (abs(r0 - sy_road) < 1 and sx0 - 6 < x < sx0 + 42):
-                        self.parking.append((x, r0 + 1.8, math.pi))
-                        self.parking.append((x, r0 + 3 * T - 1.8, 0.0))
+                        self.parking.append((x, r0 + 1.5, math.pi))
+                        self.parking.append((x, r0 + 3 * T - 1.5, 0.0))
                     y = s0 + off
                     # vertical roads: west curb faces south, east curb faces north
-                    self.parking.append((r0 + 1.8, y, math.pi / 2))
-                    self.parking.append((r0 + 3 * T - 1.8, y, -math.pi / 2))
+                    self.parking.append((r0 + 1.5, y, math.pi / 2))
+                    self.parking.append((r0 + 3 * T - 1.5, y, -math.pi / 2))
 
     def _make_cameras(self, rng):
         T = C.TILE_M

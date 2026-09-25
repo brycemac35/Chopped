@@ -48,9 +48,12 @@ class Bot:
         self.buttons = 0
         self.next_change = 0.0
         self.use = self.drop = self.exit = 0
+        self.yaw = 0.0
+        self.turn = 0.0
 
     def step(self, dt, view):
         self.t += dt
+        self.yaw += self.turn * dt
         if self.t >= self.next_change:
             self.next_change = self.t + self.rng.uniform(0.3, 1.2)
             r = self.rng
@@ -69,7 +72,8 @@ class Bot:
                 self.exit += 1
             if r.random() < 0.05:
                 self.drop += 1
-        return self.buttons, self.use, self.drop, self.exit
+            self.turn = r.choice((0.0, 0.0, -2.0, 2.0))
+        return self.buttons, self.use, self.drop, self.exit, self.yaw
 
 
 class App:
@@ -258,8 +262,8 @@ class App:
 
     def _gather_input(self, dt, view):
         if self.bot is not None:
-            b, u, d, e = self.bot.step(dt, view)
-            return S.InputState(b, u, d, e)
+            b, u, d, e, yaw = self.bot.step(dt, view)
+            return S.InputState(b, u, d, e, yaw)
         if self.paused:
             return S.InputState(0, self.use_c, self.drop_c, self.exit_c)
         k = pygame.key.get_pressed()

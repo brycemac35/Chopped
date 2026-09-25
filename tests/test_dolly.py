@@ -22,14 +22,20 @@ def step(w, secs):
 
 def press(p, buttons):
     i = p.input
-    p.input = S.InputState(buttons, i.use_count, i.drop_count, i.exit_count)
+    p.input = S.InputState(buttons, i.use_count, i.drop_count, i.exit_count, i.yaw)
+
+
+def face(p, x, y):
+    i = p.input
+    p.input = S.InputState(i.buttons, i.use_count, i.drop_count, i.exit_count, math.atan2(y - p.y, x - p.x))
+    p.ang = p.input.yaw
 
 
 def tap(p, field):
     i = p.input
     counts = [i.use_count, i.drop_count, i.exit_count]
     counts[field] += 1
-    p.input = S.InputState(i.buttons, *counts)
+    p.input = S.InputState(i.buttons, *counts, yaw=i.yaw)
 
 
 USE, DROP, EXIT = 0, 1, 2
@@ -52,6 +58,7 @@ def the_dolly(w):
 def grab(w, p):
     d = the_dolly(w)
     p.x, p.y = d.x - 1.0, d.y
+    face(p, d.x, d.y)
     tap(p, USE)
     w.step(DT)
     return d
@@ -80,16 +87,16 @@ class TestDolly(unittest.TestCase):
         # at the engine bay, hood still on: told to take it off first
         ex, ey = car.to_world(*SLOT_ANCHOR["Engine"])
         p.x, p.y = ex + 2.4, ey
-        p.ang = math.pi
+        face(p, ex, ey)
         w.step(DT)
         self.assertIn("HOOD", p.prompt)
         car.parts["Hood"] = None
         w.step(DT)
         self.assertIn("STRIP 1.6 ENGINE ONTO THE DOLLY", p.prompt)
         press(p, S.B_USE)
-        step(w, C.BREAKIN_TIME)          # (any long hold) not yet: engines take 20 s
+        step(w, S.STRIP_TIME["engine"] - 1.0)     # not yet: engines take ages
         self.assertIsNotNone(car.parts["Engine"])
-        step(w, 20.5 - C.BREAKIN_TIME)
+        step(w, 1.5)
         self.assertIsNone(car.parts["Engine"])
         self.assertIs(d.part, engine)
         press(p, 0)
@@ -97,6 +104,7 @@ class TestDolly(unittest.TestCase):
         # wheel it to the sell bench: full value, not the crusher's 50%
         bx, by, bw, bh = w.map.sell_bench
         p.x, p.y = bx + bw / 2, by + bh + 1.2
+        face(p, bx + bw / 2, by)
         cash0 = w.cash
         w.step(DT)
         self.assertIn("SELL 1.6 ENGINE", p.prompt)
@@ -115,6 +123,7 @@ class TestDolly(unittest.TestCase):
         old = personal.parts["Engine"]
         tx, ty, tw, th = w.map.tune_bench
         p.x, p.y = tx + tw / 2, ty + th + 1.2
+        face(p, tx + tw / 2, ty)
         w.step(DT)
         self.assertIn("SWAP IN 2.0 TURBO ENGINE", p.prompt)
         press(p, S.B_USE)
@@ -129,11 +138,13 @@ class TestDolly(unittest.TestCase):
         gx, gy, gw, gh = w.map.garage_rect
         pk = w.add_pickup(Part("eng_tuned_2_0t", 0.8), gx + 8, gy + 20)   # e.g. from an exploded cop
         p.x, p.y = pk.x + 0.5, pk.y
+        p.ang = math.pi
         key, label, _, _ = w._find_interaction(p)
         self.assertIsNone(key)
         self.assertIn("FETCH THE DOLLY", label, "the old prompt wrongly said HANDS FULL")
         d = grab(w, p)
-        p.x, p.y, p.ang = pk.x - 1.5, pk.y, 0.0
+        p.x, p.y = pk.x - 1.5, pk.y
+        face(p, pk.x, pk.y)
         w.step(DT)
         self.assertIn("LOAD 2.0 TURBO ENGINE", p.prompt)
         press(p, S.B_USE)
@@ -147,7 +158,8 @@ class TestDolly(unittest.TestCase):
         d = grab(w, p)
         gx, gy, gw, gh = w.map.garage_rect
         p.x, p.y = gx + 4, gy + 14
-        press(p, S.B_RIGHT)
+        face(p, gx + 20, gy + 14)
+        press(p, S.B_UP)
         step(w, 1.0)
         self.assertAlmostEqual(p.vx, C.WALK_SPEED * C.DOLLY_SPEED_MULT, delta=0.05)
         self.assertEqual(p.stamina, C.STAMINA_MAX, "an empty dolly is no workout")
@@ -202,6 +214,7 @@ class TestPartsCounter(unittest.TestCase):
     def _at_counter(self, w, p):
         tx, ty, tw, th = w.map.tune_bench
         p.x, p.y = tx + tw / 2, ty + th + 1.2
+        face(p, tx + tw / 2, ty)
 
     def test_suggests_what_you_can_afford_and_what_to_save_for(self):
         w = quiet_world()

@@ -75,15 +75,17 @@ def buy_price(type_id):
 
 
 class InputState:
-    """What a player is pressing. Counters (not booleans) for one-shot keys so
-    a tap survives a dropped packet: if the number changed, it happened."""
-    __slots__ = ("buttons", "use_count", "drop_count", "exit_count")
+    """What a player is pressing, and where they're looking. Counters (not
+    booleans) for one-shot keys so a tap survives a dropped packet: if the
+    number changed, it happened. yaw is the first-person view direction."""
+    __slots__ = ("buttons", "use_count", "drop_count", "exit_count", "yaw")
 
-    def __init__(self, buttons=0, use_count=0, drop_count=0, exit_count=0):
+    def __init__(self, buttons=0, use_count=0, drop_count=0, exit_count=0, yaw=0.0):
         self.buttons = buttons
         self.use_count = use_count
         self.drop_count = drop_count
         self.exit_count = exit_count
+        self.yaw = yaw
 
 
 class Car:
@@ -398,6 +400,14 @@ def obb_obb_contact(a, b):
     return nx, ny, pen, px, py
 
 
+def box_distance(car, x, y):
+    """Distance from a point to a car's box (0 if inside)."""
+    c, s = math.cos(car.ang), math.sin(car.ang)
+    lx = abs((x - car.x) * c + (y - car.y) * s) - HL
+    ly = abs(-(x - car.x) * s + (y - car.y) * c) - HW
+    return math.hypot(max(lx, 0.0), max(ly, 0.0))
+
+
 def drive_input(car, buttons):
     """Driver's buttons -> pedals and wheel. Shared by the server and the
     client-side predictor so they can't disagree about what W means."""
@@ -559,9 +569,12 @@ class Physics:
     def _walk(self, p, b, dt):
         """On-foot controls -> stamina, facing and velocity. The predictor runs
         this too, so it may only read things the client is told about."""
-        dx = (1 if b & B_RIGHT else 0) - (1 if b & B_LEFT else 0)
-        dy = (1 if b & B_DOWN else 0) - (1 if b & B_UP else 0)
-        moving = dx != 0 or dy != 0
+        # first person: W/S along where you're looking, A/D strafe
+        fwd = (1 if b & B_UP else 0) - (1 if b & B_DOWN else 0)
+        side = (1 if b & B_RIGHT else 0) - (1 if b & B_LEFT else 0)
+        ca, sa = math.cos(p.ang), math.sin(p.ang)
+        dx, dy = ca * fwd - sa * side, sa * fwd + ca * side
+        moving = fwd != 0 or side != 0
         used = p.walk_load()
         want_sprint = bool(b & B_SPRINT) and moving and not p.exhausted and p.stamina > 0
         if want_sprint:
@@ -585,7 +598,6 @@ class Physics:
         if moving:
             inv = 1.0 / math.hypot(dx, dy)
             tx, ty = dx * inv * spd, dy * inv * spd
-            p.ang = math.atan2(dy, dx)
         else:
             tx = ty = 0.0
         k = min(1.0, 16.0 * dt)
@@ -670,7 +682,9 @@ class World(Physics):
         self.events = []            # (seq, time, kind, payload)
         self.event_seq = 0
         self.cash = C.START_CASH
-        self.rent_t = C.RENT_PERIOD
+        self.day = 1
+        self.day_t = C.DAY_LENGTH       # seconds until midnight (rent)
+        self.day_stats = [0, 0, 0]      # cars delivered, parts sold, dollars earned today
         self.debt_t = 0.0
         self.gameover_t = 0.0
         self.run = 1
@@ -922,13 +936,27 @@ class World(Physics):
         self._traffic_fleet(dt)
 
     # ------------------------------------------------------------------ economy
+    def rent_due(self):
+        return C.rent_for_day(self.day)
+
+    def _earn(self, amount, parts=0):
+        self.cash += amount
+        self.day_stats[1] += parts
+        self.day_stats[2] += amount
+
     def _economy(self, dt):
-        self.rent_t -= dt
-        if self.rent_t <= 0:
-            self.rent_t += C.RENT_PERIOD
-            self.cash -= C.RENT_AMOUNT
-            self.toast("RENT DUE: -$%d" % C.RENT_AMOUNT, T_BAD)
+        self.day_t -= dt
+        if self.day_t <= 0:
+            rent = self.rent_due()
+            cars, parts, earned = self.day_stats
+            self.toast("DAY %d DONE: %d CARS, %d PARTS, +$%d" % (self.day, cars, parts, earned), T_INFO)
+            self.cash -= rent
+            self.toast("MIDNIGHT. THE LANDLORD TAKES $%d" % rent, T_BAD)
             self.sfx(S_RENT, *self.map.garage_center)
+            self.day += 1
+            self.day_t += C.DAY_LENGTH
+            self.day_stats = [0, 0, 0]
+            self.toast("DAY %d. RENT AT MIDNIGHT: $%d" % (self.day, self.rent_due()), T_INFO)
         if self.cash < 0:
             self.debt_t += dt
             if self.debt_t >= C.DEBT_GRACE:
@@ -943,7 +971,9 @@ class World(Physics):
         (and your 6-speed)."""
         self.run += 1
         self.cash = C.START_CASH
-        self.rent_t = C.RENT_PERIOD
+        self.day = 1
+        self.day_t = C.DAY_LENGTH
+        self.day_stats = [0, 0, 0]
         self.debt_t = 0.0
         self.gameover_t = 0.0
         self.heat = 0.0
@@ -1035,6 +1065,7 @@ class World(Physics):
             return
 
         # ---- on foot --------------------------------------------------------
+        p.ang = inp.yaw               # you face wherever your mouse points
         if drop_tap and p.dolly is not None:
             self._release_dolly(p)
             self.sfx(S_DROP, p.x, p.y)
@@ -1073,12 +1104,15 @@ class World(Physics):
         """Returns (key, prompt, hold_seconds, action). key None = info only.
         Priority: benches > loose parts > cars. Exactly one prompt at a time."""
         m = self.map
+        # first person: you use what you're looking at, measured from a point
+        # just in front of your face rather than from your feet
+        ax, ay = self._aim(p)
         # benches
         for bench, is_sell in ((m.sell_bench, True), (m.tune_bench, False)):
             bx, by, bw, bh = bench
-            cx = clamp(p.x, bx, bx + bw)
-            cy = clamp(p.y, by, by + bh)
-            if math.hypot(p.x - cx, p.y - cy) < C.INTERACT_RANGE_BENCH:
+            cx = clamp(ax, bx, bx + bw)
+            cy = clamp(ay, by, by + bh)
+            if math.hypot(ax - cx, ay - cy) < C.INTERACT_RANGE_BENCH:
                 if p.dolly is not None:
                     return self._dolly_bench(p, p.dolly, is_sell)
                 if not p.hands:
@@ -1098,7 +1132,7 @@ class World(Physics):
         if p.dolly is not None:
             return self._dolly_interaction(p, p.dolly)
         # a dolly to grab
-        dl = self._nearest_dolly(p.x, p.y, C.INTERACT_RANGE_DOLLY)
+        dl = self._nearest_dolly(ax, ay, C.INTERACT_RANGE_DOLLY)
         if dl is not None:
             if p.hands:
                 return (None, "DOLLY: EMPTY YOUR HANDS FIRST (SELL OR DROP)", 0, None)
@@ -1107,7 +1141,7 @@ class World(Physics):
         # pickups
         best, bd = None, C.INTERACT_RANGE_PICKUP
         for pk in self.pickups.values():
-            d = math.hypot(pk.x - p.x, pk.y - p.y)
+            d = math.hypot(pk.x - ax, pk.y - ay)
             if d < bd:
                 best, bd = pk, d
         if best is not None:
@@ -1118,16 +1152,18 @@ class World(Physics):
                 return (None, "HANDS FULL - SELL IT OR DROP (G)", 0, None)
             return (("pick", best.id), "E: PICK UP %s ($%d)" % (part.name.upper(), part.value),
                     C.PICKUP_TIME, lambda: self._pickup(p, best))
-        # cars
+        # cars: the one whose bodywork is closest to where you're looking
         best, bd = None, 99.0
         for car in self.cars.values():
             if car.kind == COP or car.kind == TRAFFIC:
                 continue              # you can't steal a car someone is driving. Yet.
-            d = math.hypot(car.x - p.x, car.y - p.y)
+            if abs(car.x - ax) > 6 or abs(car.y - ay) > 6:
+                continue
+            d = box_distance(car, ax, ay)
             if d < bd:
                 best, bd = car, d
         car = best
-        if car is None or bd > C.INTERACT_RANGE_CAR + (1.2 if car.state == DELIVERED else 0):
+        if car is None or bd > C.CAR_AIM_RANGE + (0.8 if car.state == DELIVERED else 0):
             return (None, "", 0, None)
         if car.kind == PERSONAL:
             if car.driver is None:
@@ -1149,6 +1185,10 @@ class World(Physics):
         # delivered: strip or crush
         return self._strip_interaction(p, car)
 
+    @staticmethod
+    def _aim(p):
+        return p.x + math.cos(p.ang) * C.AIM_REACH, p.y + math.sin(p.ang) * C.AIM_REACH
+
     def _strip_interaction(self, p, car):
         remaining = [s for s in SLOTS if car.parts.get(s) is not None]
         liftable = [s for s in remaining if car.parts[s].bulk != DOLLY]
@@ -1157,10 +1197,11 @@ class World(Physics):
             pay = C.SHELL_VALUE + int(dolly_val * C.CRUSH_DOLLY_FRACTION)
             return (("crush", car.id), "HOLD E: CRUSH SHELL (+$%d)" % pay, C.CRUSH_TIME,
                     lambda: self._crush(car, pay))
-        # nearest slot; the engine hides under the hood until the hood's off
+        # the slot you're looking at; the engine hides under the hood until the hood's off
+        ax, ay = self._aim(p)
         c, s = math.cos(car.ang), math.sin(car.ang)
-        lx = (p.x - car.x) * c + (p.y - car.y) * s
-        ly = -(p.x - car.x) * s + (p.y - car.y) * c
+        lx = (ax - car.x) * c + (ay - car.y) * s
+        ly = -(ax - car.x) * s + (ay - car.y) * c
         best, bd = None, 99.0
         for slot in remaining:
             if slot == "Engine" and car.parts.get("Hood") is not None:
@@ -1225,7 +1266,7 @@ class World(Physics):
         self.sfx(S_STRIP, car.x, car.y)
 
     def _crush(self, car, pay):
-        self.cash += pay
+        self._earn(pay)
         self.sfx(S_CRUSH, car.x, car.y)
         self.toast("CRUSHED THE SHELL: +$%d" % pay, T_MONEY)
         for pid in car.occupants():
@@ -1244,7 +1285,7 @@ class World(Physics):
         if not p.hands:
             return
         part = p.hands.pop()
-        self.cash += part.value
+        self._earn(part.value, 1)
         self.sfx(S_SELL, p.x, p.y)
         self.toast("SOLD %s: +$%d" % (part.name.upper(), part.value), T_MONEY)
 
@@ -1371,7 +1412,7 @@ class World(Physics):
         if part is None:
             return
         d.part = None
-        self.cash += part.value
+        self._earn(part.value, 1)
         self.sfx(S_SELL, p.x, p.y)
         self.toast("SOLD %s: +$%d" % (part.name.upper(), part.value), T_MONEY)
 
@@ -1881,6 +1922,7 @@ class World(Physics):
 
     def _deliver(self, car):
         car.state = DELIVERED
+        self.day_stats[0] += 1
         car.alarm = False
         for pid in car.occupants():
             p = self.players.get(pid)
@@ -2157,35 +2199,41 @@ class World(Physics):
             qx, qy = nx, ny
         return qx, qy
 
-    def _traffic_blocker(self, car, fx, fy, spd):
-        """First thing in the lane ahead: a car, a player or a pedestrian."""
-        # once stopped for something, keep "seeing" it a bit further out, or the
-        # car creeps forward, re-spots it, brakes, creeps... like a nervous learner
-        look = 4.0 + spd * 0.9 + (3.5 if car.blocked_t > 0 else 0.0)
+    def _traffic_blocker(self, car, fx, fy):
+        """Nearest thing in the lane ahead -- a car, a player or a pedestrian --
+        as (thing, clearance in metres from our bumper to it), or (None, 0)."""
+        look = 24.0
         passing = car.overtake_t > 0
-        car_w = 1.4 if passing else 2.2
+        car_w = 1.4 if passing else 2.3       # (two 2.4 m cars side by side need 2.4 to not touch)
+        best, bf = None, look
         for other in self.cars.values():
             if other is car:
                 continue
             dx, dy = other.x - car.x, other.y - car.y
             f = dx * fx + dy * fy
-            if 0.5 < f < look + 2.4:
+            if 0.5 < f < bf + 2.4:
                 # oncoming cars only count if they're properly in our lane
-                w = 1.5 if math.cos(other.ang - car.ang) < -0.8 else car_w
-                if abs(-dx * fy + dy * fx) < w:
-                    return other
+                cosd = math.cos(other.ang - car.ang)
+                w = 1.5 if cosd < -0.8 else car_w
+                lat = abs(-dx * fy + dy * fx)
+                if lat < w:
+                    if other.kind == TRAFFIC and cosd < 0.87 and other.id > car.id and lat > 1.0:
+                        continue      # right of way at junctions: lower id goes first, no standoffs
+                    best, bf = other, f - 2.4          # their half-length, roughly
         for p in self.players.values():
             if p.state in (FOOT, TUMBLE, CUFFED):
                 dx, dy = p.x - car.x, p.y - car.y
                 f = dx * fx + dy * fy
-                if 0.5 < f < look + 2.4 and abs(-dx * fy + dy * fx) < 1.8:
-                    return p
+                if 0.5 < f < bf + 0.5 and abs(-dx * fy + dy * fx) < 1.8:
+                    best, bf = p, f - 0.5
         for n in self.npcs.values():
             dx, dy = n.x - car.x, n.y - car.y
             f = dx * fx + dy * fy
-            if 0.5 < f < look + 2.4 and abs(-dx * fy + dy * fx) < 1.6:
-                return n
-        return None
+            if 0.5 < f < bf + 0.5 and abs(-dx * fy + dy * fx) < 1.6:
+                best, bf = n, f - 0.5
+        if best is None:
+            return None, 0.0
+        return best, bf - HL
 
     def _traffic_ai(self, car, dt):
         fx, fy = math.cos(car.ang), math.sin(car.ang)
@@ -2232,8 +2280,11 @@ class World(Physics):
             target = min(target, 8.0)
         diff = wrap_angle(math.atan2(wy - car.y, wx - car.x) - car.ang)
         steer = clamp(diff * 2.5, -1.0, 1.0)
-        blocker = self._traffic_blocker(car, fx, fy, spd)
+        blocker, gap = self._traffic_blocker(car, fx, fy)
         if blocker is not None:
+            # never faster than what lets us stop 2 m short of it at a comfortable 6 m/s^2
+            target = min(target, math.sqrt(2.0 * 6.0 * max(0.0, gap - 2.0)))
+        if blocker is not None and target < 1.0:
             car.blocked_t += dt
             throttle = -1.0 if vf > 0.5 else 0.0
             car.handbrake = vf <= 0.5
