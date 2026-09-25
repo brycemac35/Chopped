@@ -330,8 +330,12 @@ def car_boxes(kind, color, mask, styles, damage, lights, model=V.KEI, livery=0, 
     glow = (extras >> 4) & 15
     if glow:
         # neon underglow: a thin slab of light just under the sills. Tasteful. (It is not tasteful.)
+        # Two slabs: a dim halo washed into the asphalt, and a bright strip hugging the sills. One big
+        # bright slab read as "car parked on a pink bath mat".
         gc = CAR_COLORS[(glow - 1) % len(CAR_COLORS)]
-        b.append((-hl - 0.35, hl + 0.35, -hw - 0.4, hw + 0.4, 0.0, 0.02, shade(gc, 1.25)))
+        halo = tuple(int(c * 0.55 + r * 0.45) for c, r in zip(gc, (70, 70, 80)))
+        b.append((-hl - 0.22, hl + 0.22, -hw - 0.22, hw + 0.22, 0.0, 0.01, halo))
+        b.append((-hl - 0.08, hl + 0.08, -hw - 0.1, hw + 0.1, 0.0, 0.02, shade(gc, 1.3)))
     # ---- body sections: nose, middle (the doors are its sides), tail -------------
     hood_on = _bit(mask, "Hood")
     hs = st["Hood"] if hood_on else 0
@@ -733,12 +737,23 @@ def barrier_boxes(length, lamp=False):
     return b
 
 
+def gnome_boxes():
+    """A garden gnome, full lawn size: blue coat, white beard, red hat, dead eyes."""
+    return [(-0.14, 0.14, -0.14, 0.14, 0.0, 0.05, (90, 150, 60)),                   # a tuft of stolen lawn
+            (-0.1, 0.1, -0.1, 0.1, 0.05, 0.3, GNOME_BLUE),
+            (0.06, 0.12, -0.08, 0.08, 0.14, 0.34, P["white"]),                       # beard
+            (-0.07, 0.08, -0.07, 0.07, 0.3, 0.42, SKINS[0]),
+            (-0.09, 0.09, -0.09, 0.09, 0.42, 0.5, GNOME_RED),
+            (-0.05, 0.05, -0.05, 0.05, 0.5, 0.6, GNOME_RED),
+            (-0.02, 0.02, -0.02, 0.02, 0.6, 0.66, GNOME_RED)]
+
+
 def banana_boxes():
     """A banana peel: four floppy yellow bits and a brown stalk. Deadly."""
-    yel, dark = (250, 220, 70), (200, 170, 40)
-    return [(-0.08, 0.08, -0.08, 0.08, 0.0, 0.06, dark),
-            (0.08, 0.34, -0.05, 0.05, 0.0, 0.03, yel), (-0.34, -0.08, -0.05, 0.05, 0.0, 0.03, yel),
-            (-0.05, 0.05, 0.08, 0.32, 0.0, 0.03, yel), (-0.05, 0.05, -0.32, -0.08, 0.0, 0.03, yel),
+    yel, dark = (255, 232, 60), (215, 180, 40)
+    return [(-0.1, 0.1, -0.1, 0.1, 0.0, 0.08, dark),
+            (0.1, 0.42, -0.07, 0.07, 0.0, 0.04, yel), (-0.42, -0.1, -0.07, 0.07, 0.0, 0.04, yel),
+            (-0.07, 0.07, 0.1, 0.4, 0.0, 0.04, yel), (-0.07, 0.07, -0.4, -0.1, 0.0, 0.04, yel),
             (-0.03, 0.03, -0.03, 0.03, 0.06, 0.14, (110, 80, 40))]
 
 

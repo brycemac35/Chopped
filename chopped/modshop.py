@@ -7,7 +7,9 @@ you can see the gold mesh wheels before you pay for them.
 
 Keys: W/S or arrows to move, Enter/E/D to go in or do it, A/Backspace to go
 back, Esc to leave. In LIVERY, A/D (left/right) picks the second colour. In
-the LOCKER, Enter sells and X takes the part out.
+the LOCKER, Enter sells and X takes the part out. Mouse: the wheel moves,
+click a row to highlight it and click it again to do it, right click goes
+back.
 """
 
 import math
@@ -32,6 +34,8 @@ CATS = [("ENGINE", "slot", "Engine"), ("GEARBOX", "slot", "Transmission"), ("ECU
         ("PAINT", "paint", None), ("LIVERY", "livery", None), ("HORN", "horn", None),
         ("UNDERGLOW", "glow", None), ("EXTRAS", "extra", None), ("LOCKER", "locker", None)]
 ROWS = 17                         # visible item rows
+CAT_X, CAT_Y = 12, 46             # where the category list and the item list start (clicks use these too)
+ITEM_X, ITEM_Y = 124, 46
 
 
 class Item:
@@ -170,9 +174,8 @@ class ModShop:
                 self.item = 0
             else:
                 items = self.items()
-                if 0 <= self.item < len(items) and items[self.item].op != G.OP_NONE:
-                    it = items[self.item]
-                    self.pending.append((it.op, it.a, it.b))
+                if 0 <= self.item < len(items):
+                    self._activate(items[self.item])
         elif k in (pygame.K_LEFT, pygame.K_a, pygame.K_RIGHT, pygame.K_d) and CATS[self.cat][1] == "livery":
             self.second = (self.second + (1 if k in (pygame.K_RIGHT, pygame.K_d) else -1)) % len(V.PAINT_NAMES)
         elif k == pygame.K_x and self.focus == 1:
@@ -189,6 +192,40 @@ class ModShop:
         else:
             return False
         return True
+
+    def _top(self, items):
+        """First visible item row: the list scrolls to keep the highlight mid-screen."""
+        return max(0, min(self.item - ROWS // 2, len(items) - ROWS))
+
+    def _activate(self, it):
+        if it.op != G.OP_NONE:
+            self.pending.append((it.op, it.a, it.b))
+
+    def click(self, pos, button):
+        """Mouse, in canvas pixels. Returns True if the click was ours."""
+        if button == 3:                           # right click: back out, then leave
+            if self.focus == 1:
+                self.focus = 0
+            else:
+                self.close()
+            return True
+        if button != 1:
+            return False
+        x, y = pos
+        if CAT_X - 3 <= x < CAT_X + 101 and CAT_Y - 2 <= y < CAT_Y - 2 + len(CATS) * 12:
+            self.cat = (y - CAT_Y + 2) // 12
+            self.focus, self.item = 1, 0          # clicking a category opens it
+            return True
+        items = self.items()
+        if ITEM_X - 3 <= x < ITEM_X + 313 and ITEM_Y - 2 <= y < ITEM_Y - 2 + ROWS * 12:
+            i = self._top(items) + (y - ITEM_Y + 2) // 12
+            if i < len(items):
+                if self.focus == 1 and i == self.item:
+                    self._activate(items[i])      # second click on the highlight: do it
+                else:
+                    self.focus, self.item = 1, i
+            return True
+        return False
 
     def _move(self, d):
         if self.focus == 0:
@@ -239,7 +276,7 @@ class ModShop:
         f.draw(low, "YOUR %s" % V.model(m["model"]).name, 12, 30, P["white"])
         f.draw(low, "CASH $%d" % cash, W - 12, 10, P["money"] if cash >= 0 else P["danger"], scale=2, align="right")
         # categories
-        cx, cy = 12, 46
+        cx, cy = CAT_X, CAT_Y
         for i, (label, kind, slot) in enumerate(CATS):
             sel = i == self.cat
             col = P["gold"] if sel and self.focus == 0 else P["white"] if sel else (150, 148, 160)
@@ -248,8 +285,8 @@ class ModShop:
             f.draw(low, label, cx, cy + i * 12, col)
         # items
         items = self.items()
-        ix, iy = 124, 46
-        top = max(0, min(self.item - ROWS // 2, len(items) - ROWS))
+        ix, iy = ITEM_X, ITEM_Y
+        top = self._top(items)
         for row, it in enumerate(items[top:top + ROWS]):
             i = top + row
             sel = self.focus == 1 and i == self.item
@@ -295,7 +332,7 @@ class ModShop:
                 better = (b > a) == better_high
                 low.fill(P["money"] if better else P["danger"], (sx + int(bw * min(a, b)), y + 8,
                                                                  max(1, int(bw * abs(b - a))), 5))
-        hint = "W/S: MOVE   ENTER/E: SELECT   A/BACKSPACE: BACK   ESC: LEAVE"
+        hint = "W/S OR WHEEL: MOVE   ENTER/E OR CLICK: SELECT   A/BACKSPACE/RIGHT CLICK: BACK   ESC: LEAVE"
         if CATS[self.cat][1] == "locker":
             hint = "W/S: MOVE   ENTER: SELL   X: TAKE OUT   A: BACK   ESC: LEAVE"
         elif CATS[self.cat][1] == "livery":

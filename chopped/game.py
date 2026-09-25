@@ -300,6 +300,9 @@ class App:
             elif self.state == "play" and self.modshop.open and not self.paused and \
                     ev.type in (pygame.KEYDOWN, pygame.MOUSEWHEEL) and self.modshop.handle(ev):
                 pass                               # the mod shop ate it
+            elif self.state == "play" and self.modshop.open and not self.paused and \
+                    ev.type == pygame.MOUSEBUTTONDOWN and self.modshop.click(self._to_canvas(ev.pos), ev.button):
+                pass
             elif self.state == "play" and ev.type == pygame.MOUSEBUTTONDOWN and not self.paused:
                 if not self.mouse_grabbed:
                     self._grab_mouse(True)      # clicked back into the window; that click isn't a punch
@@ -537,9 +540,10 @@ class App:
         self.hud.draw(low, view, now, info)
         if self.server and now < self.host_banner_until and not self.paused:
             lines = self._host_lines()
-            low.blit(self.hud._panel(300, 8 * len(lines) + 4, 170), (W // 2 - 150, 64))
+            # just under the help card (which ends at y=73), so neither covers the other
+            low.blit(self.hud._panel(300, 8 * len(lines) + 4, 170), (W // 2 - 150, 78))
             for i, (l, col) in enumerate(lines):
-                self.font.draw(low, l, W // 2, 67 + i * 8, col, align="center")
+                self.font.draw(low, l, W // 2, 81 + i * 8, col, align="center")
         if self.modshop.open:
             self.modshop.draw(low, view.snap.cash, now)
             if self.modshop.hover_horn != self.horn_heard:
@@ -653,6 +657,13 @@ class App:
         a.set_loop("jingle", jingle * 0.5)
         mine = view.my_car
         a.set_loop("nos", 0.6 if (mine is not None and me[2] == S.DRIVER and mine[17] & 8) else 0.0)
+
+    def _to_canvas(self, pos):
+        """Window pixels -> canvas pixels (undoes _present's scale and letterbox)."""
+        sw, sh = self.screen.get_size()
+        size = self.scaled.get_size() if self.scaled is not None else (W, H)
+        ox, oy = (sw - size[0]) // 2, (sh - size[1]) // 2
+        return int((pos[0] - ox) * W / size[0]), int((pos[1] - oy) * H / size[1])
 
     def _present(self):
         sw, sh = self.screen.get_size()

@@ -568,12 +568,12 @@ class DoomHud:
         self._banners(low, snap, me, now, flash)
         self._comedy_banner(low, me, now)
         if now < self.help_until and not info.get("paused"):
-            lines = ["MOUSE LOOK  WASD MOVE/DRIVE  SHIFT SPRINT  E USE (HOLD)  G DROP  F EXIT CAR",
-                     "CLICK/CTRL PUNCH/SHOOT/PLACE  1-5, WHEEL OR Q: WEAPONS  SPACE HANDBRAKE  H HORN",
-                     "TAB MAP  M MUSIC  ESC MENU  F11 FULLSCREEN",
+            lines = ["MOUSE LOOK  WASD MOVE/DRIVE  SPACE JUMP/HANDBRAKE  SHIFT SPRINT/NOS  E USE (HOLD)",
+                     "CLICK/CTRL PUNCH/SHOOT/THROW (HOLD: HAYMAKER)  1-7 WEAPONS  G GRAB/DROP  F EXIT CAR",
+                     "V CHASE CAM  TAB MAP  H HORN  T DANCE  M MUSIC  ESC MENU  F11 FULLSCREEN",
                      "STEAL CARS (FOLLOW THE GREEN ARROWS). PARK THEM IN THE SHOP. STRIP. SELL.",
-                     "GUNS AND TRAPS: THE CRATES IN THE SHOP. RENT'S DUE AT MIDNIGHT."]
-            low.blit(self._panel(370, 43, 170), (W // 2 - 185, 30))
+                     "TUNE-UP BENCH = MOD SHOP.  GUNS, TRAPS, BANANAS: THE CRATES.  RENT'S DUE AT MIDNIGHT."]
+            low.blit(self._panel(440, 43, 170), (W // 2 - 220, 30))
             for i, l in enumerate(lines):
                 f.draw(low, l, W // 2, 33 + i * 8, P["white"] if i < 3 else P["gold"], align="center")
 
@@ -784,16 +784,18 @@ class DoomHud:
             f.draw(low, line, W // 2, y, col, align="center")
             y += 9
         y += 6
-        for l in ("MOUSE / ARROWS LOOK     WASD MOVE (IN A CAR: DRIVE)     SHIFT SPRINT",
-                  "E USE (HOLD FOR TIMED ACTIONS)     G DROP / LET GO OF THE DOLLY     F EXIT CAR",
-                  "SPACE HANDBRAKE     H HORN (CONFUSES COPS)     TAB MAP     M MUSIC ON/OFF",
-                  "CLICK / CTRL: PUNCH, SHOOT OR DROP A TRAP     1-5 / WHEEL / Q: PICK A WEAPON",
-                  "PUNCH SOMEONE OR POINT A GUN AT THEM, THEN HOLD E TO ROB THEM",
-                  "TRAFFIC WON'T STOP FOR YOU: SPIKES OR A ROADBLOCK, THEN HOLD E TO CARJACK",
-                  "SHOOT THE TYRES OUT. SHOOTING COPS IS... AN OPTION",
+        for l in ("MOUSE / ARROWS LOOK (UP AND DOWN TOO)     WASD MOVE / DRIVE     SPACE JUMP (IN A CAR: HANDBRAKE)",
+                  "SHIFT SPRINT (IN A CAR WITH NOS: BOOST)     E USE (HOLD FOR TIMED ACTIONS)     F EXIT CAR",
+                  "V CHASE CAM     TAB MAP     H HORN (CONFUSES COPS)     T DANCE     M MUSIC     F9 BIG HEADS",
+                  "CLICK / CTRL: PUNCH, SHOOT, PLACE A TRAP OR THROW WHATEVER'S IN YOUR HANDS",
+                  "HOLD CLICK WITH EMPTY FISTS, LET GO: HAYMAKER.  1-7 / WHEEL / Q: PICK A WEAPON",
+                  "G: DROP A PART / LET GO OF THE DOLLY / PICK UP A PERSON (THEN CLICK TO THROW THEM)",
+                  "PUNCH SOMEONE OR POINT A GUN AT THEM, THEN HOLD E TO ROB THEM. SOME PUNCH BACK.",
+                  "TRAFFIC WON'T STOP: SPIKES, A ROADBLOCK OR A BANANA, THEN HOLD E TO CARJACK",
+                  "E AT THE BOOT OF YOUR RIDE (OR ANY CAR YOU BROKE INTO): TRUNK. STASH PARTS, FIND LOOT",
+                  "E AT THE TUNE-UP BENCH: MOD SHOP. FIT PARTS, PAINT, LIVERIES, JOKE HORNS, NOS",
                   "ENGINES ARE TOO HEAVY TO CARRY: USE THE DOLLY IN THE SHOP",
-                  "TUNE-UP BENCH WITH EMPTY HANDS = PARTS COUNTER (NO CREDIT)",
-                  "RENT IS DUE AT MIDNIGHT AND GOES UP EVERY DAY",
+                  "COPS CAN'T RESIST A BOX OF DONUTS.  RENT IS DUE AT MIDNIGHT AND GOES UP EVERY DAY",
                   "",
                   "ESC: RESUME        Q: LEAVE TO MAIN MENU"):
             f.draw(low, l, W // 2, y, P["white"], align="center")

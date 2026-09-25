@@ -23,8 +23,10 @@ from . import fpart as FA
 from . import sim as S
 from . import protocol as PR
 from .art import P, PLAYER_COLORS, SKINS, HAIRS, SHIRTS, PixelFont, shade
-from .parts import SLOT_ANCHOR, NO_PART
+from .parts import SLOT_ANCHOR, NO_PART, PART_IDS
 from . import vehicles as V
+
+GNOME_IDX = PART_IDS.index("gnome")
 
 T = C.TILE_M
 FLOOR_PPM = 4
@@ -614,9 +616,15 @@ class FPRenderer:
             if flags & PR.PF_CHUTE:
                 add(p[4], p[5], lambda: (self.chute_img, 12), z=z + 1.9)
         for pk in view.pickups.values():
+            pz = pk[5] if len(pk) > 5 else 0.0
+            if pk[1] == GNOME_IDX:
+                # gnomes don't bob like loot; they stand there and judge you
+                az = math.atan2(pk[3] - cy, pk[2] - cx) - pk[0] * 0.7
+                add(pk[2], pk[3], lambda a=az: self._model_sprite("gnome", FA.gnome_boxes, a, 8, 40),
+                    z=pz, tag=("pickup", pk[4]))
+                continue
             ic = self._icon(bank, pk[1])
             bob = 0.12 + 0.06 * math.sin(now * 3 + pk[0])
-            pz = pk[5] if len(pk) > 5 else 0.0
             add(pk[2], pk[3], lambda i=ic: (i, 12), z=bob + pz, tag=("pickup", pk[4]))
         for d in view.dollies.values():
             if d[5] == me_pid:

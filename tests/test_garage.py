@@ -168,6 +168,37 @@ class TestModShop(unittest.TestCase):
         snap = P.decode_snapshot(P.encode_snapshot(w, p.id, 0, 0)[P.HDR.size:])
         self.assertIsNone(snap.menu)
 
+    def test_mouse_click_buys_through_the_client_menu(self):
+        from chopped import modshop as MS
+        w = quiet_world()
+        p = w.add_player("BRYCE")
+        w.cash = 5000
+        in_shop(w, p)
+        shop = MS.ModShop(None)
+        shop.sync(P.decode_snapshot(P.encode_snapshot(w, p.id, 0, 0)[P.HDR.size:]).menu)
+        cat = next(i for i, c in enumerate(MS.CATS) if c[2] == "Spoiler")
+        self.assertTrue(shop.click((MS.CAT_X + 10, MS.CAT_Y + cat * 12 + 3), 1))
+        self.assertEqual((shop.cat, shop.focus), (cat, 1), "clicking a category opens it")
+        items = shop.items()
+        k = next(i for i, it in enumerate(items) if it.op == G.OP_BUY)
+        y = MS.ITEM_Y + (k - shop._top(items)) * 12 + 3
+        shop.click((MS.ITEM_X + 20, y), 1)
+        self.assertEqual(shop.item, k)
+        self.assertFalse(shop.pending, "the first click only highlights")
+        shop.click((MS.ITEM_X + 20, y), 1)
+        seq, op, a, b = shop.next_command()
+        self.assertEqual(op, G.OP_BUY)
+        i = p.input
+        p.input = S.InputState(i.buttons, i.use_count, i.drop_count, i.exit_count, i.yaw, i.fire_count, i.weapon,
+                               seq, op, a, b)
+        w.step(DT)
+        self.assertIsNotNone(w.cars[w.personal_id].parts["Spoiler"], "a spoiler, bought with the mouse")
+        self.assertLess(w.cash, 5000)
+        shop.click((0, 0), 3)
+        self.assertEqual(shop.focus, 0, "right click backs out...")
+        shop.click((0, 0), 3)
+        self.assertFalse(shop.open, "...and then leaves")
+
     def test_markup_means_stealing_is_still_cheaper(self):
         for slot in ("Engine", "WheelFL", "ECU", "Spoiler"):
             for tid, style, price in G.catalogue(slot):
