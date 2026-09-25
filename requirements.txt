@@ -1,0 +1,6 @@
+# Runtime dependencies (pinned). Networking is stdlib UDP on purpose.
+pygame-ce==2.5.8
+# Optional: UPnP port forwarding. The game runs fine without it.
+miniupnpc==2.3.3
+# Build only (not needed to play from source):
+#   pyinstaller==6.22.3

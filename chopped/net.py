@@ -1,0 +1,455 @@
+"""
+net.py -- plain stdlib UDP. The host runs the Server (authoritative World at
+60 Hz); everybody, including the host's own screen, is a Client that sends
+button states and draws whatever the server says happened.
+
+Why no networking library: zero dependencies means the Windows .exe packages
+cleanly, and UDP + "resend the state, not the deltas" is honestly all a
+four-player car-crime game needs.
+"""
+
+import math
+import os
+import random
+import socket
+import sys
+import threading
+import time
+from collections import deque
+
+from . import config as C
+from . import protocol as P
+from .mapgen import CityMap
+from .sim import World, InputState
+
+
+def _make_socket(bind_host, port):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    if sys.platform == "win32":
+        # Windows reports "port unreachable" ICMP as ConnectionResetError on
+        # the NEXT recvfrom -- one departed client would kill the server loop.
+        try:
+            s.ioctl(socket.SIO_UDP_CONNRESET, False)
+        except (AttributeError, OSError, ValueError):
+            pass
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 18)
+    except OSError:
+        pass
+    s.bind((bind_host, port))
+    s.setblocking(False)
+    return s
+
+
+def _recv_all(sock, limit=256):
+    """Drain the socket. Yields (data, addr). Swallows the assorted OSErrors
+    UDP likes to throw for reasons that are never your fault."""
+    out = []
+    for _ in range(limit):
+        try:
+            data, addr = sock.recvfrom(2048)
+        except (BlockingIOError, InterruptedError):
+            break
+        except ConnectionResetError:
+            continue
+        except OSError:
+            break
+        out.append((data, addr))
+    return out
+
+
+def get_lan_ip():
+    """Best guess at our LAN address: 'connect' a UDP socket to a public IP
+    (no packet is actually sent) and see which interface the OS picked."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("10.255.255.255", 1))
+        ip = s.getsockname()[0]
+    except OSError:
+        ip = "127.0.0.1"
+    finally:
+        s.close()
+    return ip
+
+
+def ms_now():
+    return int(time.perf_counter() * 1000) & 0xFFFFFFFF
+
+
+# ===========================================================================
+class ClientConn:
+    __slots__ = ("addr", "pid", "last_heard", "input_seq", "ack_event", "echo_ms", "local",
+                 "snap_every", "nonce")
+
+    def __init__(self, addr, pid, local, nonce):
+        self.addr = addr
+        self.pid = pid
+        self.last_heard = time.perf_counter()
+        self.input_seq = -1
+        self.ack_event = 0
+        self.echo_ms = 0
+        self.local = local
+        self.nonce = nonce
+        self.snap_every = 1 if local else max(1, C.SIM_HZ // C.SNAPSHOT_HZ)
+
+
+class Server:
+    def __init__(self, port=C.DEFAULT_PORT, bind_host="0.0.0.0", map_seed=None, world=None):
+        self.sock = _make_socket(bind_host, port)
+        self.port = self.sock.getsockname()[1]
+        self.world = world or World(map_seed)
+        self.clients = {}           # addr -> ClientConn
+        self.running = False
+        self.thread = None
+        self._next_tick = None
+        self.dt = 1.0 / C.SIM_HZ
+        self.bytes_sent = 0
+        self.max_packet = 0
+        self.log = []
+        self._posted = deque()      # callables to run on the server thread (tests/admin)
+
+    def post(self, fn):
+        """Run fn(world) on the server thread before the next tick. The only
+        thread-safe way to poke the world from outside."""
+        self._posted.append(fn)
+
+    # ---- lifecycle --------------------------------------------------------
+    def start(self):
+        self.running = True
+        self.thread = threading.Thread(target=self._run, name="chopped-server", daemon=True)
+        self.thread.start()
+
+    def _run(self):
+        while self.running:
+            wait = self.pump()
+            if wait > 0:
+                time.sleep(min(wait, 0.004))
+
+    def stop(self):
+        if self.thread and self.thread.is_alive():
+            self.running = False
+            self.thread.join(timeout=2.0)
+        self.running = False
+        for c in list(self.clients.values()):
+            for _ in range(3):
+                self._send(P.header(P.P_SHUTDOWN) + b"HOST CLOSED THE SHOP", c.addr)
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+    # ---- one iteration: receive, step as many fixed ticks as are due, send
+    def pump(self):
+        now = time.perf_counter()
+        if self._next_tick is None:
+            self._next_tick = now
+        for data, addr in _recv_all(self.sock):
+            self._handle(data, addr, now)
+        while self._posted:
+            self._posted.popleft()(self.world)
+        steps = 0
+        while now >= self._next_tick and steps < 8:
+            self.world.step(self.dt)
+            self._next_tick += self.dt
+            steps += 1
+            self._send_snapshots()
+        if now - self._next_tick > 0.25:
+            self._next_tick = now          # we fell way behind (debugger?); don't fast-forward forever
+        self._timeouts(now)
+        return self._next_tick - time.perf_counter()
+
+    def _send(self, data, addr):
+        try:
+            self.sock.sendto(data, addr)
+            self.bytes_sent += len(data)
+        except OSError:
+            pass
+
+    def _handle(self, data, addr, now):
+        h = P.parse_header(data)
+        if h is None:
+            return
+        ver, ptype = h
+        off = P.HDR.size
+        if ptype == P.P_JOIN:
+            if ver != C.VERSION:
+                self._send(P.header(P.P_REJECT) + b"VERSION MISMATCH - UPDATE YOUR GAME", addr)
+                return
+            if len(data) < off + P.JOIN.size:
+                return
+            nonce, local = P.JOIN.unpack_from(data, off)
+            name, _ = P._text(data, off + P.JOIN.size) if len(data) > off + P.JOIN.size else ("", 0)
+            conn = self.clients.get(addr)
+            if conn is None:
+                if len(self.clients) >= C.MAX_PLAYERS:
+                    self._send(P.header(P.P_REJECT) + b"SERVER FULL (4/4)", addr)
+                    return
+                p = self.world.add_player(name.strip() or None)
+                if p is None:
+                    self._send(P.header(P.P_REJECT) + b"SERVER FULL (4/4)", addr)
+                    return
+                conn = ClientConn(addr, p.id, bool(local), nonce)
+                self.clients[addr] = conn
+                self.log.append("join %s pid=%d %s" % (addr, p.id, p.name))
+            conn.last_heard = now
+            self._send(P.header(P.P_WELCOME) + P.WELCOME.pack(conn.pid, self.world.map_seed, nonce), addr)
+            return
+        conn = self.clients.get(addr)
+        if conn is None:
+            return
+        conn.last_heard = now
+        if ptype == P.P_INPUT and len(data) >= off + P.INPUT.size:
+            seq, cms, ack, buttons, use, drop, ex = P.INPUT.unpack_from(data, off)
+            if seq <= conn.input_seq:
+                return                     # stale/out-of-order: newer state already applied
+            conn.input_seq = seq
+            conn.echo_ms = cms
+            conn.ack_event = max(conn.ack_event, ack)
+            self.world.set_input(conn.pid, InputState(buttons, use, drop, ex))
+        elif ptype == P.P_LEAVE:
+            self._drop(conn, "left")
+
+    def _drop(self, conn, why):
+        self.clients.pop(conn.addr, None)
+        self.world.remove_player(conn.pid)
+        self.log.append("drop pid=%d (%s)" % (conn.pid, why))
+
+    def _timeouts(self, now):
+        for conn in list(self.clients.values()):
+            if now - conn.last_heard > C.TIMEOUT_S:
+                self._drop(conn, "timeout")
+
+    def _send_snapshots(self):
+        tick = self.world.tick
+        for conn in list(self.clients.values()):
+            if tick % conn.snap_every:
+                continue
+            pkt = P.encode_snapshot(self.world, conn.pid, conn.echo_ms, conn.ack_event)
+            self.max_packet = max(self.max_packet, len(pkt))
+            self._send(pkt, conn.addr)
+
+    @property
+    def player_count(self):
+        return len(self.clients)
+
+
+# ===========================================================================
+def lerp_angle(a, b, t):
+    d = (b - a + math.pi) % (2 * math.pi) - math.pi
+    return a + d * t
+
+
+class View:
+    """What the renderer draws this frame: interpolated copies of snapshot
+    entity rows (same field layout as protocol.decode_snapshot)."""
+    __slots__ = ("snap", "cars", "players", "npcs", "pickups", "me", "my_car")
+
+
+class Client:
+    def __init__(self, host, port=C.DEFAULT_PORT, name="PLAYER", local=False):
+        self.name = name
+        self.local = local
+        self.state = "connecting"
+        self.error = ""
+        self.pid = None
+        self.map = None
+        self.map_seed = None
+        self.nonce = random.randrange(1, 2 ** 31)
+        self.sock = _make_socket("0.0.0.0", 0)
+        try:
+            ip = socket.gethostbyname(host)
+        except OSError:
+            self.state = "failed"
+            self.error = "CAN'T RESOLVE %s" % host
+            ip = "127.0.0.1"
+        self.addr = (ip, port)
+        self.started = time.perf_counter()
+        self.last_join = -1.0
+        self.last_rx = self.started
+        self.last_input = -1.0
+        self.input_seq = 0
+        self.inp = InputState()
+        self.snaps = deque(maxlen=48)
+        self.latest = None
+        self.offsets = deque(maxlen=60)
+        self.offset = None
+        self.last_event = 0
+        self.new_events = []
+        self.ping_ms = 0
+        self.delay = C.LOCAL_INTERP_DELAY if local else C.INTERP_DELAY
+        self.input_period = 1.0 / (C.SIM_HZ if local else C.INPUT_HZ)
+
+    # ---- networking ---------------------------------------------------------
+    def _send(self, data):
+        try:
+            self.sock.sendto(data, self.addr)
+        except OSError:
+            pass
+
+    def update(self, now=None):
+        if now is None:
+            now = time.perf_counter()
+        if self.state in ("failed", "closed"):
+            return
+        for data, addr in _recv_all(self.sock):
+            if addr != self.addr:
+                continue
+            h = P.parse_header(data)
+            if h is None:
+                continue
+            ver, ptype = h
+            off = P.HDR.size
+            self.last_rx = now
+            if ptype == P.P_WELCOME and len(data) >= off + P.WELCOME.size:
+                pid, seed, nonce = P.WELCOME.unpack_from(data, off)
+                if nonce != self.nonce or self.pid is not None:
+                    continue
+                self.pid = pid
+                self.map_seed = seed
+                self.map = CityMap(seed)
+                self.state = "connected"
+            elif ptype == P.P_SNAPSHOT and self.pid is not None:
+                try:
+                    snap = P.decode_snapshot(data[off:])
+                except Exception:
+                    continue                     # mangled packet; UDP gonna UDP
+                self._on_snapshot(snap, now)
+            elif ptype == P.P_REJECT:
+                self.state = "failed"
+                self.error = data[off:].decode("ascii", "replace")
+                return
+            elif ptype == P.P_SHUTDOWN:
+                self.state = "closed"
+                self.error = data[off:].decode("ascii", "replace") or "HOST CLOSED THE SHOP"
+                return
+        if self.state == "connecting":
+            if now - self.last_join > 0.5:
+                self.last_join = now
+                self._send(P.header(P.P_JOIN) + P.JOIN.pack(self.nonce, 1 if self.local else 0) +
+                           P.encode_text(self.name, 12))
+            if now - self.started > C.TIMEOUT_S:
+                self.state = "failed"
+                self.error = "NO ANSWER FROM %s:%d" % self.addr
+            return
+        if now - self.last_rx > C.TIMEOUT_S:
+            self.state = "closed"
+            self.error = "CONNECTION LOST (NO DATA FOR 10 S)"
+            return
+        if now - self.last_input >= self.input_period:
+            self.last_input = now
+            self.input_seq += 1
+            i = self.inp
+            self._send(P.header(P.P_INPUT) + P.INPUT.pack(
+                self.input_seq, ms_now(), self.last_event, i.buttons & 0xFF,
+                i.use_count & 0xFF, i.drop_count & 0xFF, i.exit_count & 0xFF))
+
+    def _on_snapshot(self, snap, now):
+        if self.latest is not None and snap.tick <= self.latest.tick:
+            return                               # out of order; ignore
+        snap.arrival = now
+        self.snaps.append(snap)
+        self.latest = snap
+        # clock sync: the smallest (arrival - server_time) over the last few
+        # seconds is our best estimate of "zero-jitter" latency + clock offset
+        self.offsets.append(now - snap.time)
+        self.offset = min(self.offsets)
+        if snap.echo_ms:
+            self.ping_ms = (ms_now() - snap.echo_ms) & 0xFFFFFFFF
+            if self.ping_ms > 60000:
+                self.ping_ms = 0
+        for seq, kind, payload in snap.events:
+            if seq > self.last_event:
+                self.new_events.append((kind, payload))
+        if snap.events:
+            self.last_event = max(self.last_event, max(e[0] for e in snap.events))
+
+    def pop_events(self):
+        ev, self.new_events = self.new_events, []
+        return ev
+
+    def leave(self):
+        for _ in range(3):
+            self._send(P.header(P.P_LEAVE))
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+        self.state = "closed"
+
+    # ---- interpolation --------------------------------------------------------
+    def view(self, now=None):
+        if self.latest is None:
+            return None
+        if now is None:
+            now = time.perf_counter()
+        server_now = now - self.offset
+        rt = server_now - self.delay
+        snaps = self.snaps
+        s0 = s1 = None
+        for i in range(len(snaps) - 1, -1, -1):
+            if snaps[i].time <= rt:
+                s0 = snaps[i]
+                s1 = snaps[i + 1] if i + 1 < len(snaps) else None
+                break
+        if s0 is None:
+            s0, s1 = snaps[0], None
+        v = View()
+        latest = self.latest
+        v.snap = latest
+        if s1 is None:
+            ext = max(0.0, min(rt - s0.time, 0.2))
+            t = 0.0
+        else:
+            ext = 0.0
+            t = (rt - s0.time) / max(1e-6, s1.time - s0.time)
+        # everything that exists in the latest snapshot gets drawn; positions
+        # come from the bracketing pair when available
+        v.cars = self._blend(latest.cars, s0.cars, s1.cars if s1 else None, t, ext, 7, 8, 11, 9, 10)
+        v.players = self._blend(latest.players, s0.players, s1.players if s1 else None, t, ext, 4, 5, 8, 6, 7)
+        v.npcs = self._blend(latest.npcs, s0.npcs, s1.npcs if s1 else None, t, 0.0, 3, 4, 5, None, None)
+        v.pickups = self._blend(latest.pickups, s0.pickups, s1.pickups if s1 else None, t, 0.0, 2, 3, None, None, None)
+        v.me = v.players.get(self.pid)
+        v.my_car = None
+        if v.me is not None and v.me[12]:
+            v.my_car = v.cars.get(v.me[12])
+        # remote clients: pull our own avatar/car forward to the freshest
+        # data (+ tiny extrapolation) so controls feel less mushy
+        if not self.local and v.me is not None:
+            lat_ext = max(0.0, min(server_now - latest.time, 0.15))
+            me_l = latest.players.get(self.pid)
+            if me_l is not None:
+                row = list(me_l)
+                row[4] += row[6] * lat_ext
+                row[5] += row[7] * lat_ext
+                v.players[self.pid] = v.me = row
+            if v.my_car is not None and v.my_car[0] in latest.cars:
+                row = list(latest.cars[v.my_car[0]])
+                row[7] += row[9] * lat_ext
+                row[8] += row[10] * lat_ext
+                v.cars[row[0]] = v.my_car = row
+        return v
+
+    @staticmethod
+    def _blend(latest, a, b, t, ext, ix, iy, ia, ivx, ivy):
+        out = {}
+        for eid, row in latest.items():
+            ra = a.get(eid)
+            rb = b.get(eid) if b is not None else None
+            if ra is None:
+                out[eid] = row
+                continue
+            r = list(rb if rb is not None else ra)
+            if rb is not None:
+                r[ix] = ra[ix] + (rb[ix] - ra[ix]) * t
+                r[iy] = ra[iy] + (rb[iy] - ra[iy]) * t
+                if ia is not None:
+                    r[ia] = lerp_angle(ra[ia], rb[ia], t)
+            elif ext and ivx is not None:
+                r[ix] += r[ivx] * ext
+                r[iy] += r[ivy] * ext
+            # non-positional fields (parts, state, hands...) always from latest
+            for k in range(len(row)):
+                if k not in (ix, iy, ia):
+                    r[k] = row[k]
+            out[eid] = r
+        return out
