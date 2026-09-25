@@ -13,738 +13,17 @@ import random
 from . import config as C
 from .config import clamp, lerp, wrap_angle
 from .mapgen import CityMap, GRASS, SIDEWALK
-from .parts import (SLOTS, SLOT_ANCHOR, SLOT_CATEGORY, CATEGORY_SLOTS, WHEEL_SLOTS,
+from .parts import (SLOTS, SLOT_CATEGORY, CATEGORY_SLOTS, WHEEL_SLOTS,
                     PANEL_SLOTS, STRIP_TIME, DOLLY, PART_DEFS, Part, part_power,
-                    kei_loadout, cop_loadout, personal_loadout)
+                    kei_loadout, cop_loadout, personal_loadout, model_loadout, roll_trunk)
+from . import vehicles as V
+from .enums import *  # noqa: F401,F403
+from .lines import *  # noqa: F401,F403
+from .entities import *  # noqa: F401,F403
+from .entities import _next_tier  # noqa: F401
+from .physics import *  # noqa: F401,F403
 
-# ---- enums (ints so they go straight onto the wire) -------------------------
-FOOT, DRIVER, PASSENGER, TUMBLE, CUFFED = range(5)
-CIV, PERSONAL, COP, TRAFFIC = range(4)
-LOCKED, BROKEN_IN, RUNNING, DELIVERED = range(4)
-PED, CLOWN, OWNER = range(3)
-W_NONE, W_COP, W_PED, W_OWNER, W_CAMERA = range(5)
-
-B_UP, B_DOWN, B_LEFT, B_RIGHT = 1, 2, 4, 8
-B_USE, B_SPRINT, B_HANDBRAKE, B_HORN = 16, 32, 64, 128
-
-# toast colours
-T_WHITE, T_MONEY, T_BAD, T_INFO, T_COP = range(5)
-
-# sound ids (client maps these to procedural sfx)
-(S_CRASH, S_CRASH_BIG, S_BOOM, S_SELL, S_PICKUP, S_BREAKIN, S_HOTWIRE, S_STRIP,
- S_HONK, S_ARREST, S_RENT, S_CRUSH, S_DELIVER, S_DROP, S_INSTALL, S_YELP,
- S_IGNITE, S_BUY, S_PUNCH, S_PISTOL, S_SHOTGUN, S_EMPTY, S_TIRE, S_TRAP, S_ROB) = range(25)
-
-# what's in your hands when you click: keys 1-5
-ARM_FISTS, ARM_PISTOL, ARM_SHOTGUN, ARM_SPIKES, ARM_BLOCK = range(5)
-ARM_NAMES = ("FISTS", "PISTOL", "SHOTGUN", "SPIKE STRIP", "ROADBLOCK")
-TRAP_SPIKES, TRAP_BLOCK = range(2)
-
-
-def arsenal_owns(arsenal, slot):
-    """Client-side Player.owns(), from the 6-byte arsenal in the SELF block:
-    (weapon, arms bitmask, pistol ammo, shotgun ammo, spikes, roadblocks)."""
-    if not arsenal:
-        return slot == ARM_FISTS
-    if slot == ARM_SPIKES:
-        return arsenal[4] > 0
-    if slot == ARM_BLOCK:
-        return arsenal[5] > 0
-    return bool(arsenal[1] & (1 << slot))
-
-
-MARKET = {  # crate -> (label, price)
-    "pistol": ("PISTOL (+%d ROUNDS)" % C.PISTOL_AMMO, C.PRICE_PISTOL),
-    "shotgun": ("SHOTGUN (+%d SHELLS)" % C.SHOTGUN_AMMO, C.PRICE_SHOTGUN),
-    "ammo": ("AMMO FOR YOUR GUNS", C.PRICE_AMMO),
-    "spikes": ("SPIKE STRIP", C.PRICE_SPIKES),
-    "roadblock": ("ROADBLOCK", C.PRICE_ROADBLOCK),
-}
-
-SLOT_LABEL = {
-    "Engine": "ENGINE", "Transmission": "GEARBOX", "ECU": "ECU", "Exhaust": "EXHAUST",
-    "WheelFL": "FRONT-L WHEEL", "WheelFR": "FRONT-R WHEEL", "WheelRL": "REAR-L WHEEL",
-    "WheelRR": "REAR-R WHEEL", "Hood": "HOOD", "DoorL": "LEFT DOOR", "DoorR": "RIGHT DOOR",
-    "BumperF": "FRONT BUMPER", "BumperR": "REAR BUMPER", "Seats": "SEATS",
-}
-
-PED_COMPLAINTS = [
-    "HEY! I'M WALKING HERE!", "MY LATTE!!", "I'M CALLING MY MOM", "THAT'S ASSAULT BY HATCHBACK",
-    "I HAVE A PODCAST, YOU KNOW", "RUDE.", "MY SPINE IS NOW A SQUIGGLE", "WATCH IT, JOYRIDER!",
-    "I'M WRITING A STRONGLY WORDED YELP REVIEW", "NOT THE KNEES!",
-]
-OWNER_YELLS = [
-    "OWNER: THAT'S MY CAR!!", "OWNER: I JUST PAID IT OFF!", "OWNER: COME BACK HERE!",
-    "OWNER: IT HAS MY GYM BAG IN IT!", "OWNER: I KNOW WHERE YOU LIVE! (I DON'T)",
-    "OWNER: THAT'S A 2004! IT'S A CLASSIC!",
-]
-CLOWN_LINES = ["HONK!", "HONK HONK!", "*SAD TROMBONE*", "A CLOWN SQUEAKS ANGRILY"]
-PUNCH_LINES = ["PEDESTRIAN: OW! MY EVERYTHING!", "PEDESTRIAN: WHAT WAS THAT FOR?!",
-               "PEDESTRIAN: I'M TELLING EVERYONE ON THE BUS", "PEDESTRIAN: THAT'S IT, I'M MOVING TO SURREY"]
-SHOT_LINES = ["PEDESTRIAN: I'VE BEEN SHOT! (IT'S A GRAZE) (IT'S FINE)", "PEDESTRIAN: MY GOOD JACKET!",
-              "PEDESTRIAN: I'M CALLING 911 AND MY LAWYER", "PEDESTRIAN: WHY?! I'M A DENTIST!"]
-SURRENDER_LINES = ["PEDESTRIAN: OKAY OKAY! TAKE IT!", "PEDESTRIAN: DON'T SHOOT! I HAVE A PODCAST!",
-                   "PEDESTRIAN: HANDS UP! SEE? HANDS! UP!"]
-WALLET_EXTRAS = ["(AND A BUS PASS)", "(AND A GYM CARD, NEVER USED)", "(AND A PHOTO OF SOMEONE'S CAT)",
-                 "(AND THREE LOTTERY TICKETS, ALL LOSERS)", "(AND A COUPON FOR TIM'S)"]
-BAIL_LINES = ["DRIVER: I'M NOT PAID ENOUGH FOR THIS!", "DRIVER: KEEP IT! IT'S LEASED!",
-              "DRIVER: I'M CALLING MY INSURANCE (AND MY MOM)", "DRIVER: NOPE. NOPE NOPE NOPE."]
 DIRS = ((1, 0), (-1, 0), (0, 1), (0, -1))
-
-# parts counter: every category's parts, cheapest first
-TIERS = {}
-for _tid, _d in sorted(PART_DEFS.items(), key=lambda kv: kv[1][3]):
-    TIERS.setdefault(_d[1], []).append(_tid)
-
-
-def _next_tier(type_id):
-    """The next pricier part in the same category, or None at the top."""
-    tier = TIERS[PART_DEFS[type_id][1]]
-    i = tier.index(type_id)
-    return tier[i + 1] if i + 1 < len(tier) else None
-
-
-def buy_price(type_id):
-    return int(round(PART_DEFS[type_id][3] * C.BUY_MARKUP))
-
-
-class InputState:
-    """What a player is pressing, and where they're looking. Counters (not
-    booleans) for one-shot keys so a tap survives a dropped packet: if the
-    number changed, it happened. yaw is the first-person view direction."""
-    __slots__ = ("buttons", "use_count", "drop_count", "exit_count", "yaw", "fire_count", "weapon")
-
-    def __init__(self, buttons=0, use_count=0, drop_count=0, exit_count=0, yaw=0.0, fire_count=0, weapon=0):
-        self.buttons = buttons
-        self.use_count = use_count
-        self.drop_count = drop_count
-        self.exit_count = exit_count
-        self.yaw = yaw
-        self.fire_count = fire_count      # clicks, counted (like E) so a dropped packet can't eat a shot
-        self.weapon = weapon              # ARM_* slot you've got selected
-
-
-class Car:
-    __slots__ = ("id", "kind", "color", "x", "y", "vx", "vy", "ang", "w", "state", "parts",
-                 "alarm", "driver", "passenger", "special", "stolen", "fire_t", "horn",
-                 "handbrake", "throttle", "steer", "crash_cd", "impact_dv", "impact_nx",
-                 "impact_ny", "damage", "pull", "mass", "inertia", "confused_t", "confuse_cd",
-                 "stuck_t", "rev_t", "abandon_t", "flow_key", "flow_t", "last_target",
-                 "special_fired", "route", "route_prev", "tdir", "node", "blocked_t", "shaken_t",
-                 "overtake_t", "hits")
-
-    def __init__(self, cid, kind, x, y, ang, parts, color=0):
-        self.id = cid
-        self.kind = kind
-        self.color = color
-        self.x, self.y, self.ang = x, y, ang
-        self.vx = self.vy = self.w = 0.0
-        self.state = RUNNING if kind != CIV else LOCKED
-        self.parts = parts
-        self.alarm = False
-        self.driver = None
-        self.passenger = None
-        self.special = None           # None | "clown" | "owner"
-        self.special_fired = False
-        self.stolen = False
-        self.fire_t = 0.0
-        self.horn = False
-        self.handbrake = False
-        self.throttle = 0.0
-        self.steer = 0.0
-        self.crash_cd = 0.0
-        self.impact_dv = 0.0
-        self.impact_nx = self.impact_ny = 0.0
-        self.damage = 0
-        self.pull = 1.0
-        self.mass = C.COP_MASS if kind == COP else C.CAR_MASS
-        self.inertia = self.mass * C.CAR_INERTIA_K
-        self.confused_t = 0.0
-        self.confuse_cd = 0.0
-        self.stuck_t = 0.0
-        self.rev_t = 0.0
-        self.abandon_t = 0.0
-        self.flow_key = None
-        self.flow_t = 0.0
-        self.last_target = None
-        # traffic brain: waypoints, current direction, the intersection it's heading for
-        self.route = []
-        self.route_prev = None        # last waypoint passed: the lane runs from there to route[0]
-        self.tdir = (1, 0)
-        self.node = (0, 0)
-        self.blocked_t = 0.0
-        self.shaken_t = 0.0
-        self.overtake_t = 0.0
-        self.hits = 0                 # bullets taken (cop cars burn after COP_CAR_HITS)
-
-    def power(self):
-        # Sum of every part's power. Worn engine alone = 45 = sad trombone.
-        return sum(part_power(p.type_id) for p in self.parts.values() if p is not None)
-
-    def speed(self):
-        return math.hypot(self.vx, self.vy)
-
-    def missing_wheels(self):
-        return sum(1 for s in WHEEL_SLOTS if self.parts.get(s) is None)
-
-    def to_world(self, lx, ly):
-        c, s = math.cos(self.ang), math.sin(self.ang)
-        return self.x + c * lx - s * ly, self.y + s * lx + c * ly
-
-    def corners(self):
-        hl, hw = C.CAR_LEN / 2, C.CAR_WID / 2
-        return [self.to_world(a, b) for a, b in ((hl, hw), (hl, -hw), (-hl, hw), (-hl, -hw))]
-
-    def occupants(self):
-        return [p for p in (self.driver, self.passenger) if p is not None]
-
-    def wanted(self):
-        return self.kind == CIV and self.stolen and self.state != DELIVERED
-
-
-class Player:
-    __slots__ = ("id", "name", "color", "x", "y", "vx", "vy", "ang", "state", "car_id", "hands",
-                 "stamina", "exhausted", "regen_delay", "tumble_t", "spin", "spin_rate",
-                 "cuffed_t", "arrest_t", "input", "prev_use", "prev_drop", "prev_exit",
-                 "hold_key", "hold", "need_release", "prompt", "hold_frac", "sprinting",
-                 "moving", "last_seen", "addr", "dolly", "weapon", "arms", "ammo", "gear", "fire_cd",
-                 "prev_fire")
-
-    def __init__(self, pid, name, color):
-        self.id = pid
-        self.name = name
-        self.color = color
-        self.x = self.y = 0.0
-        self.vx = self.vy = 0.0
-        self.ang = math.pi / 2
-        self.state = FOOT
-        self.car_id = None
-        self.hands = []
-        self.stamina = C.STAMINA_MAX
-        self.exhausted = False
-        self.regen_delay = 0.0
-        self.tumble_t = 0.0
-        self.spin = 0.0
-        self.spin_rate = 0.0
-        self.cuffed_t = 0.0
-        self.arrest_t = 0.0
-        self.input = InputState()
-        self.prev_use = self.prev_drop = self.prev_exit = 0
-        self.hold_key = None
-        self.hold = 0.0
-        self.need_release = False
-        self.prompt = ""
-        self.hold_frac = 0.0
-        self.sprinting = False
-        self.moving = False
-        self.dolly = None             # the Dolly you're pushing (it takes both hands)
-        self.weapon = ARM_FISTS
-        self.arms = 1 << ARM_FISTS    # bitmask of what you own; everyone owns fists
-        self.ammo = [0, 0, 0]         # per ARM_ slot (fists don't need any)
-        self.gear = [0, 0]            # spike strips, roadblocks
-        self.fire_cd = 0.0
-        self.prev_fire = 0
-
-    def hands_used(self):
-        if self.dolly is not None:
-            return 2
-        return sum(p.bulk for p in self.hands)
-
-    def can_hold(self, part):
-        return part.bulk != DOLLY and self.hands_used() + part.bulk <= 2
-
-    def walk_load(self):
-        """0..2, how hard walking/sprinting is on your stamina."""
-        if self.dolly is not None:
-            return 2 if self.dolly.part is not None else 1
-        return min(2, self.hands_used())
-
-    def owns(self, slot):
-        if slot == ARM_SPIKES:
-            return self.gear[0] > 0
-        if slot == ARM_BLOCK:
-            return self.gear[1] > 0
-        return bool(self.arms & (1 << slot))
-
-    def speed_mult(self):
-        if self.dolly is not None:
-            return C.DOLLY_LOADED_SPEED_MULT if self.dolly.part is not None else C.DOLLY_SPEED_MULT
-        return C.TWO_HAND_SPEED_MULT if self.hands_used() >= 2 else 1.0
-
-
-class NPC:
-    __slots__ = ("id", "kind", "x", "y", "vx", "vy", "ang", "tumble_t", "life_t", "dirx", "diry",
-                 "turn_t", "target", "yell_t", "complain_cd", "spin", "flee_t", "fx", "fy", "ttl", "wallet",
-                 "wallet_t", "surrender_t")
-
-    def __init__(self, nid, kind, x, y):
-        self.id = nid
-        self.kind = kind
-        self.x, self.y = x, y
-        self.vx = self.vy = 0.0
-        self.ang = 0.0
-        self.tumble_t = 0.0
-        self.life_t = 0.0
-        self.dirx, self.diry = 1.0, 0.0
-        self.turn_t = 0.0
-        self.target = None
-        self.yell_t = 2.0
-        self.complain_cd = 0.0
-        self.spin = 0.0
-        self.flee_t = 0.0             # > 0: running away from something loud and fast
-        self.fx, self.fy = 1.0, 0.0
-        self.ttl = 0.0                # > 0: temporary extra (a driver who bailed); gone when it runs out
-        self.wallet = (C.WALLET_MIN + C.WALLET_MAX) // 2   # World rolls a proper one for pedestrians
-        self.wallet_t = 0.0           # counts down to a refilled wallet after a robbery
-        self.surrender_t = 0.0        # > 0: hands up, someone's pointing a gun at them
-
-
-class Dolly:
-    """A hand truck. Carries one dolly-only part (an engine); pushing it takes
-    both hands."""
-    __slots__ = ("id", "x", "y", "ang", "part", "holder", "idle_t")
-
-    def __init__(self, did, x, y):
-        self.id = did
-        self.x, self.y = x, y
-        self.ang = -math.pi / 2
-        self.part = None
-        self.holder = None            # player id
-        self.idle_t = 0.0
-
-
-class Trap:
-    """A spike strip or a roadblock, lying across the road. ang is the way the
-    traffic it's meant for is travelling (0 or pi/2 or ...), so the long side
-    is across the lane."""
-    __slots__ = ("id", "kind", "x", "y", "ang", "age", "uses", "hit")
-
-    def __init__(self, tid, kind, x, y, ang):
-        self.id = tid
-        self.kind = kind
-        self.x, self.y, self.ang = x, y, ang
-        self.age = 0.0
-        self.uses = C.SPIKE_USES
-        self.hit = set()
-
-    def rect(self):
-        """Axis-aligned (x, y, w, h): traps only ever go down square to the street grid."""
-        long_, short = ((C.SPIKE_LEN, C.SPIKE_WID) if self.kind == TRAP_SPIKES
-                        else (C.ROADBLOCK_LEN, C.ROADBLOCK_WID))
-        if abs(math.cos(self.ang)) > 0.5:          # traffic runs along x: the trap spans y
-            w, h = short, long_
-        else:
-            w, h = long_, short
-        return (self.x - w / 2, self.y - h / 2, w, h)
-
-
-class Pickup:
-    __slots__ = ("id", "part", "x", "y", "vx", "vy", "age")
-
-    def __init__(self, pid, part, x, y, vx=0.0, vy=0.0):
-        self.id = pid
-        self.part = part
-        self.x, self.y = x, y
-        self.vx, self.vy = vx, vy
-        self.age = 0.0
-
-    def scale(self):
-        left = C.PICKUP_LIFETIME - self.age
-        return clamp(left / C.PICKUP_SHRINK, 0.0, 1.0)
-
-
-# ---------------------------------------------------------------------------
-# Collision helpers
-# ---------------------------------------------------------------------------
-HL, HW = C.CAR_LEN / 2.0, C.CAR_WID / 2.0     # a car is a 4.4 x 2.4 m box now, corners and all
-CAR_BOUND_R = math.hypot(HL, HW)               # ...that fits in a 2.5 m circle for broad-phase checks
-CONTACT_TIE = 0.12                             # corners closer than this in depth count as "flush"
-
-
-def circle_rect_contact(x, y, r, rect):
-    """Returns (nx, ny, pen, px, py) if the circle overlaps the AABB, else None.
-    (px, py) is the contact point on the rect."""
-    rx, ry, rw, rh = rect
-    cx = rx if x < rx else rx + rw if x > rx + rw else x
-    cy = ry if y < ry else ry + rh if y > ry + rh else y
-    dx, dy = x - cx, y - cy
-    d2 = dx * dx + dy * dy
-    if d2 >= r * r:
-        return None
-    if d2 > 1e-10:
-        d = math.sqrt(d2)
-        return dx / d, dy / d, r - d, cx, cy
-    # centre is inside the rect: shove out along the shallowest axis
-    l, rr, t, b = x - rx, rx + rw - x, y - ry, ry + rh - y
-    m = min(l, rr, t, b)
-    if m == l:
-        return -1.0, 0.0, l + r, rx, y
-    if m == rr:
-        return 1.0, 0.0, rr + r, rx + rw, y
-    if m == t:
-        return 0.0, -1.0, t + r, x, ry
-    return 0.0, 1.0, b + r, x, ry + rh
-
-
-def _box_point(x, y, c, s, dx, dy):
-    """The corner of a car box that sticks out furthest along (dx, dy). When
-    two corners are within CONTACT_TIE of each other (a flush bumper against a
-    wall) we take the middle of that edge instead -- otherwise a dead-straight
-    hit would spin the car off whichever corner won the rounding lottery."""
-    pf = c * dx + s * dy
-    pr = -s * dx + c * dy
-    lx = 0.0 if 2 * HL * abs(pf) < CONTACT_TIE else (HL if pf > 0 else -HL)
-    ly = 0.0 if 2 * HW * abs(pr) < CONTACT_TIE else (HW if pr > 0 else -HW)
-    return x + c * lx - s * ly, y + s * lx + c * ly
-
-
-def _clamp_to_box(px, py, x, y, c, s):
-    lx = clamp((px - x) * c + (py - y) * s, -HL, HL)
-    ly = clamp(-(px - x) * s + (py - y) * c, -HW, HW)
-    return x + c * lx - s * ly, y + s * lx + c * ly
-
-
-def obb_rect_contact(x, y, ang, rect):
-    """Car box vs axis-aligned rect, separating-axis test on the 4 candidate
-    axes. Returns (nx, ny, pen, px, py) with the normal pointing from the rect
-    towards the car, or None."""
-    rx, ry, rw, rh = rect
-    ex, ey = rw * 0.5, rh * 0.5
-    dx, dy = rx + ex - x, ry + ey - y            # car centre -> rect centre
-    c, s = math.cos(ang), math.sin(ang)
-    ac, asn = abs(c), abs(s)
-    ox = HL * ac + HW * asn + ex - abs(dx)
-    if ox <= 0:
-        return None
-    oy = HL * asn + HW * ac + ey - abs(dy)
-    if oy <= 0:
-        return None
-    df = dx * c + dy * s
-    of = HL + ex * ac + ey * asn - abs(df)
-    if of <= 0:
-        return None
-    dr = -dx * s + dy * c
-    orr = HW + ex * asn + ey * ac - abs(dr)
-    if orr <= 0:
-        return None
-    # Prefer the rect's own faces unless a car face is clearly shallower:
-    # walls are axis-aligned, and a normal that flickers between two
-    # candidates is how cars end up vibrating against buildings.
-    if min(ox, oy) <= min(of, orr) * 1.05 + 0.02:
-        if ox <= oy:
-            nx, ny, pen = (-1.0 if dx > 0 else 1.0), 0.0, ox
-        else:
-            nx, ny, pen = 0.0, (-1.0 if dy > 0 else 1.0), oy
-        px, py = _box_point(x, y, c, s, -nx, -ny)          # deepest car corner(s)
-        px = clamp(px, rx, rx + rw)
-        py = clamp(py, ry, ry + rh)
-    else:
-        if of <= orr:
-            ax, ay, pen, dd = c, s, of, df
-        else:
-            ax, ay, pen, dd = -s, c, orr, dr
-        sg = -1.0 if dd > 0 else 1.0
-        nx, ny = ax * sg, ay * sg
-        # the rect corner poking deepest into the car (a building corner in the door)
-        qx = rx + rw * 0.5 if rw * abs(nx) < CONTACT_TIE else (rx + rw if nx > 0 else rx)
-        qy = ry + rh * 0.5 if rh * abs(ny) < CONTACT_TIE else (ry + rh if ny > 0 else ry)
-        px, py = _clamp_to_box(qx, qy, x, y, c, s)
-    return nx, ny, pen, px, py
-
-
-def obb_obb_contact(a, b):
-    """Car box vs car box. Returns (nx, ny, pen, px, py), normal pointing from
-    b to a, or None. Same SAT idea with both cars' axes as candidates."""
-    dx, dy = b.x - a.x, b.y - a.y
-    ca, sa = math.cos(a.ang), math.sin(a.ang)
-    cb, sb = math.cos(b.ang), math.sin(b.ang)
-    best = None
-    for ux, uy, owner in ((ca, sa, 0), (-sa, ca, 0), (cb, sb, 1), (-sb, cb, 1)):
-        ra = HL * abs(ux * ca + uy * sa) + HW * abs(-ux * sa + uy * ca)
-        rb = HL * abs(ux * cb + uy * sb) + HW * abs(-ux * sb + uy * cb)
-        dd = dx * ux + dy * uy
-        ov = ra + rb - abs(dd)
-        if ov <= 0:
-            return None
-        if best is None or ov < best[0] - 0.01:
-            best = (ov, ux, uy, dd, owner)
-    pen, ux, uy, dd, owner = best
-    sg = -1.0 if dd > 0 else 1.0
-    nx, ny = ux * sg, uy * sg                     # from b towards a
-    if owner == 0:     # a's face: b's corner is doing the poking
-        px, py = _box_point(b.x, b.y, cb, sb, nx, ny)
-        px, py = _clamp_to_box(px, py, a.x, a.y, ca, sa)
-    else:              # b's face: a's corner is doing the poking
-        px, py = _box_point(a.x, a.y, ca, sa, -nx, -ny)
-        px, py = _clamp_to_box(px, py, b.x, b.y, cb, sb)
-    return nx, ny, pen, px, py
-
-
-def box_distance(car, x, y):
-    """Distance from a point to a car's box (0 if inside)."""
-    c, s = math.cos(car.ang), math.sin(car.ang)
-    lx = abs((x - car.x) * c + (y - car.y) * s) - HL
-    ly = abs(-(x - car.x) * s + (y - car.y) * c) - HW
-    return math.hypot(max(lx, 0.0), max(ly, 0.0))
-
-
-def drive_input(car, buttons):
-    """Driver's buttons -> pedals and wheel. Shared by the server and the
-    client-side predictor so they can't disagree about what W means."""
-    car.throttle = (1.0 if buttons & B_UP else 0.0) - (1.0 if buttons & B_DOWN else 0.0)
-    car.steer = (1.0 if buttons & B_RIGHT else 0.0) - (1.0 if buttons & B_LEFT else 0.0)
-    car.handbrake = bool(buttons & B_HANDBRAKE)
-
-
-class Physics:
-    """Movement and collision maths, shared by the authoritative World and
-    the client-side Predictor (predict.py). Same code on both ends is the whole
-    trick of prediction: if the client ran different maths, it would predict a
-    different car and the server would keep yanking it back.
-
-    Subclasses provide self.map, self.cars, self._rects (a scratch list) and
-    self.extra_rects (roadblocks: solid for cars and people alike)."""
-
-    # ------------------------------------------------------------------ cars
-    def _drive(self, car, dt):
-        fx, fy = math.cos(car.ang), math.sin(car.ang)
-        rx, ry = -fy, fx
-        vf = car.vx * fx + car.vy * fy
-        vr = car.vx * rx + car.vy * ry
-        driven = car.driver is not None or car.kind == COP or car.kind == TRAFFIC
-        mw = car.missing_wheels()
-        on_grass = self.map.tile_at(car.x, car.y) == 3  # GRASS
-        if car.kind == COP:
-            accel = C.ACCEL_PER_100_POWER * C.COP_ACCEL_MULT
-            top = C.COP_TOP_SPEED
-        else:
-            accel = C.ACCEL_PER_100_POWER * car.power() / 100.0
-            top = C.CIV_TOP_SPEED
-        if car.state == DELIVERED:
-            driven = False            # delivered cars never drive again. RIP.
-        top *= (1.0 - C.MISSING_WHEEL_TOP * mw)
-        thr = car.throttle if driven else 0.0
-        hb = car.handbrake if driven else False
-        if thr > 0:
-            if vf < -0.5:
-                vf = min(0.0, vf + C.BRAKE_DECEL * thr * dt)
-            else:
-                vf += accel * thr * dt
-        elif thr < 0:
-            if vf > 0.5:
-                vf = max(0.0, vf + C.BRAKE_DECEL * thr * dt)
-            else:
-                vf += accel * C.REVERSE_FRAC * thr * dt
-                vf = max(vf, -C.REVERSE_MAX)
-        else:
-            dec = (C.ROLL_DECEL if driven else C.PARKED_BRAKE) * dt
-            vf = vf - dec if vf > dec else vf + dec if vf < -dec else 0.0
-        vf -= C.DRAG_K * vf * abs(vf) * dt
-        if on_grass:
-            vf -= math.copysign(min(abs(vf), C.GRASS_DRAG * dt), vf)
-        if hb:
-            vf = max(0.0, vf - C.HANDBRAKE_DECEL * dt) if vf > 0 else min(0.0, vf + C.HANDBRAKE_DECEL * dt)
-        vf = clamp(vf, -C.REVERSE_MAX, top)
-        grip = C.HANDBRAKE_GRIP if hb else C.GRIP
-        if abs(vr) > C.SLIDE_THRESHOLD:
-            grip *= C.SLIDE_GRIP_MULT
-        if on_grass:
-            grip *= C.GRASS_GRIP_MULT
-        grip *= max(0.2, 1.0 - C.MISSING_WHEEL_GRIP * mw)
-        vr *= math.exp(-grip * dt)
-        # steering: full lock at low speed, shrinking as you go faster
-        aspd = abs(vf)
-        sf = min(1.0, aspd / C.STEER_FULL_AT)
-        lock = lerp(C.STEER_RATE_LOW, C.STEER_RATE_HIGH, clamp(aspd / C.CIV_TOP_SPEED, 0.0, 1.0))
-        target_w = (car.steer if driven else 0.0) * lock * sf * (1.0 if vf >= 0 else -1.0)
-        if hb:
-            target_w *= C.HANDBRAKE_YAW_MULT
-        if mw:
-            target_w += car.pull * C.MISSING_WHEEL_PULL * mw * sf
-        resp = C.STEER_RESPONSE * (0.35 if hb else 1.0)
-        car.w += (target_w - car.w) * min(1.0, resp * dt)
-        car.vx = fx * vf + rx * vr
-        car.vy = fy * vf + ry * vr
-        car.x += car.vx * dt
-        car.y += car.vy * dt
-        car.ang = wrap_angle(car.ang + car.w * dt)
-
-    def _apply_static_contact(self, car, px, py, nx, ny, pen, e):
-        car.x += nx * pen
-        car.y += ny * pen
-        rx, ry = px - car.x, py - car.y
-        vcx = car.vx - car.w * ry
-        vcy = car.vy + car.w * rx
-        vn = vcx * nx + vcy * ny
-        if vn >= 0:
-            return
-        rn = rx * ny - ry * nx
-        j = -(1.0 + e) * vn / (1.0 / car.mass + rn * rn / car.inertia)
-        car.vx += j * nx / car.mass
-        car.vy += j * ny / car.mass
-        car.w += rn * j / car.inertia
-        # scrape friction: walls are not ice rinks
-        tx, ty = -ny, nx
-        vt = vcx * tx + vcy * ty
-        ft = clamp(-vt * car.mass * 0.25, -0.3 * j, 0.3 * j)
-        car.vx += ft * tx / car.mass
-        car.vy += ft * ty / car.mass
-        dv = j / car.mass
-        car.impact_dv += dv
-        car.impact_nx += nx * dv
-        car.impact_ny += ny * dv
-
-    def _car_vs_world(self, car):
-        rects = self._rects
-        rects.clear()
-        self.map.solid_rects_near(car.x, car.y, CAR_BOUND_R, rects)
-        rects.extend(self.extra_rects)             # roadblocks (few; the SAT test rejects far ones fast)
-        for rect in rects:
-            hit = obb_rect_contact(car.x, car.y, car.ang, rect)
-            if hit:
-                nx, ny, pen, px, py = hit
-                self._apply_static_contact(car, px, py, nx, ny, pen, C.RESTITUTION_WALL)
-
-    def _car_pair(self, a, b):
-        """Box-vs-box bump with a proper impulse at the contact point, so a
-        T-bone spins the victim and a nudge on the bumper just pushes. Returns
-        the closing speed (for "was that hard enough to set a cop on fire?")
-        or None if they didn't touch."""
-        hit = obb_obb_contact(a, b)
-        if hit is None:
-            return None
-        nx, ny, pen, px, py = hit                  # normal points from b to a
-        ima, imb = 1.0 / a.mass, 1.0 / b.mass
-        a.x += nx * pen * ima / (ima + imb)
-        a.y += ny * pen * ima / (ima + imb)
-        b.x -= nx * pen * imb / (ima + imb)
-        b.y -= ny * pen * imb / (ima + imb)
-        rax, ray = px - a.x, py - a.y
-        rbx, rby = px - b.x, py - b.y
-        vax = a.vx - a.w * ray
-        vay = a.vy + a.w * rax
-        vbx = b.vx - b.w * rby
-        vby = b.vy + b.w * rbx
-        vn = (vax - vbx) * nx + (vay - vby) * ny
-        if vn >= 0:
-            return None
-        rel = math.hypot(a.vx - b.vx, a.vy - b.vy)
-        rna = rax * ny - ray * nx
-        rnb = rbx * ny - rby * nx
-        j = -(1.0 + C.RESTITUTION_CAR) * vn / (ima + imb + rna * rna / a.inertia + rnb * rnb / b.inertia)
-        a.vx += j * nx * ima
-        a.vy += j * ny * ima
-        a.w += rna * j / a.inertia
-        b.vx -= j * nx * imb
-        b.vy -= j * ny * imb
-        b.w -= rnb * j / b.inertia
-        dva, dvb = j * ima, j * imb
-        a.impact_dv += dva
-        a.impact_nx += nx * dva
-        a.impact_ny += ny * dva
-        b.impact_dv += dvb
-        b.impact_nx -= nx * dvb
-        b.impact_ny -= ny * dvb
-        return rel
-
-    # ------------------------------------------------------------------ people
-    def _walk(self, p, b, dt):
-        """On-foot controls -> stamina, facing and velocity. The predictor runs
-        this too, so it may only read things the client is told about."""
-        # first person: W/S along where you're looking, A/D strafe
-        fwd = (1 if b & B_UP else 0) - (1 if b & B_DOWN else 0)
-        side = (1 if b & B_RIGHT else 0) - (1 if b & B_LEFT else 0)
-        ca, sa = math.cos(p.ang), math.sin(p.ang)
-        dx, dy = ca * fwd - sa * side, sa * fwd + ca * side
-        moving = fwd != 0 or side != 0
-        used = p.walk_load()
-        want_sprint = bool(b & B_SPRINT) and moving and not p.exhausted and p.stamina > 0
-        if want_sprint:
-            p.stamina -= C.STAMINA_SPRINT_DRAIN[min(used, 2)] * dt
-            p.regen_delay = C.STAMINA_REGEN_DELAY
-        elif moving and used >= 2:
-            p.stamina -= C.STAMINA_WALK_2H_DRAIN * dt
-            p.regen_delay = C.STAMINA_REGEN_DELAY
-        else:
-            p.regen_delay -= dt
-            if p.regen_delay <= 0:
-                p.stamina = min(C.STAMINA_MAX, p.stamina + C.STAMINA_REGEN * dt)
-        if p.stamina <= 0:
-            p.stamina = 0.0
-            p.exhausted = True
-        elif p.exhausted and p.stamina > C.STAMINA_RECOVER_AT:
-            p.exhausted = False
-        spd = (C.SPRINT_SPEED if want_sprint else C.WALK_SPEED) * p.speed_mult()
-        if p.exhausted:
-            spd *= C.EXHAUSTED_SPEED_MULT
-        if moving:
-            inv = 1.0 / math.hypot(dx, dy)
-            tx, ty = dx * inv * spd, dy * inv * spd
-        else:
-            tx = ty = 0.0
-        k = min(1.0, 16.0 * dt)
-        p.vx += (tx - p.vx) * k
-        p.vy += (ty - p.vy) * k
-        p.sprinting = want_sprint
-        p.moving = moving
-
-    def _body_vs_world(self, b, r):
-        rects = self._rects
-        rects.clear()
-        self.map.solid_rects_near(b.x, b.y, r, rects)
-        rects.extend(self.extra_rects)
-        for rect in rects:
-            hit = circle_rect_contact(b.x, b.y, r, rect)
-            if hit:
-                nx, ny, pen, _, _ = hit
-                b.x += nx * pen
-                b.y += ny * pen
-                vn = b.vx * nx + b.vy * ny
-                if vn < 0:
-                    b.vx -= vn * nx * 1.3
-                    b.vy -= vn * ny * 1.3
-
-    def _body_vs_cars(self, b, r):
-        """Circle (a person) vs every car box nearby: shove them out, kill the
-        closing velocity, and report the hardest hit as (rel_speed, car_vx,
-        car_vy, nx, ny) so the caller can decide who goes ragdoll."""
-        result = None
-        reach = CAR_BOUND_R + r
-        for car in self.cars.values():
-            dx, dy = b.x - car.x, b.y - car.y
-            if abs(dx) > reach or abs(dy) > reach:
-                continue
-            c, s = math.cos(car.ang), math.sin(car.ang)
-            lx = dx * c + dy * s
-            ly = -dx * s + dy * c
-            qx = HL if lx > HL else -HL if lx < -HL else lx
-            qy = HW if ly > HW else -HW if ly < -HW else ly
-            ex, ey = lx - qx, ly - qy
-            d2 = ex * ex + ey * ey
-            if d2 > 1e-12:
-                if d2 >= r * r:
-                    continue
-                d = math.sqrt(d2)
-                nlx, nly, pen = ex / d, ey / d, r - d
-            else:
-                # centre inside the car (it drove onto you): out the nearest side
-                fx, fy = HL - abs(lx), HW - abs(ly)
-                if fx < fy:
-                    nlx, nly, pen = (1.0 if lx >= 0 else -1.0), 0.0, fx + r
-                else:
-                    nlx, nly, pen = 0.0, (1.0 if ly >= 0 else -1.0), fy + r
-            nx, ny = nlx * c - nly * s, nlx * s + nly * c
-            b.x += nx * pen
-            b.y += ny * pen
-            rel = math.hypot(car.vx - b.vx, car.vy - b.vy)
-            vn = (b.vx - car.vx) * nx + (b.vy - car.vy) * ny
-            if vn < 0:
-                b.vx -= vn * nx
-                b.vy -= vn * ny
-            if result is None or rel > result[0]:
-                result = (rel, car.vx, car.vy, nx, ny)
-        return result
-
 
 
 class World(Physics):
@@ -845,8 +124,11 @@ class World(Physics):
                 continue
             if any(math.hypot(c.x - x, c.y - y) < 6.0 for c in self.cars.values()):
                 continue
-            car = Car(self.new_id(), CIV, x, y, a, kei_loadout(self.rng),
-                      color=self.rng.randrange(1, 9))
+            mid = V.pick_model(self.rng)
+            car = Car(self.new_id(), CIV, x, y, a, model_loadout(self.rng, mid),
+                      color=self.rng.randrange(1, len(V.PAINT_NAMES)), model=mid)
+            self._dress(car)
+            car.trunk = roll_trunk(self.rng, V.model(mid).sporty)
             r = self.rng.random()
             if r < C.CLOWN_CHANCE:
                 car.special = "clown"
@@ -856,6 +138,22 @@ class World(Physics):
             self.cars[car.id] = car
             return car
         return None
+
+    def _dress(self, car):
+        """A paint job to go with the parts: most cars are one boring colour,
+        some have stripes, a few have flames, one in fifty has polka dots."""
+        r = self.rng
+        if car.model == V.ICECREAM:
+            car.color, car.livery = 4, V.livery_byte(V.LIV_PASTEL, 10)
+            return
+        roll = r.random()
+        if roll < C.LIVERY_CHANCE:
+            pattern = r.choice((V.LIV_STRIPES, V.LIV_STRIPES, V.LIV_TWOTONE, V.LIV_TWOTONE, V.LIV_FLAMES,
+                                V.LIV_CHECKER, V.LIV_DOTS, V.LIV_CAMO, V.LIV_BOLT))
+            car.livery = V.livery_byte(pattern, r.randrange(1, len(V.PAINT_NAMES)))
+        if car.kind == CIV and r.random() < C.CIV_GLOW_CHANCE:
+            car.glow = r.randrange(1, 9)
+        car.refresh()
 
     def _spawn_ped(self):
         tx, ty = self.rng.choice(self.map.sidewalk_tiles)
@@ -962,7 +260,8 @@ class World(Physics):
             p.state = FOOT
 
     def _place_beside(self, p, car):
-        for lx, ly in ((0, -2.1), (0, 2.1), (-3.0, 0), (3.0, 0), (0, -3.5), (0, 3.5)):
+        side, end = car.hw + 0.9, car.hl + 0.8
+        for lx, ly in ((0, -side), (0, side), (-end, 0), (end, 0), (0, -side - 1.4), (0, side + 1.4)):
             x, y = car.to_world(lx, ly)
             if not self._blocked(x, y, C.PLAYER_RADIUS, exclude=car):
                 p.x, p.y = x, y
@@ -979,7 +278,7 @@ class World(Physics):
         for c in self.cars.values():
             if c is exclude:
                 continue
-            if math.hypot(c.x - x, c.y - y) < 2.4 + r:
+            if box_distance(c, x, y) < r + 0.1:
                 return True
         return False
 
@@ -1334,7 +633,7 @@ class World(Physics):
         for slot in remaining:
             if slot == "Engine" and car.parts.get("Hood") is not None:
                 continue
-            ax, ay = SLOT_ANCHOR[slot]
+            ax, ay = car.anchor(slot)
             d = math.hypot(ax - lx, ay - ly)
             if d < bd:
                 best, bd = slot, d
@@ -1423,6 +722,8 @@ class World(Physics):
         if car is None or (part.bulk == DOLLY) != by_dolly:
             return None, False
         slots = CATEGORY_SLOTS.get(part.category, [])
+        if not slots:
+            return None, False            # a gnome is not a car part. (The mod shop disagrees.)
         for s in slots:
             if car.parts.get(s) is None:
                 return s, False
@@ -1498,9 +799,9 @@ class World(Physics):
         for car in self.cars.values():
             if car.state != DELIVERED or car.parts.get("Engine") is None:
                 continue
-            if math.hypot(car.x - p.x, car.y - p.y) > C.INTERACT_RANGE_CAR + 2.4:
+            if math.hypot(car.x - p.x, car.y - p.y) > C.INTERACT_RANGE_CAR + car.hl:
                 continue
-            ex, ey = car.to_world(*SLOT_ANCHOR["Engine"])
+            ex, ey = car.to_world(*car.anchor("Engine"))
             reach = min(math.hypot(ex - p.x, ey - p.y), math.hypot(ex - d.x, ey - d.y))
             return car, reach < C.INTERACT_RANGE_SLOT + 1.2
         return None, False
@@ -1739,13 +1040,13 @@ class World(Physics):
             if car.id == p.car_id:
                 continue
             ox, oy = p.x - car.x, p.y - car.y
-            if ox * ox + oy * oy > (best_d + CAR_BOUND_R) ** 2:
+            if ox * ox + oy * oy > (best_d + car.bound) ** 2:
                 continue
             c, s_ = math.cos(car.ang), math.sin(car.ang)
             lx, ly = ox * c + oy * s_, -ox * s_ + oy * c
             ldx, ldy = dx * c + dy * s_, -dx * s_ + dy * c
             t0, t1 = 0.0, best_d
-            for o, dd, h in ((lx, ldx, HL), (ly, ldy, HW)):
+            for o, dd, h in ((lx, ldx, car.hl), (ly, ldy, car.hw)):
                 if abs(dd) < 1e-9:
                     if abs(o) > h:
                         t0, t1 = 1.0, 0.0
@@ -1774,8 +1075,8 @@ class World(Physics):
             # which bit did we hit? a wheel if we landed close to one
             c, s_ = math.cos(car.ang), math.sin(car.ang)
             lx, ly = (ex - car.x) * c + (ey - car.y) * s_, -(ex - car.x) * s_ + (ey - car.y) * c
-            wheel = min(WHEEL_SLOTS, key=lambda w: (SLOT_ANCHOR[w][0] - lx) ** 2 + (SLOT_ANCHOR[w][1] - ly) ** 2)
-            wx, wy = SLOT_ANCHOR[wheel]
+            wheel = min(WHEEL_SLOTS, key=lambda w: (car.anchor(w)[0] - lx) ** 2 + (car.anchor(w)[1] - ly) ** 2)
+            wx, wy = car.anchor(wheel)
             if car.parts.get(wheel) is not None and math.hypot(wx - lx, wy - ly) < C.TIRE_HIT_RADIUS:
                 car.parts[wheel].condition *= 0.3            # shredded
                 self._knock_off(car, wheel)
@@ -1835,9 +1136,9 @@ class World(Physics):
     def _carjack(self, p, car):
         if car.id not in self.cars or car.kind != TRAFFIC or car.speed() > C.CARJACK_MAX_SPEED:
             return
-        x, y = car.to_world(0.0, -2.2)
+        x, y = car.to_world(0.0, -car.hw - 1.0)
         if self.map.solid_at(x, y):
-            x, y = car.to_world(0.0, 2.2)
+            x, y = car.to_world(0.0, car.hw + 1.0)
         n = NPC(self.new_id(), PED, x, y)
         n.ttl = 40.0
         n.tumble_t = 1.2
@@ -1956,7 +1257,7 @@ class World(Physics):
                     for w in WHEEL_SLOTS:
                         if car.parts.get(w) is None:
                             continue
-                        wx, wy = car.to_world(*SLOT_ANCHOR[w])
+                        wx, wy = car.to_world(*car.anchor(w))
                         if rx - 0.2 <= wx <= rx + rw + 0.2 and ry - 0.2 <= wy <= ry + rh + 0.2:
                             car.parts[w].condition *= 0.3
                             self._knock_off(car, w)
@@ -2073,6 +1374,10 @@ class World(Physics):
         if not is_car and d < 14:
             # suspect on foot: roll up for the arrest instead of pancaking them
             throttle = 0.5 if spd < 5 else -0.6
+            if d < 12 and abs(diff) > 1.3:
+                # they're beside or behind us: three-point turn (back up with opposite lock)
+                throttle = -0.8
+                steer = -1.0 if diff > 0 else 1.0
         cop.handbrake = abs(diff) > 1.7 and spd > 12
         cop.steer = clamp(steer, -1.0, 1.0)
         cop.throttle = throttle
@@ -2100,7 +1405,8 @@ class World(Physics):
             a = cars[i]
             for j in range(i + 1, n):
                 b = cars[j]
-                if abs(a.x - b.x) < 2 * CAR_BOUND_R and abs(a.y - b.y) < 2 * CAR_BOUND_R:
+                reach = a.bound + b.bound
+                if abs(a.x - b.x) < reach and abs(a.y - b.y) < reach:
                     self._car_vs_car(a, b)
         for car in cars:
             if car.impact_dv >= C.CRASH_DENT_DV and car.crash_cd <= 0 and car.id in self.cars:
@@ -2172,7 +1478,7 @@ class World(Physics):
         if part is None:
             return
         car.parts[slot] = None
-        ax, ay = SLOT_ANCHOR[slot]
+        ax, ay = car.anchor(slot)
         x, y = car.to_world(ax * 1.3, ay * 1.5)
         ox, oy = x - car.x, y - car.y
         m = math.hypot(ox, oy) or 1.0
@@ -2521,7 +1827,8 @@ class World(Physics):
             if p.state not in (FOOT, TUMBLE) or not cops or self.heat <= 0 or self.map.in_garage(p.x, p.y):
                 p.arrest_t = 0.0
                 continue
-            near = any(math.hypot(c.x - p.x, c.y - p.y) < C.ARREST_RANGE for c in cops)
+            # measured from the bodywork, not the middle: a box van's nose counts as much as a Kei's
+            near = any(box_distance(c, p.x, p.y) < C.ARREST_RANGE for c in cops)
             if near:
                 p.arrest_t += dt
                 if p.arrest_t >= C.ARREST_TIME:
@@ -2632,8 +1939,10 @@ class World(Physics):
                     continue
             if any(abs(c.x - x) < 9.0 and abs(c.y - y) < 9.0 for c in self.cars.values()):
                 continue
-            car = Car(self.new_id(), TRAFFIC, x, y, math.atan2(d[1], d[0]), kei_loadout(self.rng),
-                      color=self.rng.randrange(1, 9))
+            mid = V.pick_model(self.rng, traffic=True)
+            car = Car(self.new_id(), TRAFFIC, x, y, math.atan2(d[1], d[0]), model_loadout(self.rng, mid),
+                      color=self.rng.randrange(1, len(V.PAINT_NAMES)), model=mid)
+            self._dress(car)
             car.pull = self.rng.choice((-1.0, 1.0))
             car.vx, car.vy = d[0] * C.TRAFFIC_SPEED * 0.8, d[1] * C.TRAFFIC_SPEED * 0.8
             car.tdir, car.node = d, (i, j)
@@ -2698,14 +2007,14 @@ class World(Physics):
         as (thing, clearance in metres from our bumper to it), or (None, 0)."""
         look = 24.0
         passing = car.overtake_t > 0
-        car_w = 1.4 if passing else 2.3       # (two 2.4 m cars side by side need 2.4 to not touch)
+        car_w = 1.4 if passing else car.hw + 1.1   # (two 2.4 m cars side by side need 2.4 to not touch)
         best, bf = None, look
         for other in self.cars.values():
             if other is car:
                 continue
             dx, dy = other.x - car.x, other.y - car.y
             f = dx * fx + dy * fy
-            if 0.5 < f < bf + 2.4:
+            if 0.5 < f < bf + other.hl:
                 # oncoming cars only count if they're properly in our lane
                 cosd = math.cos(other.ang - car.ang)
                 w = 1.5 if cosd < -0.8 else car_w
@@ -2713,7 +2022,7 @@ class World(Physics):
                 if lat < w:
                     if other.kind == TRAFFIC and cosd < 0.87 and other.id > car.id and lat > 1.0:
                         continue      # right of way at junctions: lower id goes first, no standoffs
-                    best, bf = other, f - 2.4          # their half-length, roughly
+                    best, bf = other, f - other.hl     # their half-length (roughly: they may be turning)
         for p in self.players.values():
             if p.state in (FOOT, TUMBLE, CUFFED):
                 dx, dy = p.x - car.x, p.y - car.y
@@ -2738,7 +2047,7 @@ class World(Physics):
                 best, bf = n, f - 0.5
         if best is None:
             return None, 0.0
-        return best, bf - HL
+        return best, bf - car.hl
 
     def _traffic_ai(self, car, dt):
         fx, fy = math.cos(car.ang), math.sin(car.ang)
@@ -2830,9 +2139,9 @@ class World(Physics):
         car.throttle = car.steer = 0.0
         car.handbrake = car.horn = False
         car.special = None
-        x, y = car.to_world(0.0, -2.2)
+        x, y = car.to_world(0.0, -car.hw - 1.0)
         if self.map.solid_at(x, y):
-            x, y = car.to_world(0.0, 2.2)
+            x, y = car.to_world(0.0, car.hw + 1.0)
         n = NPC(self.new_id(), PED, x, y)
         n.ttl = 40.0
         self.npcs[n.id] = n

@@ -9,8 +9,8 @@ engine and exactly no maths textbooks).
 import math
 
 GAME_TITLE = "Chopped"
-VERSION = 6  # bump when the wire protocol changes so old clients get a polite "no"
-RELEASE = (0, 6, 0)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
+VERSION = 7  # bump when the wire protocol changes so old clients get a polite "no"
+RELEASE = (0, 7, 0)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
 
 # --------------------------------------------------------------------------
 # Rendering scale
@@ -18,8 +18,10 @@ RELEASE = (0, 6, 0)  # the number on the exe's Properties tab and the menu. Bump
 # 5 px per metre makes a 2.4 x 4.4 m hatchback exactly 12 x 22 px -- tiny
 # enough to feel GTA2, big enough that you can see its doors are missing.
 PPM = 5
-LOW_W, LOW_H = 480, 270          # the whole world is drawn at this res, then scaled up
-DEFAULT_WINDOW = (1440, 810)     # 3x. 1080p screens get 4x in fullscreen.
+LOW_W, LOW_H = 640, 360          # the whole world is drawn at this res, then scaled up by a whole
+                                 # number (v0.7, was 480x270: Bryce wanted it smoother). 1080p
+                                 # fullscreen is exactly 3x, 1440p is 4x.
+DEFAULT_WINDOW = (1280, 720)     # 2x, if we can't ask the desktop how big it is
 FPS = 60
 
 # --------------------------------------------------------------------------
@@ -95,43 +97,68 @@ DOLLY_OFFSET = 1.1               # it rolls along this far in front of you
 DOLLY_RETURN_TIME = 90.0         # left unattended outside the shop this long -> "someone" brings it back
 
 # --------------------------------------------------------------------------
-# Car physics (arcade; tuned by feel, not by Newton)
+# Car physics (v0.7: tyres! Newton finally got a say, but feel still has a veto)
 # --------------------------------------------------------------------------
-CAR_LEN = 4.4
+# A bicycle model: one tyre per axle, slip angles, a Pacejka-ish grip curve
+# that falls off past the peak (that fall-off IS drifting), a friction ellipse
+# so throttle steals rear grip (power oversteer), weight transfer, and a
+# handbrake that locks the rear. Per-model mass/grip/top speed live in
+# vehicles.py; these are the knobs every car shares.
+CAR_LEN = 4.4                    # the Kei's box (other models: vehicles.MODELS)
 CAR_WID = 2.4
-CAR_CIRCLE_R = 1.2               # a car is two circles in a trench coat
-CAR_CIRCLE_OFF = 1.0             # circles sit this far forward/back of centre
 CAR_MASS = 1000.0
 COP_MASS = 1250.0                # cops are heavier: armour, donuts, attitude
 CAR_INERTIA_K = (CAR_LEN ** 2 + CAR_WID ** 2) / 12.0
-ACCEL_PER_100_POWER = 8.7        # m/s^2 at 100 part-power; a stock Kei is exactly 100
-CIV_TOP_SPEED = 45.0
+GRAVITY = 9.81
+ACCEL_PER_100_POWER = 8.7        # m/s^2 of engine push at 100 part-power (tyres permitting)
+CIV_TOP_SPEED = 45.0             # (the Kei's; vehicles.MODELS has everyone's)
 COP_TOP_SPEED = 48.0             # cops win the straights...
 COP_ACCEL_MULT = 1.35            # ...and launch harder, but their steering is dumb, so corners are yours
-DRAG_K = ACCEL_PER_100_POWER / (50.0 ** 2)  # quadratic drag: terminal ~50 m/s at 100 power,
-                                 # so worn engines top out lower all by themselves
+DRAG_K = ACCEL_PER_100_POWER / (80.0 ** 2)  # quadratic drag: worn engines run out of puff early
 ROLL_DECEL = 1.5                 # coasting slows you, gently
-BRAKE_DECEL = 26.0               # brakes are strong: arcade games are about stopping to steal
+BRAKE_DECEL = 26.0               # what the pedal ASKS for; the tyres decide what you get (~12 m/s^2)
 REVERSE_FRAC = 0.55
 REVERSE_MAX = 11.0
-HANDBRAKE_DECEL = 9.0
-GRIP = 13.0                      # 1/s lateral velocity decay. High = on rails.
-HANDBRAKE_GRIP = 1.1             # ...and this is the "oh no, sideways" number
-SLIDE_GRIP_MULT = 0.65           # once you're already sliding fast, tyres give up a bit more
-SLIDE_THRESHOLD = 7.0
+PARKED_BRAKE = 12.0              # driverless cars have the handbrake on AND the wheels chocked
+TIRE_GRIP = 1.8                  # arcade tyres: ~1.5 g of cornering. Real road tyres do ~0.9, and
+                                 # real city blocks aren't 48 m apart with a chop shop in the middle.
+TIRE_B = 9.0                     # grip curve stiffness: peak grip at ~9 degrees of slip...
+TIRE_C = 1.55                    # ...then it sags to ~70% as you go sideways. That sag is the drift.
+TIRE_LONG = 1.7                  # tyres push/brake harder than they corner (arcade ellipse, not a circle)
+TIRE_VMIN = 2.5                  # m/s: slip angles below this speed are "just parking", not physics
+WHEELSPIN_AT = 0.8               # throttle using more than this share of rear grip starts to spin it up...
+WHEELSPIN_LOSS = 1.8             # ...and lateral grip drops this fast past that point (power oversteer)
+HANDBRAKE_MU = 0.55              # locked rear tyres slide at this share of grip: yank it, the tail comes out
+HANDBRAKE_DRIVE = 0.35           # (RWD) how much engine still gets through a locked rear. Clutch kick!
+WEIGHT_TRANSFER = 1.0            # 1 = real; lift off mid-corner and feel the nose tuck in
+FRONT_WEIGHT = 0.52              # share of weight on the front axle (FWD vans: 0.6)
+AXLE_FRAC = 0.63                 # axles sit at this share of the half-length from the middle
+STEER_LOCK_LOW = 0.72            # rad of front-wheel angle at parking speed (generous: arcade)...
+STEER_LOCK_HIGH = 0.12           # ...shrinking to this at 35 m/s, so keyboard taps don't spin you
+STEER_LOCK_SPEED = 35.0
+STEER_RATE = 4.2                 # rad/s the wheel turns: full lock in about a seventh of a second
+STEER_ALIGN = 0.85               # hands off the keys: the fronts follow the car's actual direction
+                                 # (caster). That's what lets a keyboard catch a slide.
+STEER_ALIGN_MAX = 0.9            # ...up to ~50 degrees of self-countersteer, like a proper drift car
+SLIDE_DRAG = 0.9                 # sideways is slow: scrub this share of excess slide energy (per s)
 GRASS_GRIP_MULT = 0.55           # parks are for drifting
 GRASS_DRAG = 3.0
-STEER_RATE_LOW = 3.1             # rad/s at walking pace: park it like a pro
-STEER_RATE_HIGH = 1.25           # rad/s at top speed: 90 deg corners need a lift or a handbrake
-STEER_FULL_AT = 5.0              # below this speed steering fades out (no spinning on the spot)
-STEER_RESPONSE = 10.0            # how fast yaw rate chases the target
-HANDBRAKE_YAW_MULT = 1.55
-PARKED_BRAKE = 12.0              # driverless cars drag their feet so bumps don't send them to the next suburb
 RESTITUTION_WALL = 0.28
 RESTITUTION_CAR = 0.35
-MISSING_WHEEL_GRIP = 0.22        # per missing wheel
+MISSING_WHEEL_GRIP = 0.45        # that corner's axle keeps this share of grip per missing wheel
 MISSING_WHEEL_TOP = 0.16         # per missing wheel
 MISSING_WHEEL_PULL = 0.55        # rad/s of "why is it going left" per missing wheel
+AI_TRACTION = 0.8                # cops and traffic have traction control (players don't; players drift)
+AI_STEER_LOCK = 0.8              # ...and a bit less lock at speed, so they don't pirouette into shops
+BANANA_SPIN_TIME = 1.6           # s the rear tyres are on banana
+BANANA_GRIP = 0.12               # what's left of the rear grip while they are
+NOS_ACCEL = 9.0                  # m/s^2 extra, like being rear-ended by a rocket
+NOS_TOP_MULT = 1.25
+NOS_TANK = 4.0                   # seconds of boost when full
+NOS_REFILL = 0.25                # s of boost regained per second (fills in 16 s)
+
+LIVERY_CHANCE = 0.3              # v0.7: stripes, flames, polka dots... 30% of the city dresses up
+CIV_GLOW_CHANCE = 0.06           # neon underglow on a parked car: someone's pride and joy. Now yours.
 
 # --------------------------------------------------------------------------
 # Crashes: judged on delta-v (how hard you STOPPED), not how fast you were going
@@ -176,7 +203,8 @@ COP_DESPAWN_AT_ZERO = 3.0
 HORN_CONFUSE_RANGE = 40.0
 HORN_CONFUSE_TIME = 3.0
 HORN_CONFUSE_COOLDOWN = 7.0      # (our call) a cop can't be re-donut'd for 7 s, or holding H is god mode
-ARREST_RANGE = 3.2
+ARREST_RANGE = 1.0               # m from the cop car's bodywork (v0.7; was 3.2 from its middle, same thing
+                                 # for a Kei, fairer now cars come in sizes)
 ARREST_TIME = 1.0
 CUFFED_TIME = 5.0
 

@@ -37,8 +37,12 @@ P = {
     "hud_bg": (20, 18, 30), "money": (120, 230, 110), "danger": (255, 80, 70),
 }
 ROOF_COLORS = [(142, 76, 66), (66, 112, 116), (92, 98, 124), (170, 142, 102), (118, 66, 86), (104, 110, 90)]
+# v0.7: 16 paints (vehicles.PAINT_NAMES, same order). 0 = your ride's lime.
 CAR_COLORS = [(150, 222, 64), (206, 58, 58), (64, 98, 196), (232, 190, 64), (226, 226, 220),
-              (160, 166, 178), (224, 126, 54), (60, 164, 160), (126, 44, 66)]
+              (44, 44, 52), (224, 126, 54), (60, 164, 160), (126, 64, 160), (160, 166, 178),
+              (236, 130, 190), (120, 80, 50), (212, 170, 60), (40, 50, 110), (150, 230, 190),
+              (40, 90, 30)]
+PAINTS = CAR_COLORS
 PLAYER_COLORS = [(255, 150, 40), (60, 220, 230), (236, 90, 206), (250, 232, 80)]
 SKINS = [(240, 200, 160), (206, 156, 114), (150, 104, 70), (100, 68, 48)]
 HAIRS = [(40, 30, 24), (90, 60, 30), (200, 170, 90), (150, 60, 40), (60, 60, 70), (220, 220, 220)]
@@ -588,15 +592,20 @@ class SpriteBank:
         pygame.draw.ellipse(self.car_shadow, (0, 0, 0, 80), (0, 0, 14, 24))
         self.shadow_rot = {}
 
-    def car(self, kind, color, mask, tuned, damage, phase, seed, ang):
-        key = (kind, color, mask, tuned, damage, phase if kind == COP else 0,
-               seed if (damage or kind == TRAFFIC) else 0)
+    def car(self, row, phase, ang):
+        """A snapshot CAR row -> its top-down sprite at this angle."""
+        (cid, kind, color, state, flags, mask, styles, x, y, vx, vy, _a, drv, psg, dmg,
+         model, livery, extras, extras2) = row[:19]
+        lights = (phase if kind == COP else 0) | (2 if flags & 1 and phase else 0) | (4 if extras & 8 else 0)
+        key = (kind, color, mask, styles, dmg, lights, model, livery, extras & 8, extras2 & 1)
         base = self.cars.get(key)
         if base is None:
             if len(self.cars) > 400:
                 self.cars.clear()
                 self.car_rot.clear()
-            base = self.cars[key] = make_car(kind, color, mask, tuned, damage, phase, seed)
+            from . import fpart    # (fpart imports this module; import late to dodge the circle)
+            base = self.cars[key] = fpart.topdown_car(kind, color, mask, styles, dmg, lights, model, livery,
+                                                      extras, extras2, C.PPM)
         step = int(round((ang + math.pi / 2) / (2 * math.pi) * self.CAR_STEPS)) % self.CAR_STEPS
         rk = (key, step)
         r = self.car_rot.get(rk)

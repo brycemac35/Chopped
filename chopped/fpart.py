@@ -13,7 +13,8 @@ import pygame
 
 from .art import P, ROOF_COLORS, CAR_COLORS, PLAYER_COLORS, SKINS, shade
 from .parts import SLOT_INDEX
-from .sim import PERSONAL, COP
+from .sim import COP
+from . import vehicles as V
 
 TEX = 32            # texture pixels per 4 m tile face (8 px per metre, both ways)
 FLOOR_M = 4.0       # one storey
@@ -194,7 +195,7 @@ FACES = (((1, 0, 0), "+x"), ((-1, 0, 0), "-x"), ((0, 1, 0), "+y"), ((0, -1, 0), 
          ((0, 0, 1), "+z"), ((0, 0, -1), "-z"))
 
 
-def render_boxes(boxes, az, ppm, el=0.24):
+def render_boxes(boxes, az, ppm, el=0.24, outline=True):
     """Draw axis-aligned boxes (x0, x1, y0, y1, z0, z1, colour or {face: colour})
     as seen from direction az (model frame, x forward, y right, z up), looking
     down by el. Orthographic, painter's algorithm, flat shading, 1 px outline.
@@ -251,67 +252,340 @@ def render_boxes(boxes, az, ppm, el=0.24):
     for _, pts, c in polys:
         pts = [(x - minx, y - miny) for x, y in pts]
         pygame.draw.polygon(surf, c, pts)
-        pygame.draw.polygon(surf, shade(c, 0.6), pts, 1)
+        if outline:
+            pygame.draw.polygon(surf, shade(c, 0.6), pts, 1)
     return surf, -minx, -miny
+
+
+def topdown_car(kind, color, mask, styles, damage, lights, model, livery, extras, extras2, ppm):
+    """The automap's car sprite: the same boxes, seen from straight above,
+    nose pointing up the screen (so the old rotation code still works)."""
+    boxes = car_boxes(kind, color, mask, styles, damage, lights, model, livery, extras, extras2)
+    surf, ax, ay = render_boxes(boxes, 0.0, ppm, el=math.pi / 2 - 1e-3, outline=False)
+    # re-centre on the car's middle so rotating the sprite spins it about the right point
+    w, h = surf.get_size()
+    hw_, hh_ = int(math.ceil(max(ax, w - ax))), int(math.ceil(max(ay, h - ay)))
+    out = pygame.Surface((2 * hw_, 2 * hh_), pygame.SRCALPHA)
+    out.blit(surf, (hw_ - int(round(ax)), hh_ - int(round(ay))))
+    return out
 
 
 def _bit(mask, slot):
     return mask & (1 << SLOT_INDEX[slot])
 
 
-def car_boxes(kind, color, mask, tuned, damage, lights):
-    """The Kei as a stack of boxes. Every strippable part is its own box, so a
-    stripped car looks stripped from every angle."""
+# wheel styles (vehicles.STYLES["wheel"]): (rim face, hub cap, tyre side)
+WHEEL_LOOK = [((150, 150, 160), (110, 110, 120), None),          # steelie
+              ((200, 202, 210), (70, 70, 80), None),             # 5-spoke
+              ((236, 196, 72), (190, 150, 40), None),            # gold mesh
+              ((30, 30, 36), (206, 208, 216), None),             # deep dish
+              ((255, 60, 200), (60, 240, 255), None),            # neon
+              ((206, 208, 216), (160, 162, 170), (232, 232, 226)),  # whitewall
+              ((226, 228, 236), (236, 196, 72), None),           # spinner
+              ((184, 184, 194), (214, 58, 58), None)]            # sawblade
+RAINBOW = [(230, 60, 60), (240, 150, 40), (240, 220, 60), (80, 200, 90), (70, 130, 240), (150, 80, 200)]
+CARBON = (48, 48, 56)
+FLAME_COLS = ((255, 200, 60), (255, 130, 30), (220, 60, 30))
+GNOME_BLUE, GNOME_RED = (60, 90, 200), (220, 40, 40)
+WOOD = (130, 86, 50)
+# per model: (sill height, waistline, wheel radius, front/rear axle as a fraction of half-length)
+_BODY = {V.KEI: (0.3, 1.0, 0.31, 0.63), V.SEDAN: (0.3, 0.95, 0.33, 0.62), V.COUPE: (0.26, 0.82, 0.33, 0.64),
+         V.MUSCLE: (0.3, 0.9, 0.35, 0.62), V.PICKUP: (0.4, 1.1, 0.4, 0.62), V.VAN: (0.36, 1.05, 0.38, 0.66),
+         V.ICECREAM: (0.36, 1.05, 0.38, 0.66), V.SCOOTER: (0.12, 0.25, 0.12, 0.62)}
+
+
+def _decal(b, x0, x1, y0, y1, z0, z1, col):
+    b.append((x0, x1, y0, y1, z0, z1, col))
+
+
+def car_boxes(kind, color, mask, styles, damage, lights, model=V.KEI, livery=0, extras=0, extras2=0):
+    """A car as a stack of boxes (x forward, y right, z up). Every strippable
+    part is its own box, so a stripped car looks stripped from every angle,
+    and every part style (gold mesh, flames, ironing-board wing) shows. The
+    top-down automap draws the very same boxes from straight above."""
+    m = V.model(model)
+    st = V.unpack_styles(styles)
+    pattern, second = V.livery_parts(livery)
     body = (36, 36, 48) if kind == COP else CAR_COLORS[color % len(CAR_COLORS)]
+    if pattern == V.LIV_TAXI:
+        body = (236, 196, 60)
+    elif pattern == V.LIV_CAMO:
+        body = (96, 110, 70)
     if damage:
         body = shade(body, 1.0 - 0.1 * damage)
+    sec = CAR_COLORS[second % len(CAR_COLORS)]
+    if model == V.SCOOTER:
+        return _scooter_boxes(body, mask, st, lights)
+    hl, hw = m.length / 2.0, m.width / 2.0
+    z0, zw, wr, axle = _BODY[model]
+    zr = zw + m.roof
+    hood_len = m.length * m.hood
+    cf = hl - hood_len                      # cabin front
+    cr = cf - m.length * m.cab              # cabin rear
+    lower = sec if pattern in (V.LIV_TWOTONE, V.LIV_PASTEL) else body
     door = P["white"] if kind == COP else body
     hole = P["ink"]
     b = []
-    hood_top = body if _bit(mask, "Hood") else hole
-    if _bit(mask, "Hood") and _bit(tuned, "Hood"):
-        hood_top = (48, 48, 56)
-    b.append((0.8, 2.2, -1.1, 1.1, 0.3, 1.0, {"*": body, "+z": hood_top}))               # nose
-    b.append((-2.2, -1.4, -1.1, 1.1, 0.3, 1.0, body))                                     # tail
-    b.append((-1.4, 0.8, -1.1, 1.1, 0.3, 1.0, {"*": body,                                 # doors
-                                               "-y": door if _bit(mask, "DoorL") else hole,
-                                               "+y": door if _bit(mask, "DoorR") else hole}))
-    if not _bit(mask, "Hood") and _bit(mask, "Engine"):
-        eng = P["red"] if _bit(tuned, "Engine") else P["metal_l"]
-        b.append((1.0, 2.0, -0.6, 0.6, 0.6, 1.02, {"*": P["metal"], "+z": eng}))
+    boxy = model in (V.VAN, V.ICECREAM)
+    # ---- body sections: nose, middle (the doors are its sides), tail -------------
+    hood_on = _bit(mask, "Hood")
+    hs = st["Hood"] if hood_on else 0
+    hood_top = body if hood_on else hole
+    if hood_on and hs == 4:
+        hood_top = CARBON
+    nose_top = zw - (0.1 if boxy else 0.0)
+    split = z0 + (zw - z0) * 0.4             # where two-tone changes colour
+    for (xa, xb, top, faces) in ((cf, hl, nose_top, {"+z": hood_top}),
+                                 (cr, cf, zw, {"-y": door if _bit(mask, "DoorL") else hole,
+                                               "+y": door if _bit(mask, "DoorR") else hole}),
+                                 (-hl, cr, zw, {})):
+        if lower is not body:
+            b.append((xa, xb, -hw, hw, z0, split, dict({"*": lower, "+z": None}, **{k: v for k, v in faces.items()
+                                                                                     if k != "+z" and v is hole})))
+            b.append((xa, xb, -hw, hw, split, top, dict({"*": body, "-z": None}, **faces)))
+        else:
+            b.append((xa, xb, -hw, hw, z0, top, dict({"*": body}, **faces)))
+    if not hood_on and _bit(mask, "Engine"):
+        b.append((cf + 0.2, hl - 0.2, -0.6, 0.6, z0 + 0.3, nose_top + 0.02, {"*": P["metal"], "+z": P["metal_l"]}))
+    # ---- glasshouse / cab / box -------------------------------------------------------
     roof = P["white"] if kind == COP else shade(body, 0.92)
-    b.append((-1.4, 0.7, -0.95, 0.95, 1.0, 1.58, {"*": P["glass"], "+z": roof, "-x": P["glass_d"],
-                                                 "-z": None}))
-    if kind == PERSONAL:                                                                  # racing stripes
-        b.append((0.8, 2.2, -0.22, 0.22, 1.0, 1.02, (40, 90, 30)))
-        b.append((-1.4, 0.7, -0.22, 0.22, 1.58, 1.6, (40, 90, 30)))
+    gy = hw - 0.14
+    if boxy:
+        # the cargo box goes from the cab to the back door, full height
+        b.append((-hl, cf, -hw, hw, zw, zr + zw * 0.1, {"*": body, "+z": shade(body, 0.95), "-z": None}))
+        b.append((cf, cf + 0.03, -gy, gy, zw + 0.1, zr - 0.3, P["glass"]))            # windscreen
+        for sgn in (-1, 1):
+            b.append((cf - 0.9, cf - 0.1, sgn * hw - 0.02 if sgn > 0 else -hw - 0.0, sgn * hw + 0.02 if sgn > 0
+                      else -hw + 0.02, zw + 0.15, zr - 0.35, P["glass"]))
+        if model == V.ICECREAM:
+            # the serving hatch (right side) and a cone the size of a toddler on the roof
+            b.append((-hl + 1.2, cf - 1.3, hw, hw + 0.03, zw + 0.25, zr - 0.25, P["ink2"]))
+            b.append((-hl + 1.1, cf - 1.2, hw, hw + 0.25, zw + 0.2, zw + 0.25, (236, 130, 190)))
+            cx = -0.3
+            top = zr + zw * 0.1
+            for k, (rad, col) in enumerate(((0.12, (190, 140, 70)), (0.2, (200, 150, 80)), (0.28, (210, 160, 90)),
+                                            (0.36, (240, 236, 220)), (0.3, (236, 130, 190)), (0.18, (120, 70, 40)))):
+                zb = top + k * 0.22
+                b.append((cx - rad, cx + rad, -rad, rad, zb, zb + 0.22, col))
+    elif model == V.PICKUP:
+        b.append((cr + 0.05, cf - 0.05, -gy, gy, zw, zr, {"*": P["glass"], "+z": roof, "-z": None,
+                                                          "-x": P["glass_d"]}))
+        # the bed: floor and walls, open on top
+        b.append((-hl, cr, -hw, hw, z0, z0 + 0.3, {"*": body}))
+        for sgn in (-1, 1):
+            y0, y1 = (hw - 0.12, hw) if sgn > 0 else (-hw, -hw + 0.12)
+            b.append((-hl, cr, y0, y1, z0 + 0.3, zw, body))
+        b.append((-hl, -hl + 0.12, -hw, hw, z0 + 0.3, zw, body))
+    else:
+        cab_len = cf - cr
+        ws = cf - cab_len * 0.32                 # windscreen / roof boundary
+        rw = cr + cab_len * 0.22                 # roof / rear window boundary
+        b.append((ws, cf - 0.05, -gy, gy, zw, zr - 0.04, {"*": P["glass"], "-z": None, "-x": None}))
+        b.append((rw, ws, -gy, gy, zw, zr, {"*": P["glass"], "+z": roof, "-z": None, "+x": None, "-x": None}))
+        b.append((cr + 0.05, rw, -gy, gy, zw, zr - 0.06, {"*": P["glass_d"], "-z": None, "+x": None}))
+    top_z = zr + (zw * 0.1 if boxy else 0.0)
+    # ---- livery ---------------------------------------------------------------------
+    if pattern == V.LIV_STRIPES:
+        for yc in (-0.2, 0.2):
+            if hood_on:
+                _decal(b, cf, hl, yc - 0.09, yc + 0.09, nose_top, nose_top + 0.02, sec)
+            _decal(b, -hl, cr, yc - 0.09, yc + 0.09, zw, zw + 0.02, sec)
+            if not boxy and model != V.PICKUP:
+                _decal(b, cr + 0.2, cf - 0.4, yc - 0.09, yc + 0.09, zr, zr + 0.02, sec)
+            elif boxy:
+                _decal(b, -hl, cf, yc - 0.09, yc + 0.09, top_z, top_z + 0.02, sec)
+    elif pattern in (V.LIV_CHECKER, V.LIV_TAXI):
+        n = int(m.length / 0.3)
+        zc = zw - 0.28
+        for k in range(n):
+            if k % 2:
+                continue
+            x = -hl + k * 0.3
+            for sgn in (-1, 1):
+                y0, y1 = (hw, hw + 0.02) if sgn > 0 else (-hw - 0.02, -hw)
+                _decal(b, x, x + 0.3, y0, y1, zc, zc + 0.14, P["ink"])
+                _decal(b, x + 0.3, min(hl, x + 0.6), y0, y1, zc + 0.14, zc + 0.28, P["ink"])
+        if pattern == V.LIV_TAXI and not boxy:
+            b.append((cr + 0.5, cr + 0.9, -0.35, 0.35, zr, zr + 0.25, {"*": (250, 240, 150), "+x": P["ink"],
+                                                                      "-x": P["ink"]}))
+    elif pattern in (V.LIV_FLAMES, V.LIV_BOLT):
+        for sgn in (-1, 1):
+            y0, y1 = (hw, hw + 0.02) if sgn > 0 else (-hw - 0.02, -hw)
+            if pattern == V.LIV_FLAMES:
+                for k, (dx, h, col) in enumerate(((0.0, 0.4, FLAME_COLS[2]), (0.35, 0.3, FLAME_COLS[1]),
+                                                  (0.65, 0.22, FLAME_COLS[0]), (0.9, 0.14, FLAME_COLS[1]))):
+                    _decal(b, hl - 1.3 - dx, hl - 0.2 - dx * 0.5, y0, y1, z0 + 0.1, z0 + 0.1 + h, col)
+            else:
+                for k in range(5):
+                    x = hl - 0.6 - k * m.length * 0.15
+                    zc = z0 + 0.15 + (0.25 if k % 2 else 0.0)
+                    _decal(b, x - m.length * 0.15, x, y0, y1, zc, zc + 0.12, sec)
+    elif pattern == V.LIV_DOTS:
+        rng = random.Random(color * 131 + second)
+        for _ in range(14):
+            x = rng.uniform(-hl + 0.2, hl - 0.4)
+            z = rng.uniform(z0 + 0.1, zw - 0.25)
+            sgn = rng.choice((-1, 1))
+            y0, y1 = (hw, hw + 0.02) if sgn > 0 else (-hw - 0.02, -hw)
+            _decal(b, x, x + 0.22, y0, y1, z, z + 0.18, sec)
+    elif pattern == V.LIV_CAMO:
+        rng = random.Random(color * 17 + 5)
+        for _ in range(18):
+            x = rng.uniform(-hl, hl - 0.6)
+            y = rng.uniform(-hw, hw - 0.6)
+            col = rng.choice(((70, 84, 50), (130, 120, 80), (50, 56, 40)))
+            _decal(b, x, x + 0.6, y, y + 0.5, zw, zw + 0.02, col)
+            sgn = rng.choice((-1, 1))
+            y0, y1 = (hw, hw + 0.02) if sgn > 0 else (-hw - 0.02, -hw)
+            z = rng.uniform(z0, zw - 0.3)
+            _decal(b, x, x + 0.6, y0, y1, z, z + 0.3, col)
+    # ---- doors ----------------------------------------------------------------------------
+    for slot, sgn in (("DoorL", -1), ("DoorR", 1)):
+        if not _bit(mask, slot) or kind == COP:
+            continue
+        ds = st[slot]
+        y0, y1 = (hw, hw + 0.025) if sgn > 0 else (-hw - 0.025, -hw)
+        xm = (cf + cr) / 2
+        if ds == 1:                                                                   # race number
+            _decal(b, xm - 0.35, xm + 0.35, y0, y1, z0 + 0.1, zw - 0.08, P["white"])
+            y0b, y1b = (y1, y1 + 0.01) if sgn > 0 else (y0 - 0.01, y0)
+            _decal(b, xm - 0.08, xm + 0.08, y0b, y1b, z0 + 0.2, zw - 0.18, P["ink"])
+        elif ds == 2:                                                                 # flames
+            for k, col in enumerate(FLAME_COLS):
+                _decal(b, cr + 0.1, cf - 0.1 - k * 0.35, y0, y1, z0 + 0.05, z0 + 0.35 - k * 0.08, col)
+        elif ds == 3:                                                                 # wood panel
+            _decal(b, cr + 0.08, cf - 0.08, y0, y1, z0 + 0.08, zw - 0.1, WOOD)
+    # ---- hood styles -------------------------------------------------------------------
+    if hood_on:
+        hx = (cf + hl) / 2
+        if hs == 1:                                                                   # scoop
+            b.append((hx - 0.3, hx + 0.2, -0.3, 0.3, nose_top, nose_top + 0.13, {"*": shade(body, 0.85),
+                                                                             "+x": P["ink"]}))
+        elif hs == 2:                                                                 # power bulge
+            b.append((cf + 0.15, hl - 0.25, -0.45, 0.45, nose_top, nose_top + 0.07, shade(body, 1.05)))
+        elif hs == 3:                                                                 # flames
+            for k, col in enumerate(FLAME_COLS):
+                _decal(b, hl - 0.9 + k * 0.1, hl - 0.05, -0.6 + k * 0.2, 0.6 - k * 0.2, nose_top,
+                       nose_top + 0.02 + k * 0.005, col)
+        elif hs == 5:                                                                 # shark mouth
+            for k in range(7):
+                y = -0.75 + k * 0.25
+                _decal(b, hl, hl + 0.02, y, y + 0.15, z0 + 0.08, z0 + 0.3, P["white"])
+            _decal(b, hl, hl + 0.015, -0.85, 0.85, z0 + 0.05, z0 + 0.34, (180, 30, 40))
+        elif hs == 6:                                                                 # blower
+            b.append((hx - 0.25, hx + 0.25, -0.22, 0.22, nose_top, nose_top + 0.35, P["chrome"]))
+            b.append((hx - 0.2, hx + 0.2, -0.18, 0.18, nose_top + 0.35, nose_top + 0.45, P["ink"]))
+        elif hs == 7:                                                                 # gnome plinth
+            b.append((hl - 0.5, hl - 0.2, -0.15, 0.15, nose_top, nose_top + 0.05, P["chrome"]))
+    if extras2 & 1:                                                                   # the gnome
+        gx = hl - 0.35
+        gz = nose_top + (0.05 if hs == 7 else 0.0)
+        b.append((gx - 0.1, gx + 0.1, -0.1, 0.1, gz, gz + 0.2, GNOME_BLUE))
+        b.append((gx + 0.06, gx + 0.12, -0.08, 0.08, gz + 0.1, gz + 0.22, P["white"]))    # beard
+        b.append((gx - 0.07, gx + 0.08, -0.07, 0.07, gz + 0.2, gz + 0.3, SKINS[0]))
+        b.append((gx - 0.08, gx + 0.08, -0.08, 0.08, gz + 0.3, gz + 0.38, GNOME_RED))
+        b.append((gx - 0.04, gx + 0.04, -0.04, 0.04, gz + 0.38, gz + 0.5, GNOME_RED))
+    # ---- cop bits -----------------------------------------------------------------------
     if kind == COP:
         l_on = lights & 1
-        b.append((-0.5, 0.1, -0.7, 0.0, 1.58, 1.74, P["red"] if l_on else P["red_d"]))
-        b.append((-0.5, 0.1, 0.0, 0.7, 1.58, 1.74, P["blue_d"] if l_on else P["blue"]))
-    if _bit(mask, "BumperF"):
-        c = P["ink2"] if _bit(tuned, "BumperF") else P["chrome"]
-        b.append((2.2, 2.35, -1.05, 1.05, 0.3, 0.55, {"*": c, "+z": P["gold"] if _bit(tuned, "BumperF") else c}))
-    if _bit(mask, "BumperR"):
-        c = P["ink2"] if _bit(tuned, "BumperR") else P["chrome"]
-        b.append((-2.35, -2.2, -1.05, 1.05, 0.3, 0.55, c))
+        xm = (cf + cr) / 2
+        b.append((xm - 0.3, xm + 0.3, -0.7, 0.0, zr, zr + 0.16, P["red"] if l_on else P["red_d"]))
+        b.append((xm - 0.3, xm + 0.3, 0.0, 0.7, zr, zr + 0.16, P["blue_d"] if l_on else P["blue"]))
+    # ---- bumpers -------------------------------------------------------------------------
+    for slot, x0, x1 in (("BumperF", hl, hl + 0.15), ("BumperR", -hl - 0.15, -hl)):
+        if not _bit(mask, slot):
+            continue
+        bs = st[slot]
+        c = P["chrome"] if bs in (0, 3) else shade(body, 0.8) if bs == 1 else P["metal"]
+        top = P["gold"] if bs == 3 else c
+        b.append((x0, x1, -hw + 0.05, hw - 0.05, z0, z0 + 0.25, {"*": c, "+z": top}))
+        if bs == 1:                                                                    # lip / splitter
+            xa, xb = (x1, x1 + 0.2) if slot == "BumperF" else (x0 - 0.2, x0)
+            b.append((xa, xb, -hw + 0.15, hw - 0.15, z0 - 0.1, z0 - 0.02, CARBON))
+        elif bs == 2:                                                                  # bull bar
+            xa = x1 + 0.12 if slot == "BumperF" else x0 - 0.2
+            for y in (-hw + 0.3, hw - 0.4):
+                b.append((xa, xa + 0.08, y, y + 0.1, z0, zw + 0.05, P["chrome"]))
+            for z in (z0 + 0.15, zw - 0.1):
+                b.append((xa, xa + 0.08, -hw + 0.3, hw - 0.3, z, z + 0.07, P["chrome"]))
+    # ---- exhaust -------------------------------------------------------------------------
     if _bit(mask, "Exhaust"):
-        b.append((-2.45, -2.2, -0.8, -0.6, 0.3, 0.45, P["chrome"] if _bit(tuned, "Exhaust") else P["metal"]))
+        es = st["Exhaust"]
+        pipes = {0: (-0.7,), 1: (-0.7, 0.7), 2: (-0.8, -0.6, 0.6, 0.8), 3: ()}[es]
+        for y in pipes:
+            b.append((-hl - 0.25, -hl, y - 0.08, y + 0.08, z0 + 0.02, z0 + 0.16, P["chrome"]))
+        if es == 3:                                                                    # stovepipe
+            b.append((cr - 0.2, cr - 0.05, -hw + 0.02, -hw + 0.17, z0, zr + 0.5, P["chrome"]))
+        if extras & 8 and lights & 4:                                                  # NOS flames
+            for y in (pipes or (-0.7,)):
+                b.append((-hl - 0.9, -hl - 0.25, y - 0.12, y + 0.12, z0, z0 + 0.2, (90, 170, 255)))
+                b.append((-hl - 0.55, -hl - 0.25, y - 0.06, y + 0.06, z0 + 0.04, z0 + 0.14, (220, 240, 255)))
+    # ---- spoiler -------------------------------------------------------------------------
+    kind_sp = st["spoiler_kind"] if _bit(mask, "Spoiler") else 0
+    if kind_sp:
+        sp_st = st["spoiler_style"]
+        col = [body, CARBON, P["chrome"], None][sp_st]
+        xs0, xs1 = -hl + 0.05, -hl + (0.35 if kind_sp == 1 else 0.6 if kind_sp != 4 else 0.95)
+        post_h = {1: 0.0, 2: 0.35, 3: 0.2, 4: 0.75}[kind_sp]
+        thick = {1: 0.1, 2: 0.06, 3: 0.12, 4: 0.08}[kind_sp]
+        span = hw - (0.2 if kind_sp != 4 else 0.0)
+        base_z = zw if not boxy else top_z
+        if post_h:
+            for y in (-span + 0.35, span - 0.45):
+                b.append((xs0 + 0.1, xs0 + 0.2, y, y + 0.1, base_z, base_z + post_h, P["metal"]))
+        zp = base_z + post_h
+        if col is None:                                                                # rainbow
+            n = len(RAINBOW)
+            for k, rc in enumerate(RAINBOW):
+                ya = -span + 2 * span * k / n
+                b.append((xs0, xs1, ya, ya + 2 * span / n, zp, zp + thick, rc))
+        else:
+            b.append((xs0, xs1, -span, span, zp, zp + thick, col))
+    # ---- lights ----------------------------------------------------------------------------
     hazard = (255, 170, 40) if lights & 2 else None
     front = hazard or P["light"]
     rear = hazard or P["red"]
-    for y0, y1 in ((-0.95, -0.55), (0.55, 0.95)):
-        b.append((2.2, 2.24, y0, y1, 0.72, 0.88, front))
-        b.append((-2.24, -2.2, y0, y1, 0.72, 0.88, rear))
-    for slot, x, y in (("WheelFL", 1.35, -1), ("WheelFR", 1.35, 1), ("WheelRL", -1.35, -1), ("WheelRR", -1.35, 1)):
+    lz = z0 + (zw - z0) * 0.6
+    for y0, y1 in ((-hw + 0.2, -hw + 0.6), (hw - 0.6, hw - 0.2)):
+        b.append((hl, hl + 0.04, y0, y1, lz, lz + 0.16, front))
+        b.append((-hl - 0.04, -hl, y0, y1, lz, lz + 0.16, rear))
+    # ---- wheels -------------------------------------------------------------------------------
+    ax = hl * axle
+    for slot, x, y in (("WheelFL", ax, -1), ("WheelFR", ax, 1), ("WheelRL", -ax, -1), ("WheelRR", -ax, 1)):
         if _bit(mask, slot):
-            rim = P["gold"] if _bit(tuned, slot) else P["rim"]
+            rim, cap, tyre_side = WHEEL_LOOK[st[slot] % len(WHEEL_LOOK)]
             outer = "+y" if y > 0 else "-y"
-            y0, y1 = (0.85, 1.2) if y > 0 else (-1.2, -0.85)
-            b.append((x - 0.35, x + 0.35, y0, y1, 0.0, 0.62, {"*": P["tire"], outer: rim}))
+            y0, y1 = (hw - 0.34, hw + 0.02) if y > 0 else (-hw - 0.02, -hw + 0.34)
+            b.append((x - wr * 1.1, x + wr * 1.1, y0, y1, 0.0, 2 * wr, {"*": P["tire"], outer: tyre_side or rim}))
+            if tyre_side:
+                ya, yb = (y1, y1 + 0.01) if y > 0 else (y0 - 0.01, y0)
+                b.append((x - wr * 0.75, x + wr * 0.75, ya, yb, wr * 0.25, wr * 1.75, rim))
+            ya, yb = (y1, y1 + 0.03) if y > 0 else (y0 - 0.03, y0)
+            b.append((x - wr * 0.4, x + wr * 0.4, ya, yb, wr * 0.6, wr * 1.4, cap))
         else:
-            y0, y1 = (0.95, 1.1) if y > 0 else (-1.1, -0.95)
-            b.append((x - 0.12, x + 0.12, y0, y1, 0.18, 0.42, P["metal"]))
+            y0, y1 = (hw - 0.25, hw - 0.1) if y > 0 else (-hw + 0.1, -hw + 0.25)
+            b.append((x - 0.12, x + 0.12, y0, y1, wr * 0.6, wr * 1.4, P["metal"]))
+    return b
+
+
+def _scooter_boxes(body, mask, st, lights):
+    """The mobility scooter: seat, tiller, basket, and a safety flag on a pole
+    so the traffic can see you coming. At 12 m/s. Flat out."""
+    b = [(-0.75, 0.6, -0.36, 0.36, 0.12, 0.26, body),
+         (0.5, 0.62, -0.06, 0.06, 0.26, 0.95, P["metal"]),                              # tiller
+         (0.5, 0.6, -0.32, 0.32, 0.92, 0.98, P["ink2"]),                                  # handlebar
+         (0.6, 0.85, -0.28, 0.28, 0.6, 0.86, {"*": P["wood"], "+z": P["wood_d"]}),       # basket
+         (-0.62, -0.58, 0.26, 0.3, 0.26, 1.85, P["metal_l"]),                             # flag pole
+         (-0.62, -0.5, 0.3, 0.55, 1.6, 1.82, (255, 140, 30))]                             # the flag
+    if _bit(mask, "Seats"):
+        b.append((-0.5, -0.05, -0.28, 0.28, 0.26, 0.62, (60, 60, 70)))
+        b.append((-0.58, -0.45, -0.28, 0.28, 0.62, 1.0, (60, 60, 70)))
+    b.append((0.6, 0.64, -0.12, 0.12, 0.3, 0.42, P["light"]))
+    for slot, x, y in (("WheelFL", 0.45, -1), ("WheelFR", 0.45, 1), ("WheelRL", -0.55, -1), ("WheelRR", -0.55, 1)):
+        if _bit(mask, slot):
+            rim = WHEEL_LOOK[st[slot] % len(WHEEL_LOOK)][0]
+            y0, y1 = (0.26, 0.4) if y > 0 else (-0.4, -0.26)
+            b.append((x - 0.13, x + 0.13, y0, y1, 0.0, 0.25, {"*": P["tire"], "+y" if y > 0 else "-y": rim}))
     return b
 
 

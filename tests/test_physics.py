@@ -31,7 +31,7 @@ def empty_world():
 
 
 def kei(w, x, y, ang, kind=S.CIV):
-    car = S.Car(w.new_id(), kind, x, y, ang, {s: Part(q.type_id, 1.0) for s, q in S.personal_loadout().items()})
+    car = S.Car(w.new_id(), kind, x, y, ang, {s: (Part(q.type_id, 1.0) if q else None) for s, q in S.personal_loadout().items()})
     car.state = S.RUNNING
     w.cars[car.id] = car
     return car

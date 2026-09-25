@@ -25,6 +25,7 @@ from .parts import PART_IDS, PART_DEFS, NO_PART
 W, H = C.LOW_W, C.LOW_H
 BAR_H = 32
 VIEW_H = H - BAR_H
+BX = (W - 480) // 2      # the classic 480-wide bar sits in the middle; ARMS and GEAR panels flank it
 TOAST_COLORS = {S.T_WHITE: P["white"], S.T_MONEY: P["money"], S.T_BAD: P["danger"],
                 S.T_INFO: P["gold"], S.T_COP: (130, 170, 255)}
 WITNESS_TEXT = {
@@ -40,6 +41,50 @@ BIG_BLUE = ((170, 200, 255), (130, 170, 255), (90, 130, 240), (60, 100, 210), (4
 
 
 WEAPON_LABELS = ("HANDS", "PISTOL", "SHOTGUN", "SPIKES", "BLOCKS")
+
+
+class Pen:
+    """Draws in the original 480-wide coordinates and scales to whatever the
+    real view is (640 wide since v0.7), so the fists and guns grow with the
+    screen instead of shrinking into the corner. Whole pixels, no blur."""
+    BASE_W = 480
+
+    def __init__(self, surf):
+        self.s = surf
+        self.k = k = surf.get_width() / float(self.BASE_W)
+        self.size = (self.BASE_W, int(round(surf.get_height() / k)))
+
+    def _pt(self, p):
+        return (int(round(p[0] * self.k)), int(round(p[1] * self.k)))
+
+    def _len(self, v):
+        return max(1, int(round(v * self.k)))
+
+    def poly(self, col, pts, width=0):
+        pygame.draw.polygon(self.s, col, [self._pt(p) for p in pts], width and self._len(width))
+
+    def rect(self, col, r, width=0, border_radius=-1):
+        x, y, w, h = r
+        pygame.draw.rect(self.s, col, (*self._pt((x, y)), self._len(w), self._len(h)),
+                         width and self._len(width), border_radius=self._len(border_radius) if border_radius > 0 else -1)
+
+    def fill(self, col, r):
+        x, y, w, h = r
+        x0, y0 = self._pt((x, y))
+        x1, y1 = self._pt((x + w, y + h))
+        self.s.fill(col, (x0, y0, max(1, x1 - x0), max(1, y1 - y0)))
+
+    def circle(self, col, c, r, width=0):
+        pygame.draw.circle(self.s, col, self._pt(c), self._len(r), width and self._len(width))
+
+    def line(self, col, a, b, width=1):
+        pygame.draw.line(self.s, col, self._pt(a), self._pt(b), self._len(width))
+
+    def blit(self, img, pos):
+        self.s.blit(img, self._pt(pos))
+
+    def text(self, font, text, x, y, col, **kw):
+        font.draw(self.s, text, *self._pt((x, y)), col, **kw)
 
 
 def mmss(t):
@@ -77,10 +122,10 @@ class DoomHud:
                      rng.choice(((80, 78, 84), (106, 104, 110), (72, 70, 76))))
         s.fill((130, 128, 134), (0, 0, W, 1))
         s.fill((50, 48, 54), (0, BAR_H - 1, W, 1))
-        for x in (96, 168, 228, 262, 330, 372):
-            s.fill((50, 48, 54), (x, 2, 1, BAR_H - 4))
-            s.fill((130, 128, 134), (x + 1, 2, 1, BAR_H - 4))
-        s.fill((30, 28, 34), (230, 1, 30, BAR_H - 2))       # face well
+        for x in (0, 96, 168, 228, 262, 330, 372, 480):
+            s.fill((50, 48, 54), (BX + x, 2, 1, BAR_H - 4))
+            s.fill((130, 128, 134), (BX + x + 1, 2, 1, BAR_H - 4))
+        s.fill((30, 28, 34), (BX + 230, 1, 30, BAR_H - 2))       # face well
         return s
 
     def big(self, text, ramp=BIG_RED):
@@ -132,14 +177,15 @@ class DoomHud:
         if me is None:
             return
         state = me[2]
-        vw, vh = surf.get_size()
+        pen = Pen(surf)
+        vw, vh = pen.size
         if state in (S.DRIVER, S.PASSENGER) and view.my_car is not None:
-            self._dashboard(surf, view.my_car, state == S.DRIVER, steer, now)
+            self._dashboard(pen, view.my_car, state == S.DRIVER, steer, now)
             return
         if state == S.CUFFED:
             for x in range(0, vw, 26):
-                surf.fill((70, 70, 80), (x, 0, 6, vh))
-                surf.fill((130, 130, 140), (x + 1, 0, 2, vh))
+                pen.fill((70, 70, 80), (x, 0, 6, vh))
+                pen.fill((130, 130, 140), (x + 1, 0, 2, vh))
             return
         if state != S.FOOT:
             return
@@ -149,31 +195,31 @@ class DoomHud:
         skin = SKINS[me[0] % 4]
         if me[3] & PR.PF_DOLLY:
             d = next((d for d in view.dollies.values() if d[5] == me[0]), None)
-            self._dolly_view(surf, d, bob, sway, skin, sleeve)
+            self._dolly_view(pen, d, bob, sway, skin, sleeve)
             return
         hands = [h for h in (me[9], me[10]) if h != NO_PART]
         by = vh - 24 + int(bob)
         if not hands:
-            self._weapon_view(surf, view, weapon, now - fire_t, bob, sway, skin, sleeve)
+            self._weapon_view(pen, view, weapon, now - fire_t, bob, sway, skin, sleeve)
             return
         if len(hands) == 1 and PART_DEFS[PART_IDS[hands[0]]][2] == 2:
             ic = self._icon6(hands[0])
-            surf.blit(ic, (vw // 2 - ic.get_width() // 2 + int(sway), by - ic.get_height() + 12))
-            self._fist(surf, vw // 2 - 34 + int(sway), by, skin, sleeve, -1)
-            self._fist(surf, vw // 2 + 34 + int(sway), by, skin, sleeve, 1)
+            pen.blit(ic, (vw // 2 - 24 + int(sway), by - 48 + 12))
+            self._fist(pen, vw // 2 - 34 + int(sway), by, skin, sleeve, -1)
+            self._fist(pen, vw // 2 + 34 + int(sway), by, skin, sleeve, 1)
             return
         for i, side in enumerate((-1, 1)):
             x = vw // 2 + side * 120 + int(sway * side)
             held = hands[i] if i < len(hands) else None
             if held is not None:
                 ic = self._icon6(held)
-                surf.blit(ic, (x - ic.get_width() // 2, by - ic.get_height() + 6))
-            self._fist(surf, x, by, skin, sleeve, side)
+                pen.blit(ic, (x - 24, by - 48 + 6))
+            self._fist(pen, x, by, skin, sleeve, side)
 
-    def _weapon_view(self, surf, view, weapon, since, bob, sway, skin, sleeve):
+    def _weapon_view(self, pen, view, weapon, since, bob, sway, skin, sleeve):
         """Doom's weapon sprites, done with rectangles. `since` = seconds since
         you last pulled the trigger (locally, so it feels instant)."""
-        vw, vh = surf.get_size()
+        vw, vh = pen.size
         cx = vw // 2 + int(sway)
         ars = view.snap.arsenal if view.snap is not None else None
         ammo = 1
@@ -185,134 +231,135 @@ class DoomHud:
             base = vh - 26 + int(bob) + int(kick * 12)
             top = base - 38 + int(kick * 6)
             if kick > 0.55 and ammo:
-                self._flash(surf, cx, top - 4, 12)
-            pygame.draw.polygon(surf, (26, 26, 32), [(cx - 13, base), (cx + 13, base), (cx + 7, top), (cx - 7, top)])
-            pygame.draw.polygon(surf, (58, 58, 70), [(cx - 13, base), (cx - 8, base), (cx - 4, top), (cx - 7, top)])
-            pygame.draw.polygon(surf, (44, 44, 54), [(cx - 9, base - 2), (cx + 9, base - 2), (cx + 5, top + 2), (cx - 5, top + 2)])
-            surf.fill((70, 70, 84), (cx - 1, top + 3, 2, base - top - 8))                   # the rib down the middle
-            surf.fill((20, 20, 26), (cx - 9, base - 7, 5, 5))                               # rear sight, left
-            surf.fill((20, 20, 26), (cx + 4, base - 7, 5, 5))                               # rear sight, right
-            surf.fill((230, 230, 230), (cx - 1, top - 3, 2, 4))                             # front sight dot
-            self._fist(surf, cx, base + 14, skin, sleeve, 1)
+                self._flash(pen, cx, top - 4, 12)
+            pen.poly((26, 26, 32), [(cx - 13, base), (cx + 13, base), (cx + 7, top), (cx - 7, top)])
+            pen.poly((58, 58, 70), [(cx - 13, base), (cx - 8, base), (cx - 4, top), (cx - 7, top)])
+            pen.poly((44, 44, 54), [(cx - 9, base - 2), (cx + 9, base - 2), (cx + 5, top + 2), (cx - 5, top + 2)])
+            pen.fill((70, 70, 84), (cx - 1, top + 3, 2, base - top - 8))                   # the rib down the middle
+            pen.fill((20, 20, 26), (cx - 9, base - 7, 5, 5))                               # rear sight, left
+            pen.fill((20, 20, 26), (cx + 4, base - 7, 5, 5))                               # rear sight, right
+            pen.fill((230, 230, 230), (cx - 1, top - 3, 2, 4))                             # front sight dot
+            self._fist(pen, cx, base + 14, skin, sleeve, 1)
             return
         if weapon == S.ARM_SHOTGUN:
             kick = max(0.0, 1.0 - since / 0.25) if ammo or since < 0.02 else 0.0
             pump = math.sin(min(1.0, max(0.0, (since - 0.25) / 0.4)) * math.pi) if ammo else 0.0
             top = vh - 104 + int(bob) + int(kick * 24)
             if kick > 0.7 and ammo:
-                self._flash(surf, cx, top - 10, 26)
-            pygame.draw.polygon(surf, (30, 30, 38), [(cx - 22, vh), (cx + 22, vh), (cx + 9, top), (cx - 9, top)])
-            pygame.draw.polygon(surf, (62, 62, 76), [(cx - 22, vh), (cx - 14, vh), (cx - 5, top), (cx - 9, top)])
-            surf.fill((18, 18, 22), (cx - 5, top, 10, 3))                                   # the business end
+                self._flash(pen, cx, top - 10, 26)
+            pen.poly((30, 30, 38), [(cx - 22, vh), (cx + 22, vh), (cx + 9, top), (cx - 9, top)])
+            pen.poly((62, 62, 76), [(cx - 22, vh), (cx - 14, vh), (cx - 5, top), (cx - 9, top)])
+            pen.fill((18, 18, 22), (cx - 5, top, 10, 3))                                   # the business end
             py_ = top + 40 + int(pump * 22)
-            pygame.draw.polygon(surf, FA.GUN_WOOD, [(cx - 20, py_ + 26), (cx + 20, py_ + 26), (cx + 15, py_), (cx - 15, py_)])
+            pen.poly(FA.GUN_WOOD, [(cx - 20, py_ + 26), (cx + 20, py_ + 26), (cx + 15, py_), (cx - 15, py_)])
             for k in range(3):
-                surf.fill(shade(FA.GUN_WOOD, 0.7), (cx - 14, py_ + 5 + k * 7, 28, 2))
-            self._fist(surf, cx - 44, vh - 6 + int(bob) + int(kick * 12), skin, sleeve, -1)
-            self._fist(surf, cx + 26, py_ + 30, skin, sleeve, 1)
+                pen.fill(shade(FA.GUN_WOOD, 0.7), (cx - 14, py_ + 5 + k * 7, 28, 2))
+            self._fist(pen, cx - 44, vh - 6 + int(bob) + int(kick * 12), skin, sleeve, -1)
+            self._fist(pen, cx + 26, py_ + 30, skin, sleeve, 1)
             return
         if weapon in (S.ARM_SPIKES, S.ARM_BLOCK):
             top = vh - 58 + int(bob)
             if weapon == S.ARM_SPIKES:
-                pygame.draw.rect(surf, (26, 24, 30), (cx - 60, top, 120, 26))
-                surf.fill((230, 190, 40), (cx - 60, top + 22, 120, 4))
+                pen.rect((26, 24, 30), (cx - 60, top, 120, 26))
+                pen.fill((230, 190, 40), (cx - 60, top + 22, 120, 4))
                 for k in range(12):
-                    pygame.draw.polygon(surf, P["chrome"], [(cx - 56 + k * 10, top), (cx - 50 + k * 10, top),
+                    pen.poly(P["chrome"], [(cx - 56 + k * 10, top), (cx - 50 + k * 10, top),
                                                             (cx - 53 + k * 10, top - 8)])
             else:
                 for k in range(8):
                     col = FA.BARRIER_ORANGE if k % 2 == 0 else FA.BARRIER_WHITE
-                    surf.fill(col, (cx - 64 + k * 16, top + 6, 16, 22))
-                surf.fill((60, 60, 70), (cx - 64, top + 28, 128, 3))
-            self._fist(surf, cx - 60, vh - 12 + int(bob), skin, sleeve, -1)
-            self._fist(surf, cx + 60, vh - 12 + int(bob), skin, sleeve, 1)
+                    pen.fill(col, (cx - 64 + k * 16, top + 6, 16, 22))
+                pen.fill((60, 60, 70), (cx - 64, top + 28, 128, 3))
+            self._fist(pen, cx - 60, vh - 12 + int(bob), skin, sleeve, -1)
+            self._fist(pen, cx + 60, vh - 12 + int(bob), skin, sleeve, 1)
             return
         # fists: the right one jabs at the middle of the screen
         by = vh - 24 + int(bob)
         jab = math.sin(min(1.0, since / 0.22) * math.pi) if since < 0.22 else 0.0
-        self._fist(surf, vw // 2 - 120 - int(sway), by, skin, sleeve, -1)
-        self._fist(surf, vw // 2 + 120 + int(sway) - int(jab * 100), by - int(jab * 46), skin, sleeve, 1)
+        self._fist(pen, vw // 2 - 120 - int(sway), by, skin, sleeve, -1)
+        self._fist(pen, vw // 2 + 120 + int(sway) - int(jab * 100), by - int(jab * 46), skin, sleeve, 1)
 
     @staticmethod
-    def _flash(surf, x, y, r):
-        pygame.draw.circle(surf, (255, 200, 60), (x, y), r)
-        pygame.draw.circle(surf, (255, 250, 210), (x, y), max(2, r // 2))
+    def _flash(pen, x, y, r):
+        pen.circle((255, 200, 60), (x, y), r)
+        pen.circle((255, 250, 210), (x, y), max(2, r // 2))
         for a in range(0, 360, 45):
             t = math.radians(a)
-            pygame.draw.line(surf, (255, 230, 120), (x, y), (x + int(math.cos(t) * r * 1.6),
+            pen.line((255, 230, 120), (x, y), (x + int(math.cos(t) * r * 1.6),
                                                              y + int(math.sin(t) * r * 1.6)), 2)
 
     def _icon6(self, idx):
         ic = self.icons6.get(idx)
         if ic is None:
-            ic = self.icons6[idx] = pygame.transform.scale(self.bank.icons[idx], (48, 48))
+            n = int(48 * W / Pen.BASE_W)
+            ic = self.icons6[idx] = pygame.transform.scale(self.bank.icons[idx], (n, n))
         return ic
 
     @staticmethod
-    def _fist(surf, x, y, skin, sleeve, side):
-        pygame.draw.polygon(surf, shade(sleeve, 0.7), [(x - 16, y + 30), (x - 10, y + 6), (x + 12, y + 6), (x + 18, y + 30)])
-        pygame.draw.polygon(surf, sleeve, [(x - 13, y + 30), (x - 8, y + 8), (x + 10, y + 8), (x + 15, y + 30)])
-        pygame.draw.rect(surf, shade(skin, 0.8), (x - 11, y - 12, 22, 20), border_radius=4)
-        pygame.draw.rect(surf, skin, (x - 10, y - 12, 20, 18), border_radius=4)
+    def _fist(pen, x, y, skin, sleeve, side):
+        pen.poly(shade(sleeve, 0.7), [(x - 16, y + 30), (x - 10, y + 6), (x + 12, y + 6), (x + 18, y + 30)])
+        pen.poly(sleeve, [(x - 13, y + 30), (x - 8, y + 8), (x + 10, y + 8), (x + 15, y + 30)])
+        pen.rect(shade(skin, 0.8), (x - 11, y - 12, 22, 20), border_radius=4)
+        pen.rect(skin, (x - 10, y - 12, 20, 18), border_radius=4)
         for k in range(4):
-            surf.fill(shade(skin, 0.75), (x - 9 + k * 5, y - 12, 1, 7))
-        surf.fill(shade(skin, 1.1), (x - 8, y - 11, 14, 2))
+            pen.fill(shade(skin, 0.75), (x - 9 + k * 5, y - 12, 1, 7))
+        pen.fill(shade(skin, 1.1), (x - 8, y - 11, 14, 2))
         tx = x + 7 * side
-        surf.fill(shade(skin, 0.85), (tx - 3, y - 4, 6, 7))
+        pen.fill(shade(skin, 0.85), (tx - 3, y - 4, 6, 7))
 
-    def _dolly_view(self, surf, d, bob, sway, skin, sleeve):
-        vw, vh = surf.get_size()
+    def _dolly_view(self, pen, d, bob, sway, skin, sleeve):
+        vw, vh = pen.size
         cx = vw // 2 + int(sway)
         top = vh - 70 + int(bob)
         for side in (-1, 1):
             gx = cx + side * 130
-            pygame.draw.line(surf, P["metal"], (gx, vh), (cx + side * 44, top), 6)
-            pygame.draw.line(surf, P["metal_l"], (gx, vh), (cx + side * 44, top), 2)
-        pygame.draw.rect(surf, P["metal"], (cx - 50, top - 4, 100, 8))
-        pygame.draw.rect(surf, P["chrome"], (cx - 50, top - 4, 100, 2))
+            pen.line(P["metal"], (gx, vh), (cx + side * 44, top), 6)
+            pen.line(P["metal_l"], (gx, vh), (cx + side * 44, top), 2)
+        pen.rect(P["metal"], (cx - 50, top - 4, 100, 8))
+        pen.rect(P["chrome"], (cx - 50, top - 4, 100, 2))
         if d is not None and d[4] != 255:
             ic = self._icon6(d[4])
-            surf.blit(ic, (cx - 24, top - 48))
+            pen.blit(ic, (cx - 24, top - 48))
         for side in (-1, 1):
-            self._fist(surf, cx + side * 128, vh - 14 + int(bob), skin, sleeve, side)
+            self._fist(pen, cx + side * 128, vh - 14 + int(bob), skin, sleeve, side)
 
-    def _dashboard(self, surf, car, driving, steer, now):
-        vw, vh = surf.get_size()
+    def _dashboard(self, pen, car, driving, steer, now):
+        vw, vh = pen.size
         kind, color = car[1], car[2]
         body = (36, 36, 48) if kind == S.COP else CAR_COLORS[color % len(CAR_COLORS)]
         # hood, sloping away from you
-        pygame.draw.polygon(surf, shade(body, 0.8), [(40, vh), (vw - 40, vh), (vw - 130, vh - 58), (130, vh - 58)])
-        pygame.draw.polygon(surf, body, [(80, vh), (vw - 80, vh), (vw - 150, vh - 56), (150, vh - 56)])
+        pen.poly(shade(body, 0.8), [(40, vh), (vw - 40, vh), (vw - 130, vh - 58), (130, vh - 58)])
+        pen.poly(body, [(80, vh), (vw - 80, vh), (vw - 150, vh - 56), (150, vh - 56)])
         if kind == S.PERSONAL:
-            pygame.draw.polygon(surf, (40, 90, 30), [(vw // 2 - 22, vh), (vw // 2 + 22, vh), (vw // 2 + 8, vh - 56),
+            pen.poly((40, 90, 30), [(vw // 2 - 22, vh), (vw // 2 + 22, vh), (vw // 2 + 8, vh - 56),
                                                      (vw // 2 - 8, vh - 56)])
         # A-pillars and roof edge
-        pygame.draw.polygon(surf, (24, 22, 30), [(0, 0), (34, 0), (96, vh - 40), (0, vh - 40)])
-        pygame.draw.polygon(surf, (24, 22, 30), [(vw, 0), (vw - 34, 0), (vw - 96, vh - 40), (vw, vh - 40)])
-        surf.fill((24, 22, 30), (0, 0, vw, 10))
-        surf.fill((40, 38, 46), (vw // 2 - 26, 10, 52, 12))           # mirror
-        surf.fill((90, 110, 130), (vw // 2 - 24, 11, 48, 9))
+        pen.poly((24, 22, 30), [(0, 0), (34, 0), (96, vh - 40), (0, vh - 40)])
+        pen.poly((24, 22, 30), [(vw, 0), (vw - 34, 0), (vw - 96, vh - 40), (vw, vh - 40)])
+        pen.fill((24, 22, 30), (0, 0, vw, 10))
+        pen.fill((40, 38, 46), (vw // 2 - 26, 10, 52, 12))           # mirror
+        pen.fill((90, 110, 130), (vw // 2 - 24, 11, 48, 9))
         # dash
-        surf.fill((30, 28, 36), (0, vh - 40, vw, 40))
-        surf.fill((50, 48, 58), (0, vh - 40, vw, 3))
+        pen.fill((30, 28, 36), (0, vh - 40, vw, 40))
+        pen.fill((50, 48, 58), (0, vh - 40, vw, 3))
         spd = math.hypot(car[9], car[10]) * 3.6
         dx, dy = vw - 150, vh - 18
-        pygame.draw.circle(surf, (14, 14, 20), (dx, dy), 17)
-        pygame.draw.circle(surf, (120, 120, 130), (dx, dy), 17, 1)
+        pen.circle((14, 14, 20), (dx, dy), 17)
+        pen.circle((120, 120, 130), (dx, dy), 17, 1)
         a = math.radians(210 - min(240, spd * 1.2))
-        pygame.draw.line(surf, (255, 90, 60), (dx, dy), (dx + int(math.cos(a) * 14), dy - int(math.sin(a) * 14)), 2)
-        self.font.draw(surf, "%d" % spd, dx, dy + 6, P["white"], align="center")
+        pen.line((255, 90, 60), (dx, dy), (dx + int(math.cos(a) * 14), dy - int(math.sin(a) * 14)), 2)
+        pen.text(self.font, "%d" % spd, dx, dy + 6, P["white"], align="center")
         if not driving:
             return
         # steering wheel, turning with your inputs
         wx, wy, r = 170, vh + 10, 44
-        pygame.draw.circle(surf, (18, 18, 22), (wx, wy), r, 9)
-        pygame.draw.circle(surf, (60, 58, 66), (wx, wy), r, 2)
+        pen.circle((18, 18, 22), (wx, wy), r, 9)
+        pen.circle((60, 58, 66), (wx, wy), r, 2)
         rot = -steer * 1.3
         for k in (0, 2.3, -2.3):
             a = math.pi / 2 + k + rot
-            pygame.draw.line(surf, (30, 30, 36), (wx, wy), (wx + int(math.cos(a) * r), wy - int(math.sin(a) * r)), 7)
-        pygame.draw.circle(surf, (40, 40, 48), (wx, wy), 10)
+            pen.line((30, 30, 36), (wx, wy), (wx + int(math.cos(a) * r), wy - int(math.sin(a) * r)), 7)
+        pen.circle((40, 40, 48), (wx, wy), 10)
 
     # ------------------------------------------------------------------ the bar
     def draw(self, low, view, now, info):
@@ -330,15 +377,15 @@ class DoomHud:
         num = self.big(cash, BIG_RED if snap.cash >= 0 else BIG_BLUE)
         if num.get_width() > 92:
             num = pygame.transform.scale(num, (92, num.get_height()))
-        low.blit(num, (48 - num.get_width() // 2, by + 3))
-        f.draw(low, "CASH", 48, by + 23, P["white"], align="center")
+        low.blit(num, (BX + 48 - num.get_width() // 2, by + 3))
+        f.draw(low, "CASH", BX + 48, by + 23, P["white"], align="center")
         # HEAT
         heat_ramp = BIG_BLUE if snap.cops and flash else BIG_RED
         num = self.big("%d%%" % snap.heat, heat_ramp)
-        low.blit(num, (132 - num.get_width() // 2, by + 3))
-        f.draw(low, "HEAT", 132, by + 23, P["white"], align="center")
+        low.blit(num, (BX + 132 - num.get_width() // 2, by + 3))
+        f.draw(low, "HEAT", BX + 132, by + 23, P["white"], align="center")
         # HANDS
-        hx = 172
+        hx = BX + 172
         if me is not None:
             hands = [h for h in (me[9], me[10]) if h != NO_PART]
             dolly = next((d for d in view.dollies.values() if d[5] == me[0]), None) \
@@ -359,7 +406,7 @@ class DoomHud:
                      S.ARM_SPIKES: snap.arsenal[4], S.ARM_BLOCK: snap.arsenal[5]}[w]
                 low.fill((92, 90, 96), (hx, by + 2, 52, 20))
                 num = self.big("%d" % n, BIG_RED if n else BIG_BLUE)
-                low.blit(num, (198 - num.get_width() // 2, by + 3))
+                low.blit(num, (BX + 198 - num.get_width() // 2, by + 3))
             else:
                 for i, h in enumerate(hands):
                     low.blit(self.icons2[h], (hx + 3 + i * 26, by + 4))
@@ -368,7 +415,7 @@ class DoomHud:
             label = "DOLLY"
         elif me is not None and me[9] == NO_PART and info.get("weapon", S.ARM_FISTS) != S.ARM_FISTS:
             label = WEAPON_LABELS[info["weapon"]]
-        f.draw(low, label, 198, by + 23, P["white"], align="center")
+        f.draw(low, label, BX + 198, by + 23, P["white"], align="center")
         # FACE
         if me is not None:
             if now > self.look_t:
@@ -392,28 +439,28 @@ class DoomHud:
             else:
                 mood = "calm"
             fl = (1 if flash else 2) if snap.cops else 0
-            low.blit(self.face(mood, me[1], fl), (232, by + 1))
+            low.blit(self.face(mood, me[1], fl), (BX + 232, by + 1))
         # STAMINA / SPEED
         car = view.my_car
         if car is not None and me is not None and me[2] in (S.DRIVER, S.PASSENGER):
             num = self.big("%d" % (math.hypot(car[9], car[10]) * 3.6))
-            low.blit(num, (296 - num.get_width() // 2, by + 3))
-            f.draw(low, "KM/H", 296, by + 23, P["white"], align="center")
+            low.blit(num, (BX + 296 - num.get_width() // 2, by + 3))
+            f.draw(low, "KM/H", BX + 296, by + 23, P["white"], align="center")
         elif me is not None:
             winded = me[3] & PR.PF_EXHAUSTED
             num = self.big("%d%%" % me[11], BIG_BLUE if winded else BIG_RED)
-            low.blit(num, (296 - num.get_width() // 2, by + 3))
-            f.draw(low, "WINDED!" if winded else "STAMINA", 296, by + 23,
+            low.blit(num, (BX + 296 - num.get_width() // 2, by + 3))
+            f.draw(low, "WINDED!" if winded else "STAMINA", BX + 296, by + 23,
                    P["danger"] if winded and flash else P["white"], align="center")
         # COPS
         for i in range(min(snap.cops, 2)):
             c = (255, 60, 60) if (flash ^ bool(i)) else (80, 120, 255)
-            low.fill(P["ink"], (338 + i * 16, by + 5, 12, 14))
-            low.fill(c, (339 + i * 16, by + 6, 10, 5))
-            low.fill(P["white"], (339 + i * 16, by + 12, 10, 6))
-        f.draw(low, "COPS", 351, by + 23, (130, 170, 255) if snap.cops else P["white"], align="center")
+            low.fill(P["ink"], (BX + 338 + i * 16, by + 5, 12, 14))
+            low.fill(c, (BX + 339 + i * 16, by + 6, 10, 5))
+            low.fill(P["white"], (BX + 339 + i * 16, by + 12, 10, 6))
+        f.draw(low, "COPS", BX + 351, by + 23, (130, 170, 255) if snap.cops else P["white"], align="center")
         # DAY / RENT
-        dx = 378
+        dx = BX + 378
         f.draw(low, "DAY %d" % snap.day, dx, by + 3, P["gold"])
         f.draw(low, "RENT $%d" % snap.rent_due, dx, by + 11, P["white"])
         due = snap.rent
@@ -422,6 +469,8 @@ class DoomHud:
         if snap.cash < 0:
             f.draw(low, "IN THE RED %s" % mmss(C.DEBT_GRACE - snap.debt), dx + 44, by + 3,
                    P["danger"] if flash else P["gold"])
+        self._arms_panel(low, snap, me, info, by)
+        self._gear_panel(low, snap, me, view, by)
         # ---- above the bar -------------------------------------------------
         self._toasts(low, now)
         self._status_line(low, snap, now)
@@ -434,7 +483,6 @@ class DoomHud:
             if info.get("fp"):
                 self._shop_compass(low, view, info, now)
                 self._car_compass(low, view, info, now)
-            self._arms(low, snap, info)
         self._banners(low, snap, me, now, flash)
         if now < self.help_until and not info.get("paused"):
             lines = ["MOUSE LOOK  WASD MOVE/DRIVE  SHIFT SPRINT  E USE (HOLD)  G DROP  F EXIT CAR",
@@ -528,17 +576,39 @@ class DoomHud:
         if arrow == "V":
             pygame.draw.polygon(low, col, [(x - 4, 22), (x + 4, 22), (x, 27)])
 
-    def _arms(self, low, snap, info):
-        """Doom's ARMS panel: 1-5, lit if you own it, gold if it's in your hands."""
+    def _arms_panel(self, low, snap, me, info, by):
+        """Left of the bar, Doom's ARMS box: 1-5, lit if you own it, gold in hand."""
+        if BX < 40:
+            return
+        f = self.font
         ars = snap.arsenal
-        if not ars or not (ars[1] & ~1 or ars[4] or ars[5]):
-            return                                   # just fists: nothing worth showing
         cur = info.get("weapon", S.ARM_FISTS)
         for k in range(5):
             owned = S.arsenal_owns(ars, k)
             col = P["gold"] if k == cur and owned else P["white"] if owned else (70, 68, 76)
-            self.font.draw(low, str(k + 1), 4 + k * 7, VIEW_H - 9, col)
-        self.font.draw(low, S.ARM_NAMES[cur] if S.arsenal_owns(ars, cur) else "FISTS", 42, VIEW_H - 9, P["gold"])
+            f.draw(low, str(k + 1), BX // 2 - 28 + k * 14, by + 4, col, scale=1)
+        name = S.ARM_NAMES[cur] if S.arsenal_owns(ars, cur) else "FISTS"
+        f.draw(low, name, BX // 2, by + 13, P["gold"], align="center")
+        f.draw(low, "ARMS", BX // 2, by + 23, P["white"], align="center")
+
+    def _gear_panel(self, low, snap, me, view, by):
+        """Right of the bar: what's in your pockets (traps) -- or your trunk, in a car."""
+        if BX < 40:
+            return
+        f = self.font
+        x0 = BX + 480
+        cx = x0 + (W - x0) // 2
+        ars = snap.arsenal or (0, 1, 0, 0, 0, 0)
+        rows = []
+        if ars[4]:
+            rows.append("SPIKES x%d" % ars[4])
+        if ars[5]:
+            rows.append("BLOCKS x%d" % ars[5])
+        for i, r in enumerate(rows[:2]):
+            f.draw(low, r, cx, by + 4 + i * 8, P["gold"], align="center")
+        if not rows:
+            f.draw(low, "-", cx, by + 8, (70, 68, 76), align="center")
+        f.draw(low, "GEAR", cx, by + 23, P["white"], align="center")
 
     def _car_compass(self, low, view, info, now):
         """Can't find anything to steal? Follow the green arrow."""

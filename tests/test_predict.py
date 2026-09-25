@@ -31,20 +31,21 @@ def lockstep(world, pid, script, lag_up=6, lag_down=6):
     p = world.players[pid]
     total = len(script) + lag_up + lag_down + 12
     for t in range(total):
-        # --- client: one input + one predicted tick
-        if t < len(script):
-            seq = t + 1
-            pr.push_input(seq, script[t])
-            if pr.mode != P.ME_NONE:
-                pred[seq] = pr.pose()
-            to_server.append((t + lag_up, seq, script[t]))
+        # --- client: one input + one predicted tick, every tick (like the real
+        # game: once the script runs out it keeps sending "nothing pressed")
+        seq = t + 1
+        b = script[t] if t < len(script) else 0
+        pr.push_input(seq, b)
+        if pr.mode != P.ME_NONE:
+            pred[seq] = pr.pose()
+        to_server.append((t + lag_up, seq, b))
         # --- server: apply whatever input has arrived, step, maybe snapshot
         while to_server and to_server[0][0] <= t:
             _, seq, b = to_server.popleft()
             world.set_input(pid, S.InputState(b))
             ack = seq
         world.step(DT)
-        if ack:
+        if ack and ack not in srv:
             if p.state == S.DRIVER:
                 car = world.cars[p.car_id]
                 srv[ack] = (car.x, car.y, car.ang)

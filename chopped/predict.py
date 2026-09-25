@@ -21,27 +21,31 @@ from collections import deque
 from . import config as C
 from .sim import Physics, Car, Trap, TRAP_BLOCK, drive_input
 from .parts import SLOTS, SLOT_INDEX
-from .protocol import ME_NONE, ME_FOOT, ME_DRIVER, SF_EXHAUSTED
+from .protocol import ME_NONE, ME_FOOT, ME_DRIVER, SF_EXHAUSTED, SX_NOS
 
 DT = 1.0 / C.SIM_HZ
 
 
 class PredCar(Car):
-    """A Car whose power we're told rather than summed from parts (the client
-    only knows which slots are filled, not what's in them)."""
+    """A Car whose power, grip and mass we're told rather than summed from
+    parts (the client only knows which slots are filled, not what's in them)."""
     __slots__ = ("_power",)
 
     def power(self):
         return self._power
 
+    def refresh(self):
+        pass                          # grip / mass / drag come from the SELF block instead
+
 
 class Body:
     """Just enough of a Player for Physics._walk and the collision helpers."""
     __slots__ = ("x", "y", "vx", "vy", "ang", "stamina", "exhausted", "regen_delay",
-                 "sprinting", "moving", "load", "mult")
+                 "sprinting", "moving", "load", "mult", "z", "vz")
 
     def __init__(self):
         self.x = self.y = self.vx = self.vy = self.ang = 0.0
+        self.z = self.vz = 0.0
         self.stamina = C.STAMINA_MAX
         self.exhausted = False
         self.regen_delay = 0.0
@@ -65,7 +69,7 @@ def _car_from_row(row, power=100):
     """Rebuild a physics car from a snapshot CAR row
     (id, kind, color, state, flags, mask, tuned, x, y, vx, vy, ang, driver, passenger, damage)."""
     parts = {s: (1 if row[5] & (1 << SLOT_INDEX[s]) else None) for s in SLOTS}
-    car = PredCar(row[0], row[1], row[7], row[8], row[11], parts, row[2])
+    car = PredCar(row[0], row[1], row[7], row[8], row[11], parts, row[2], model=row[15])
     car.vx, car.vy = row[9], row[10]
     car.state = row[3]
     car.driver = row[12] or None
@@ -105,8 +109,8 @@ class Predictor(Physics):
                 c.impact_dv = 0.0
                 c.impact_nx = c.impact_ny = 0.0
                 self._car_vs_world(c)
-            reach = 2 * math.hypot(C.CAR_LEN / 2, C.CAR_WID / 2)
             for other in cars:
+                reach = car.bound + other.bound
                 if other is not car and abs(other.x - car.x) < reach and abs(other.y - car.y) < reach:
                     self._car_pair(car, other)
         elif self.mode == ME_FOOT:
@@ -137,6 +141,7 @@ class Predictor(Physics):
         old = self.pose()
         old_mode, old_car = self.mode, self.car_id
         (mode, load, car_id, x, y, vx, vy, ang, w, stamina, regen, mult, power, pull, flags) = snap.me
+        (e0, e1, e2, e3, e4, e5, e6, eflags) = snap.me2
         row = snap.cars.get(car_id) if mode == ME_DRIVER else None
         if mode == ME_DRIVER and row is None:
             mode = ME_NONE
@@ -157,6 +162,9 @@ class Predictor(Physics):
             car = self.car = _car_from_row(row, power)
             car.x, car.y, car.vx, car.vy, car.ang, car.w = x, y, vx, vy, ang, w
             car.pull = float(pull or 1)
+            car.delta, car.grip, car.mass, car.top_mult = e0, e1, e2, e3
+            car.nos_fuel, car.spin_t, car.inertia = e4, e5, e6
+            car.nos = bool(eflags & SX_NOS)
             car.driver = snap.pid
             self.cars[car.id] = car
         else:
@@ -166,6 +174,7 @@ class Predictor(Physics):
             b.stamina, b.regen_delay = stamina, regen
             b.exhausted = bool(flags & SF_EXHAUSTED)
             b.load, b.mult = load, mult
+            b.z, b.vz = e0, e1
         for _seq, buttons, yaw in self.pending:
             self.tick(buttons, yaw)
         new = self.pose()

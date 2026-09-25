@@ -18,6 +18,7 @@ from .art import P
 from . import sim as S
 from . import protocol as PR
 from .parts import SLOT_ANCHOR
+from . import vehicles as V
 
 PPM = C.PPM
 W, H = C.LOW_W, C.LOW_H
@@ -313,13 +314,13 @@ class Renderer:
         emit = self.emit
         r = self.rng
         for c in view.cars.values():
-            (cid, kind, color, state, flags, mask, tuned, x, y, vx, vy, ang, drv, psg, dmg) = c
+            (cid, kind, color, state, flags, mask, styles, x, y, vx, vy, ang, drv, psg, dmg) = c[:15]
             if not self.on_screen(x, y, 30):
                 continue
             sx, sy = self.to_screen(x, y)
             sh = bank.car_shadow_at(ang)
             low.blit(sh, (sx - sh.get_width() // 2 + 2, sy - sh.get_height() // 2 + 2))
-            spr = bank.car(kind, color, mask, tuned, dmg, phase, cid, ang)
+            spr = bank.car(c, phase, ang)
             low.blit(spr, (sx - spr.get_width() // 2, sy - spr.get_height() // 2))
             spd = math.hypot(vx, vy)
             fx, fy = math.cos(ang), math.sin(ang)
@@ -327,7 +328,9 @@ class Renderer:
             if spd > 3:
                 for slot in ("WheelFL", "WheelFR", "WheelRL", "WheelRR"):
                     if not (mask & PR.SLOT_BITS[slot]) and r.random() < 0.6:
+                        m = V.model(c[15])
                         lx, ly = SLOT_ANCHOR[slot]
+                        lx, ly = lx * m.length / 4.4, ly * m.width / 2.4
                         wx, wy = x + fx * lx - fy * ly, y + fy * lx + fx * ly
                         emit(SPARK, wx, wy, -vx * 0.3 + r.uniform(-3, 3), -vy * 0.3 + r.uniform(-3, 3), 0.25)
             if flags & PR.CF_FIRE:

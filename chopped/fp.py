@@ -23,6 +23,7 @@ from . import sim as S
 from . import protocol as PR
 from .art import P, PLAYER_COLORS, SKINS, HAIRS, SHIRTS, PixelFont, shade
 from .parts import SLOT_ANCHOR, NO_PART
+from . import vehicles as V
 
 T = C.TILE_M
 FLOOR_PPM = 4
@@ -180,22 +181,26 @@ class FPRenderer:
             self.benches.append((bx + bw / 2, by + bh / 2, is_sell, bw, bh))
 
     # ------------------------------------------------------------------ sprites
-    def _car_sprite(self, row, az):
-        (cid, kind, color, state, flags, mask, tuned, x, y, vx, vy, ang, drv, psg, dmg) = row
-        idx = int(round(az / (TWO_PI / 16))) % 16
+    def _car_sprite(self, row, az, steps=16, ppm=12):
+        (cid, kind, color, state, flags, mask, styles, x, y, vx, vy, ang, drv, psg, dmg,
+         model, livery, extras, extras2) = row[:19]
+        idx = int(round(az / (TWO_PI / steps))) % steps
         lights = 0
         if kind == S.COP:
             lights |= self._phase
         if flags & PR.CF_ALARM and self._phase:
             lights |= 2
-        key = (kind, color, mask, tuned, dmg, lights, idx)
+        if extras & 8:
+            lights |= 4                                  # NOS: blue fire out the back
+        key = (kind, color, mask, styles, dmg, lights, idx, model, livery, extras & 8, extras2 & 1, steps, ppm)
         spr = self.car_cache.get(key)
         if spr is None:
             if len(self.car_cache) > 1500:
                 self.car_cache.clear()
             spr = self.car_cache[key] = FA.render_boxes(
-                FA.car_boxes(kind, color, mask, tuned, dmg, lights), idx * TWO_PI / 16, 12)
-        return spr, 12
+                FA.car_boxes(kind, color, mask, styles, dmg, lights, model, livery, extras, extras2),
+                idx * TWO_PI / steps, ppm)
+        return spr, ppm
 
     def _person_look(self, eid, kind):
         k = self.person_keys.get((eid, kind))
@@ -751,7 +756,7 @@ class FPRenderer:
         """Fire, smoke and dragging hubs, emitted in world space."""
         r = self.rng
         for c in view.cars.values():
-            (cid, kind, color, state, flags, mask, tuned, x, y, vx, vy, ang, drv, psg, dmg) = c
+            (cid, kind, color, state, flags, mask, styles, x, y, vx, vy, ang, drv, psg, dmg) = c[:15]
             if flags & PR.CF_FIRE:
                 for _ in range(2):
                     self.emit(FIRE, x + r.uniform(-1, 1), y + r.uniform(-1, 1), 1.0, r.uniform(-1, 1),
@@ -765,7 +770,9 @@ class FPRenderer:
                 fx, fy = math.cos(ang), math.sin(ang)
                 for slot in ("WheelFL", "WheelFR", "WheelRL", "WheelRR"):
                     if not (mask & PR.SLOT_BITS[slot]) and r.random() < 0.5:
+                        mdl = V.model(c[15])
                         lx, ly = SLOT_ANCHOR[slot]
+                        lx, ly = lx * mdl.length / 4.4, ly * mdl.width / 2.4
                         self.emit(SPARK, x + fx * lx - fy * ly, y + fy * lx + fx * ly, 0.2,
                                   -vx * 0.3 + r.uniform(-3, 3), -vy * 0.3 + r.uniform(-3, 3), 1.0, 0.25)
 

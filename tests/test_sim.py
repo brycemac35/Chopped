@@ -397,7 +397,7 @@ class TestCrashes(unittest.TestCase):
         face_y = (by + bh) * T
         cx = (bx + bw / 2) * T
         car = S.Car(w.new_id(), S.CIV, cx, face_y + 2.2 + 0.05, -math.pi / 2,
-                    {s: Part(q.type_id, 1.0) for s, q in S.personal_loadout().items()})
+                    {s: (Part(q.type_id, 1.0) if q else None) for s, q in S.personal_loadout().items()})
         car.state = S.RUNNING
         car.stolen = True
         w.cars[car.id] = car

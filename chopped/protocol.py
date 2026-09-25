@@ -12,8 +12,9 @@ import struct
 import zlib
 
 from . import config as C
-from .parts import SLOTS, PART_INDEX, NO_PART, part_tuned
+from .parts import SLOTS, PART_INDEX, NO_PART
 from .sim import COP, TRAFFIC, TUMBLE, FOOT, DRIVER
+from . import vehicles as V
 
 MAGIC = b"CH"
 P_JOIN, P_WELCOME, P_REJECT, P_INPUT, P_SNAPSHOT, P_LEAVE, P_SHUTDOWN = range(1, 8)
@@ -36,10 +37,17 @@ SELF_MOTION = struct.Struct("<BBHfffffffffHbB")
 # mode (0 none / 1 on foot / 2 driving), walk_load, car_id, x, y, vx, vy, ang, w,
 # stamina, regen_delay, speed_mult, power, pull, flags
 # ...followed by 6 bytes of arsenal: weapon, arms bitmask, pistol ammo, shotgun ammo, spikes, roadblocks
+# ...then (v0.7) the rest of what the tyre model and the jump need:
+SELF_EXTRA = struct.Struct("<fffffffB")
+# driving: steer angle, grip, mass, top-speed multiplier, NOS fuel, banana spin left, inertia, flags (1 = NOS fitted)
+# on foot: height, vertical speed, 0, 0, 0, 0, 0, flags
 ME_NONE, ME_FOOT, ME_DRIVER = 0, 1, 2
 SF_EXHAUSTED = 1
+SX_NOS = 1
 COUNTS = struct.Struct("<BBBBBBB")
-CAR = struct.Struct("<HBBBBHHHHhhHBBB")
+CAR = struct.Struct("<HBBBBHIHHhhHBBBBBBB")
+# id, kind, colour, state, flags, part mask, style word, x, y, vx, vy, ang, driver, passenger, damage,
+# model, livery, extras (horn 0-2, NOS flame 3, glow 4-7), extras2 (see CX_*)
 PLAYER = struct.Struct("<BBBBHHhhHBBBHB")    # ... + weapon
 NPC = struct.Struct("<HBBHHB")
 PICKUP = struct.Struct("<HBHHB")
@@ -50,6 +58,8 @@ EV = struct.Struct("<IB")
 EV_SFX = struct.Struct("<BHH")
 
 CF_ALARM, CF_FIRE, CF_HORN, CF_HANDBRAKE, CF_CONFUSED, CF_WANTED = 1, 2, 4, 8, 16, 32
+CF_TRUNK = 64                   # something in the trunk (you only find out what by looking)
+CX_GNOME, CX_NOS, CX_EJECTOR, CX_SPIN, CX_DONUT, CX_PATROL = 1, 2, 4, 8, 16, 32
 PF_SPRINT, PF_EXHAUSTED, PF_MOVING, PF_DOLLY = 1, 2, 4, 8
 
 SLOT_BITS = {s: 1 << i for i, s in enumerate(SLOTS)}
@@ -106,7 +116,19 @@ def encode_self(world, me):
     plus your arsenal (only you need to know how many bullets you've got)."""
     arsenal = (me.weapon, me.arms, min(255, me.ammo[1]), min(255, me.ammo[2]), me.gear[0], me.gear[1]) \
         if me is not None else (0, 1, 0, 0, 0, 0)
-    return _encode_motion(world, me) + bytes(arsenal)
+    return _encode_motion(world, me) + _encode_extra(world, me) + bytes(arsenal)
+
+
+def _encode_extra(world, me):
+    if me is not None and world.gameover_t <= 0:
+        if me.state == DRIVER:
+            car = world.cars.get(me.car_id)
+            if car is not None:
+                return SELF_EXTRA.pack(car.delta, car.grip, car.mass, car.top_mult, car.nos_fuel, car.spin_t,
+                                       car.inertia, SX_NOS if car.nos else 0)
+        if me.state == FOOT:
+            return SELF_EXTRA.pack(me.z, me.vz, 0.0, 0.0, 0.0, 0.0, 0.0, 0)
+    return SELF_EXTRA.pack(0.0, 1.0, 1000.0, 1.0, 0.0, 0.0, 1000.0, 0)
 
 
 def _encode_motion(world, me):
@@ -145,18 +167,22 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
     for car in world.cars.values():
         if car.kind == TRAFFIC and (car.x - px) ** 2 + (car.y - py) ** 2 > r2:
             continue          # far-off traffic is scenery; everything stealable is always sent
-        mask = tuned = 0
+        mask = 0
         for s, part in car.parts.items():
             if part is not None:
                 mask |= SLOT_BITS[s]
-                if part_tuned(part.type_id):
-                    tuned |= SLOT_BITS[s]
         flags = ((CF_ALARM if car.alarm else 0) | (CF_FIRE if car.fire_t > 0 else 0) |
                  (CF_HORN if car.horn else 0) | (CF_HANDBRAKE if car.handbrake and car.driver is not None else 0) |
-                 (CF_CONFUSED if car.confused_t > 0 else 0) | (CF_WANTED if car.wanted() else 0))
-        cars.append(CAR.pack(car.id, car.kind, car.color, car.state, flags, mask, tuned,
+                 (CF_CONFUSED if car.confused_t > 0 else 0) | (CF_WANTED if car.wanted() else 0) |
+                 (CF_TRUNK if car.trunk else 0))
+        extras = (car.horn_type & 7) | (8 if car.boosting else 0) | ((car.glow & 15) << 4)
+        extras2 = ((CX_GNOME if car.gnome else 0) | (CX_NOS if car.nos else 0) |
+                   (CX_EJECTOR if car.ejector else 0) | (CX_SPIN if car.spin_t > 0 else 0) |
+                   (CX_DONUT if car.donut_t > 0 else 0) | (CX_PATROL if car.patrol else 0))
+        cars.append(CAR.pack(car.id, car.kind, car.color, car.state, flags, mask, V.pack_styles(car.parts),
                              _pos(car.x), _pos(car.y), _vel(car.vx), _vel(car.vy), _ang(car.ang),
-                             car.driver or 0, car.passenger or 0, car.damage))
+                             car.driver or 0, car.passenger or 0, car.damage, car.model, car.livery,
+                             extras, extras2))
     players = []
     for p in world.players.values():
         h0 = PART_INDEX[p.hands[0].type_id] if len(p.hands) > 0 else NO_PART
@@ -222,7 +248,7 @@ class Snapshot:
     __slots__ = ("tick", "time", "echo_ms", "pid", "cash", "rent", "debt", "heat", "witness",
                  "cooling", "cops", "gameover", "run", "hold", "nplayers", "prompt", "ack_input", "day",
                  "rent_due",
-                 "me", "arsenal", "cars", "players", "npcs", "pickups", "dollies", "traps", "events", "arrival")
+                 "me", "me2", "arsenal", "cars", "players", "npcs", "pickups", "dollies", "traps", "events", "arrival")
 
 
 def _text(data, off):
@@ -244,6 +270,8 @@ def decode_snapshot(payload):
     # (mode, walk_load, car_id, x, y, vx, vy, ang, w, stamina, regen, speed_mult, power, pull, flags)
     s.me = SELF_MOTION.unpack_from(data, off)
     off += SELF_MOTION.size
+    s.me2 = SELF_EXTRA.unpack_from(data, off)
+    off += SELF_EXTRA.size
     # (weapon, arms bitmask, pistol ammo, shotgun ammo, spike strips, roadblocks)
     s.arsenal = tuple(data[off:off + 6])
     off += 6
@@ -253,9 +281,11 @@ def decode_snapshot(payload):
     for _ in range(nc):
         f = CAR.unpack_from(data, off)
         off += CAR.size
-        # (id, kind, color, state, flags, mask, tuned, x, y, vx, vy, ang, driver, passenger, damage)
+        # (id, kind, color, state, flags, mask, styles, x, y, vx, vy, ang, driver, passenger, damage,
+        #  model, livery, extras, extras2)
         s.cars[f[0]] = [f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7] / 16.0, f[8] / 16.0,
-                        f[9] / 64.0, f[10] / 64.0, f[11] / 65536.0 * 2 * math.pi, f[12], f[13], f[14]]
+                        f[9] / 64.0, f[10] / 64.0, f[11] / 65536.0 * 2 * math.pi, f[12], f[13], f[14],
+                        f[15], f[16], f[17], f[18]]
     s.players = {}
     for _ in range(npl):
         f = PLAYER.unpack_from(data, off)
