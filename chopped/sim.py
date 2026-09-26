@@ -77,6 +77,8 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
         self.scare_accum = 0.0
         self.personal_id = None
         self.player_car = {}        # (v0.10) player id -> their own personal car's id
+        self.bay_owner_name = {}    # (save files) bay index -> the name that claimed it, forever
+        self._pending_car_mods = {}     # (save files) name -> saved car, claimed on that name's next join
         self._spawn_personal(personal_loadout())
         for k in range(C.DOLLY_COUNT):
             dx, dy = self.map.dolly_spot
@@ -249,15 +251,50 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
         # inherits the car that was already sitting in bay 0 at world creation; everyone
         # after that gets a fresh one in the next free bay, up to N_BAYS.
         if pid not in self.player_car:
+            car = None
             if not self.player_car and self.personal_id in self.cars:
-                self.player_car[pid] = self.personal_id
-                self.cars[self.personal_id].owner = pid
+                car = self.cars[self.personal_id]
+                car.owner = pid
+                self.player_car[pid] = car.id
             elif len(self.player_car) < C.N_BAYS:
                 car = self._spawn_personal(personal_loadout(), bay=len(self.player_car))
                 car.owner = pid
                 self.player_car[pid] = car.id
+            if car is not None:
+                # (save files) a name that owned a bay in a previous session gets its saved
+                # car back instead of a fresh Kei; either way, this bay is that name's for
+                # good now, so a later save knows whose car it's looking at.
+                self._claim_saved_car(p.name, car)
+                self.bay_owner_name[car.bay] = p.name
         self.toast("%s JOINED THE CREW" % p.name, T_INFO)
         return p
+
+    def _claim_saved_car(self, name, car):
+        """(save files) swap the stock car `car` for one built from `name`'s saved mods,
+        if any are waiting. A new Car is built rather than patching fields onto the stock
+        one because the saved model can differ (you might have saved with a stolen sports
+        coupe as your daily driver, not the Kei you started with) -- and a model's box
+        size, mass and drag are all derived once in Car.__init__, not safe to change after."""
+        mods = self._pending_car_mods.pop(name, None)
+        if mods is None:
+            return
+        bx, by, ba = self.map.bays[car.bay]
+        parts = {slot: Part(*p) if (p := mods["parts"].get(slot)) else None for slot in SLOTS}
+        new = Car(self.new_id(), PERSONAL, bx, by, ba, parts, color=mods.get("color", car.color),
+                  model=mods.get("model", car.model))
+        new.bay, new.owner = car.bay, car.owner
+        new.livery = mods.get("livery", 0)
+        new.horn_type = mods.get("horn_type", new.horn_type)
+        new.glow = mods.get("glow", 0)
+        new.nos = mods.get("nos", False)
+        new.ejector = mods.get("ejector", False)
+        new.gnome = mods.get("gnome", False)
+        new.hydraulics = mods.get("hydraulics", False)
+        del self.cars[car.id]
+        self.cars[new.id] = new
+        self.player_car[new.owner] = new.id
+        if new.bay == 0:
+            self.personal_id = new.id
 
     def remove_player(self, pid):
         p = self.players.get(pid)

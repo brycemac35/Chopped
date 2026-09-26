@@ -18,10 +18,11 @@ from collections import deque
 
 from . import config as C
 from . import protocol as P
+from . import savefile as SF
 from .mapgen import CityMap
 from .predict import Predictor
 from .protocol import ME_FOOT, ME_DRIVER
-from .sim import World, InputState, FOOT, DRIVER
+from .sim import World, InputState, FOOT, DRIVER, T_INFO
 from .protocol import PF_MOVING, PF_SPRINT, PF_EXHAUSTED
 
 
@@ -118,7 +119,7 @@ class ClientConn:
 
 
 class Server:
-    def __init__(self, port=C.DEFAULT_PORT, bind_host="0.0.0.0", map_seed=None, world=None):
+    def __init__(self, port=C.DEFAULT_PORT, bind_host="0.0.0.0", map_seed=None, world=None, save_path=None):
         self.sock = _make_socket(bind_host, port)
         self.port = self.sock.getsockname()[1]
         self.world = world or World(map_seed)
@@ -131,6 +132,14 @@ class Server:
         self.max_packet = 0
         self.log = []
         self._posted = deque()      # callables to run on the server thread (tests/admin)
+        # (save files) --save FILE: load the crew's progress now (a no-op if there's
+        # nothing to load yet), then write it back periodically and on a clean stop.
+        self.save_path = save_path
+        self._next_save = None
+        if self.save_path:
+            if SF.load_into(self.world, self.save_path):
+                self.world.toast("WELCOME BACK. $%d IN THE TIN, DAY %d." % (self.world.cash, self.world.day),
+                                 T_INFO)
 
     def post(self, fn):
         """Run fn(world) on the server thread before the next tick. The only
@@ -154,6 +163,8 @@ class Server:
             self.running = False
             self.thread.join(timeout=2.0)
         self.running = False
+        if self.save_path:
+            SF.save_to(self.world, self.save_path)      # the world's quiescent now the thread's joined
         for c in list(self.clients.values()):
             for _ in range(3):
                 self._send(P.header(P.P_SHUTDOWN) + b"HOST CLOSED THE SHOP", c.addr)
@@ -167,6 +178,8 @@ class Server:
         now = time.perf_counter()
         if self._next_tick is None:
             self._next_tick = now
+            if self.save_path:
+                self._next_save = now + C.AUTOSAVE_INTERVAL
         for data, addr in _recv_all(self.sock):
             self._handle(data, addr, now)
         while self._posted:
@@ -180,6 +193,9 @@ class Server:
         if now - self._next_tick > 0.25:
             self._next_tick = now          # we fell way behind (debugger?); don't fast-forward forever
         self._timeouts(now)
+        if self.save_path and now >= self._next_save:
+            self._next_save = now + C.AUTOSAVE_INTERVAL
+            SF.save_to(self.world, self.save_path)
         return self._next_tick - time.perf_counter()
 
     def _send(self, data, addr):

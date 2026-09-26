@@ -11,6 +11,47 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
 
 ## 1. Status and your tasks, in order
 
+### Where things stand (Sept 26, 2026, session 2, RELEASE 0.10.1: save files)
+- **Save files** (Bryce: "can you make save files?", then, clarified: crew progress only, not a
+  full mid-heist snapshot). All done:
+  - **`chopped/savefile.py`** (new, no pygame): `dump(world)`/`apply(world, data)` convert cash,
+    `day`/`day_t`, `run`, the shared `stash` (the parts locker) and every player's own car to and
+    from a JSON-safe dict; `load_into`/`save_to` wrap the actual file I/O and never raise -- a
+    missing, corrupt or foreign-version file just means a fresh run, same as always.
+  - **Cars are keyed by name**, not player id: a pid is just whichever slot you happened to
+    connect into this session, but the name you typed is stable. `World.bay_owner_name` (new:
+    bay index -> name) is set once in `add_player` the first time a name claims a bay and never
+    cleared, even if they disconnect -- that's what a save's `dump()` reads at save time, so it
+    always reflects whatever car currently lives in that bay, switched or not.
+  - **`World._claim_saved_car`** (called from `add_player` right after a bay's assigned): if
+    `World._pending_car_mods` (loaded from the save, name -> mods) has an entry for the joining
+    name, it builds a brand new `Car` of the *saved* model with the saved parts/paint/livery/
+    horn/glow/extras and swaps it in for the stock one -- a fresh `Car` because a model's box
+    size, mass and drag are all derived once in `Car.__init__`, not safe to patch after. A name
+    that switched to a stolen car (`garage.OP_SWITCH`) before saving gets that car back, not
+    the Kei they started with.
+  - **Deliberately NOT saved:** heat, cops, traffic, pedestrians, anyone's position or what
+    they're holding. Loading a save always starts the crew back at the shop on a quiet morning.
+  - **Wired into `net.Server`** (`--save FILE`, works with `--host` or `--server`): loads once at
+    construction (a no-op if nothing's there yet, with a "WELCOME BACK" toast if there was),
+    autosaves every `config.AUTOSAVE_INTERVAL` (30 s) from `pump()`, and saves once more,
+    unconditionally, in `stop()` after the server thread's joined (so the world's quiescent --
+    no torn writes racing the sim thread). Without `--save`, behaviour is bit-for-bit unchanged
+    (default `save_path=None` everywhere, so every existing `Server(...)` call site and test is
+    untouched).
+  - No protocol change: this is host-side-only JSON persistence, nothing rides the wire. `VERSION`
+    stays 10; `RELEASE` bumped to 0.10.1.
+  - **Tests:** `tests/test_savefile.py` (new), 8 tests -- the economy round-tripping through
+    `dump`/`apply`, a returning name getting its exact car back while a stranger gets a fresh
+    one, a switched car being what's actually saved, heat/cops/positions never surviving a
+    round-trip, a missing/corrupt file and a foreign save version both being quiet no-ops, and
+    `net.Server`'s load-on-start/save-on-stop wiring through a real temp file. 216 tests, all OK.
+- **Decision flagged for Bryce:** a save is JSON in a file you name (`--save crew.json`), not an
+  automatic default path -- picked so nothing changes for `--selftest`/CI or anyone who doesn't
+  pass the flag, same "explicit opt-in" pattern as `--log FILE`. If he'd rather it just always
+  persist to a fixed file next to the exe with no flag needed, that's a small change to
+  `main.py`'s arg defaults, not to `savefile.py` itself.
+
 ### Where things stand (Sept 26, 2026, session 2, seventh round: v0.10)
 - **v0.10** (Bryce, one big list: "when cops die ambulance comes to pick themup and take them to the hotpital, make them die. add helicopters when fuzz is hot, make sure the heat takes longet to come up. hit boxes, itewms take precident overshops / actions. walls need to block cops views better - ray finding from cops view when in pursduit mode. wasted too much have a health bar instead of 1 hit. make cops miss sometimes. kimited number of cops spawn. / day. add overlay for in box vs out. poll heat value more often for changing lethal to not noticed by cops. kill civilians to make sure no witness remains, only tells cops after 10-15 seconds by phoneing them. Show assetsa for items in back of trunks. I cant change my ppirmary car, add option to switch primary cars once in garage. increase stamina better visibility for multiplayer. MAKE THE MNIN MAP SCALE TO WINDOW SIZE. sneaking / turning off the alarm on a stolen vcar by butting wire minigame, popping trunk animaiton. bigger city, back alleys between big building sizes.", then mid-round: "also make teh garage door smaller, make a walking entrance and a bay for each player that joins"). All done:
   - **Health, not one hit** (`entities.Player.health`/`hurt_t`, `config.PLAYER_HEALTH_MAX`/`BULLET_DAMAGE`/`HEALTH_REGEN_DELAY`/`HEALTH_REGEN_RATE`): a bullet is `police._shoot_player`'s damage, not instant death; you mend on your own once nobody's hit you for a few seconds. `WASTED` (and the cash penalty) only fires at 0 HP. Cops and the law get the same treatment: `sim._kill_npc` makes a gunshot lethal to civilians, officers and guards (dogs and the streaker are exempt -- that's a running joke, not a body count), charges `murder` or `cop` on the rap sheet, and sends an ambulance (`S_AMBULANCE`, a toast) for the law's dead. Killing peds is the quiet way to lose a witness for good; killing a cop makes every other cop in the city shoot to kill.
@@ -143,7 +184,7 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
   ```
   set SDL_VIDEODRIVER=dummy & set SDL_AUDIODRIVER=dummy & python -m unittest discover -s tests -v
   ```
-  (On Linux/macOS: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests -v`.) At handoff (session 2, v0.10): **208 tests, all OK**, and the game-loop selftest ran at about 48-52 fps.
+  (On Linux/macOS: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests -v`.) At handoff (session 2, RELEASE 0.10.1): **216 tests, all OK**, and the game-loop selftest ran at about 48-52 fps.
 
 ## 3. Architecture (details in README.md)
 - `main.py` is the command line: `--host`, `--join IP[:PORT]`, `--server` (headless), `--selftest`, `--port`, `--name`, `--mute`, `--no-upnp`, `--log FILE`, `--fake-lag MS`, `--no-predict`.

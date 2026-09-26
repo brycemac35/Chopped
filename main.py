@@ -46,6 +46,8 @@ def parse_args(argv=None):
     ap.add_argument("--join", metavar="IP[:PORT]", help="join a game immediately")
     ap.add_argument("--name", help="your crook name (max 12 chars)")
     ap.add_argument("--port", type=int, default=None, help="UDP port to host on (default 27015)")
+    ap.add_argument("--save", metavar="FILE", default=None,
+                    help="host only: load/save the crew's progress (cash, day, cars, locker) to FILE")
     ap.add_argument("--server", action="store_true", help="run a headless dedicated host")
     ap.add_argument("--selftest", action="store_true", help="headless boot + bot play, exit 0 if OK")
     ap.add_argument("--frames", type=int, default=None, help="selftest: frames to run")
@@ -66,7 +68,7 @@ def run_server(args):
     from chopped.net import Server, get_lan_ip
     from chopped.upnp import UPnP
     port = args.port or C.DEFAULT_PORT
-    srv = Server(port=port)
+    srv = Server(port=port, save_path=args.save)
     up = None if args.no_upnp else UPnP(srv.port).start()
     print("Chopped dedicated host on UDP %d  (LAN %s:%d). Ctrl+C to stop." % (srv.port, get_lan_ip(), srv.port))
     srv.start()

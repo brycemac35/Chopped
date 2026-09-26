@@ -171,7 +171,7 @@ class App:
     def host(self):
         port = getattr(self.args, "port", None) or C.DEFAULT_PORT
         try:
-            self.server = Server(port=port, map_seed=self.menu_seed)
+            self.server = Server(port=port, map_seed=self.menu_seed, save_path=getattr(self.args, "save", None))
         except OSError as e:
             self.menu.set_error("CAN'T OPEN UDP PORT %d (%s). ALREADY HOSTING?" % (port, e.__class__.__name__.upper()))
             self.server = None

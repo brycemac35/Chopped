@@ -62,6 +62,7 @@ Command-line shortcuts:
 | `python main.py --join 203.0.113.7` | Join immediately (`IP[:PORT]`, default port 27015) |
 | `python main.py --name VINNIE` | Set your crook name |
 | `python main.py --server` | Headless dedicated host (no window; everyone joins as a client) |
+| `python main.py --host --save crew.json` | Host with persistence: loads `crew.json` if it exists, saves to it every 30 s and on a clean exit |
 | `python main.py --selftest` | Starts headless, a bot plays for about 5 s, then exits 0 if everything worked |
 | `--port N`, `--mute`, `--no-upnp` | Use a different port, turn off audio, skip UPnP |
 | `--join 127.0.0.1 --fake-lag 150` | Pretend your ping is 150 ms higher. Try prediction on one PC |
@@ -313,6 +314,18 @@ Other details:
 
 ---
 
+## Save files
+
+By default nothing persists: close the host and the next run starts fresh at $300, day 1, with a stock Kei. Host with `--save FILE` (works with `--host` or `--server`) and the crew's progress survives instead:
+
+- **What's saved:** the shared cash, the day and rent clock, the parts locker, and every player's own car -- model, every fitted part and its condition, paint, livery, horn, underglow and extras -- keyed by the name they joined with.
+- **What isn't:** heat, cops, traffic, pedestrians, and everyone's position. Loading a save always drops the crew back at the shop on a quiet morning, never mid-chase.
+- **When it writes:** every 30 seconds while hosting, and once more on a clean shutdown (closing the window, Ctrl+C on `--server`, or leaving to the menu). A crash or a yanked power cord costs at most the last 30 seconds.
+- **A returning name gets their car back.** Join under a name that owned a car last time and you're handed that car, mods and all, instead of a fresh Kei -- even if you've since switched to a nicer stolen ride (the mod shop's SWITCH CAR remembers whatever you're driving when the save happens, not what you started with). A new name always gets an ordinary stock car.
+- The file's plain JSON, so `cat crew.json` (or open it in a text editor) tells you exactly what's in the tin.
+
+---
+
 ## Building a standalone executable
 
 The easy way is to let GitHub Actions do it (see [Getting `Chopped.exe`](#getting-choppedexe-no-python-needed)). All three routes use the same recipe:
@@ -371,7 +384,9 @@ SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests
 - `tests/test_v09.py` covers the rest of v0.9 and v0.10's garage redesign: selling a car whole (the price, the collector's bonus, the boot), the inspect card (and not through walls, and not your own car), parked cars not knocking you over, the car-hit slide, longer throws, every silly feature, the arsenal on the wire, that the sim never imports pygame, and each bay door (and the walking door, and the pillars between them) as its own independent trap, shutting, blocking sight and cop cars and officers, and never walkable while shut, for the predictor too.
 - v0.10's other additions are folded into the files above: `test_sim.py` covers cutting the wires (the toggle, the right wire, the wrong wire, an angry owner never noticing a clean cut) and the delayed witness call (no live heat from a ped, the call landing after the delay, killing the witness cancelling it, and the ordinary cooldown afterward); `test_combat.py` and `test_police.py` cover shooting civilians and the law dead instead of just knocking them down.
 
-208 tests in total.
+- `tests/test_savefile.py` covers save files: the economy (cash, day, locker) round-tripping through a dump and apply, a returning name getting their exact car back (parts, paint, livery, extras) while a stranger gets an ordinary one, a switched primary car being what actually gets saved, heat/cops/positions never being saved, a missing or corrupt file being a quiet no-op, a foreign save version being ignored, and `net.Server`'s `--save` wiring loading on start and saving on a clean stop.
+
+216 tests in total.
 
 ---
 
@@ -402,7 +417,8 @@ chopped/sim.py       authoritative world: crashes, heat, cops, traffic, pedestri
 chopped/predict.py   client-side prediction: runs sim.Physics on your own car/avatar, reconciles
 chopped/protocol.py  packet formats; struct + zlib snapshots, distance culling, prediction block
 chopped/net.py       UDP Server (60 Hz sim, 20 Hz snapshots) and Client (60 Hz input, prediction,
-                     100 ms interpolation for everyone else, --fake-lag)
+                     100 ms interpolation for everyone else, --fake-lag), --save load/autosave
+chopped/savefile.py  --save FILE: JSON dump/apply of cash, day, locker and each player's car by name
 chopped/upnp.py      optional miniupnpc port mapping (runs in a background thread)
 chopped/art.py       palette, 3x5 pixel font, procedural sprites, pre-rendered city
 chopped/render.py    top-down renderer (the Tab automap), particles, skid marks, camera

@@ -10,7 +10,7 @@ import math
 
 GAME_TITLE = "Chopped"
 VERSION = 10  # bump when the wire protocol changes so old clients get a polite "no"
-RELEASE = (0, 10, 0)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
+RELEASE = (0, 10, 1)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
 
 # --------------------------------------------------------------------------
 # Rendering scale
@@ -625,6 +625,10 @@ DAY_LENGTH = 180.0               # seconds: dawn to midnight
 RENT_BASE = 100
 RENT_PER_DAY = 75
 DEBT_GRACE = 120.0               # two minutes in the red and the landlord changes the locks
+# (save files) how often a hosting server with --save writes the crew's progress to disk,
+# real seconds, so a crash or a yanked power cord costs at most this much. Also saved once,
+# unconditionally, on a clean shutdown -- this is just the safety net in between.
+AUTOSAVE_INTERVAL = 30.0
 GAMEOVER_BANNER = 6.0
 SHELL_VALUE = 150
 CRUSH_DOLLY_FRACTION = 0.5
