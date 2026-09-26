@@ -383,6 +383,14 @@ COP_TRACK_LOSE_TIME = 6.0        # (v0.10) a cop with no visual on anyone stops 
                                  # position after this long of not re-spotting it, and gives up the
                                  # chase instead of beelining forever (see Car.search_t, "walls need
                                  # to block cops' views better")
+COP_TIP_DELAY = 5.0              # (v0.12.1) ...but "gives up" used to mean "parks in the middle of the
+                                 # road forever": a dispatched car that spawned round a corner never
+                                 # saw anyone, so it never moved, and the playtest could stand at 55
+                                 # heat for a minute with four cop cars idling a block away. Now, this
+                                 # long after losing the lead, dispatch radios a fresh tip.
+COP_TIP_SCATTER = 20.0           # m: how vague that tip is ("suspect last seen near the laundromat").
+                                 # Close enough to bring them round the block, vague enough that a
+                                 # crook who's broken line of sight still has a chance to slip away.
 PATROL_COPS = 2                  # cruisers that are ALWAYS out there, doing laps, being witnesses
 PATROL_SPAWN_DIST = (60.0, 130.0)   # they turn up this far from the crew, never on top of you
 PATROL_RECYCLE_DIST = 170.0

@@ -44,8 +44,14 @@ class TestSwitchedCarStarts(unittest.TestCase):
         stolen.state = S.DELIVERED
         stolen.stolen = True
         w.cars[stolen.id] = stolen
-        w._ms_switch(p, w.cars[w.player_car[p.id]], stolen.id)
+        old = w.cars[w.player_car[p.id]]
+        was_at = (stolen.x, stolen.y)
+        w._ms_switch(p, old, stolen.id)
         car = w.cars[w.player_car[p.id]]
+        # they trade places: the old one used to stay put and get the new one dropped on
+        # top of it, and then its strip prompt blocked the new car's door
+        self.assertEqual((old.x, old.y), was_at)
+        self.assertEqual((car.x, car.y), tuple(w.map.bays[car.bay][:2]))
         self.assertIs(car, stolen)
         self.assertEqual(car.state, S.RUNNING)
         self.assertEqual(car.kind, S.PERSONAL)
@@ -84,6 +90,27 @@ class TestJail(unittest.TestCase):
         for _ in range(int(60 * (C.JAILBREAK_HEAD_START + 0.5))):
             w.step(1 / 60)
         self.assertLessEqual(p.head_start_t, 0)
+
+
+class TestDispatch(unittest.TestCase):
+    def test_cops_that_never_saw_you_still_come_looking(self):
+        """Playtest: 55 heat, four cop cars, and they all sat idling round the corner
+        because none of them had ever had line of sight -- nothing to drive to."""
+        w = quiet_world()
+        p = w.add_player("ALICE")
+        gx, gy, gw, gh = w.map.garage_rect
+        p.x, p.y = gx + gw / 2, gy + gh + 30
+        w.heat = 55.0
+        w.targets = w._collect_targets()
+        cop = w.spawn_cop()
+        self.assertIsNotNone(cop)
+        self.assertIsNotNone(cop.last_target)              # dispatch told it where to go
+        tx, ty = cop.last_target
+        self.assertLess(math.hypot(tx - p.x, ty - p.y), C.COP_TIP_SCATTER * 1.5)
+        cop.last_target = None                             # lost the lead...
+        cop.search_t = C.COP_TRACK_LOSE_TIME + C.COP_TIP_DELAY
+        w._cop_ai(cop, 1 / 60)
+        self.assertIsNotNone(cop.last_target)              # ...and got radioed a new one
 
 
 class TestTalkingNPCs(unittest.TestCase):

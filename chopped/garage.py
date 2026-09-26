@@ -251,8 +251,15 @@ class Garage:
         # has to come out of that state, and stop counting as stolen for the cameras too
         new.state = RUNNING
         new.stolen = new.alarm = False
+        # ...and the two swap PLACES. (v0.12.1: the new one used to be dropped into the bay
+        # right on top of the old one, which was still parked there -- the physics shoved
+        # them into a heap and the old car's strip prompt covered the new one's door, so
+        # you couldn't even get in. That was most of "can't start the new one".)
+        ox, oy, oang = new.x, new.y, new.ang
         new.x, new.y, new.ang = self.map.bays[old.bay]
+        old.x, old.y, old.ang = ox, oy, oang
         new.vx = new.vy = new.w = 0.0
+        old.vx = old.vy = old.w = 0.0
         self.player_car[p.id] = new.id
         if old.bay == 0:
             self.personal_id = new.id

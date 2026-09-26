@@ -234,6 +234,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         _, x, y, a = best
         car = Car(self.new_id(), COP, x, y, a, cop_loadout(self.rng), color=0)
         self.cars[car.id] = car
+        self._radio_tip(car)                    # (v0.12.1) it's been told where to go
         self.toast("COPS ARE ROLLING IN!", T_COP)
         return car
 
@@ -2003,6 +2004,8 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             cop.search_t += dt
             if cop.search_t >= C.COP_TRACK_LOSE_TIME:
                 cop.last_target = None
+            if cop.last_target is None and cop.search_t >= C.COP_TRACK_LOSE_TIME + C.COP_TIP_DELAY:
+                self._radio_tip(cop)                # (v0.12.1) dispatch: "try round the block"
             if cop.last_target is None:
                 cop.throttle, cop.steer, cop.handbrake = 0.0, 0.0, False
                 return
@@ -2598,6 +2601,9 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
                     n.call_t = 0.0
                     self.heat = min(C.HEAT_MAX, self.heat + C.PHONE_IN_HEAT)
                     self.unseen_t = 0.0
+                    for cop in self.cars.values():      # (v0.12.1) and the call gives them a lead
+                        if cop.kind == COP and not cop.patrol and cop.last_target is None:
+                            self._radio_tip(cop)
 
     def _garage_safehouse(self):
         """(v0.10, Bryce: "in the garage, cops still see us with the doors close") the LOS
@@ -2963,6 +2969,17 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         if best is None:
             return None, 0.0
         return best, bf - car.hl
+
+    def _radio_tip(self, cop):
+        """(v0.12.1) the dispatcher's best guess: roughly where the nearest wanted crook is,
+        give or take COP_TIP_SCATTER. Not a wallhack -- the cop drives there and still has
+        to actually SEE you (los) to lock on, and it's only ever as good as a phone call."""
+        if not self.targets:
+            return
+        t = min(self.targets, key=lambda t: math.hypot(t[0] - cop.x, t[1] - cop.y))
+        r = C.COP_TIP_SCATTER
+        cop.last_target = (t[0] + self.rng.uniform(-r, r), t[1] + self.rng.uniform(-r, r))
+        cop.search_t = 0.0
 
     def _traffic_ai(self, car, dt):
         fx, fy = math.cos(car.ang), math.sin(car.ang)
