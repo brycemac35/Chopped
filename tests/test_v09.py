@@ -546,7 +546,7 @@ class TestSillyDepartment(unittest.TestCase):
         p.arms |= 1 << S.ARM_CHICKEN
         s = snap(w, p)
         self.assertEqual(len(s.arsenal), S.ARSENAL_LEN)
-        self.assertEqual(s.arsenal[4:], (1, 2, 3, 4, 5, 1))
+        self.assertEqual(s.arsenal[4:], (1, 2, 3, 4, 5, 1, 0, 0, 0, 0, 0, 0))
         for slot in (S.ARM_CHICKEN, S.ARM_WHOOPEE, S.ARM_BANANA):
             self.assertTrue(S.arsenal_owns(s.arsenal, slot))
 

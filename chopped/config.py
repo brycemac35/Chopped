@@ -9,8 +9,8 @@ engine and exactly no maths textbooks).
 import math
 
 GAME_TITLE = "Chopped"
-VERSION = 11  # bump when the wire protocol changes so old clients get a polite "no"
-RELEASE = (0, 11, 0)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
+VERSION = 12  # bump when the wire protocol changes so old clients get a polite "no"
+RELEASE = (0, 12, 0)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
 
 # --------------------------------------------------------------------------
 # Rendering scale
@@ -576,12 +576,54 @@ SHOOT_COP_HEAT = 100.0           # shooting at a police car: straight to maximum
 COP_CAR_HITS = 8                 # pistol rounds (pellets count too) until a cop car catches fire
 TIRE_HIT_RADIUS = 0.9            # a round landing this close to a wheel shreds that tyre
 
+# (v0.12, Bryce: "add more guns, SMG, AR, Sniper, grenade launcher RPG, etc.") every gun past
+# the shotgun fires the same hitscan _ray_hit as always -- no new physics, just different
+# numbers. There's no hold-to-fire input model in this game (a "shot" is always one click), so
+# the SMG and AR's "automatic" feel comes entirely from a short cooldown between taps, not
+# actual full-auto. The launchers don't lob a real projectile either: they hitscan to whatever's
+# under the crosshair (or the wall behind it) and blow up there -- a mortar strike, not a thrown
+# grenade. Simpler than real ballistics, and at these ranges nobody can tell the difference.
+SMG_RANGE = 45.0
+SMG_COOLDOWN = 0.18               # fast taps read as automatic
+SMG_SPREAD = 0.05                 # radians: sustained fire drifts off target, on purpose
+AR_RANGE = 90.0
+AR_COOLDOWN = 0.22
+AR_SPREAD = 0.025
+SNIPER_RANGE = 160.0
+SNIPER_COOLDOWN = 1.6             # bolt-action: work the bolt between shots
+SNIPER_HEADSHOT_MULT = 3.0        # (cosmetic framing only -- a hit's a hit; this just means "always lethal")
+GRENADE_RANGE = 40.0              # (a lob, not a beam: it won't reach as far as the guns)
+GRENADE_COOLDOWN = 2.2
+GRENADE_SPLASH = 6.0              # metres: everything in this radius of the impact gets caught up
+RPG_RANGE = 70.0
+RPG_COOLDOWN = 3.5
+RPG_SPLASH = 9.0                  # the biggest blast in the game, and priced like it
+
+# ---- (v0.12) the silly department, round four ----------------------------------------------
+PRICE_TICKET = 20                 # a scratch ticket from the black market. House always wins. Mostly.
+TICKET_ODDS = ((0.55, 0), (0.25, 10), (0.12, 40), (0.06, 100), (0.02, 500))   # (chance, payout $)
+JACKPOT_CHANCE = 0.02             # one pedestrian in 50 is having an unusually good day
+JACKPOT_WALLET = (400, 900)       # what their wallet's actually carrying, if you find out the hard way
+HIGHFIVE_RADIUS = 2.2             # m: two crewmates dancing this close sync up
+HIGHFIVE_COOLDOWN = 20.0          # shared, so a packed dance floor doesn't spam toasts
+HIGHFIVE_STAMINA = 25.0           # a shared burst of team spirit, straight into the legs
+SPEEDCAM_FAME_COUNT = 5           # tickets before the local news van shows up
+TIP_JAR_CHANCE = 0.15             # selling a part: one in ~seven passersby likes your hustle
+TIP_JAR_MIN, TIP_JAR_MAX = 5, 25  # what they chip in
+SEAT_CHANGE_CHANCE = 0.2          # hotwiring a car: one in five has change down the seats
+SEAT_CHANGE_MIN, SEAT_CHANGE_MAX = 2, 15   # gross but free
+
 # --------------------------------------------------------------------------
 # Black market (crates along the shop's west wall) and traps
 # --------------------------------------------------------------------------
 PRICE_PISTOL = 350               # comes loaded with PISTOL_AMMO
 PRICE_SHOTGUN = 800
-PRICE_AMMO = 60                  # tops up whatever guns you own
+PRICE_SMG = 1400
+PRICE_AR = 2400
+PRICE_SNIPER = 3200
+PRICE_GRENADE = 2800
+PRICE_RPG = 5500
+PRICE_AMMO = 60                  # tops up whatever guns you own (all seven now, one crate)
 PRICE_SPIKES = 120
 PRICE_ROADBLOCK = 200
 PRICE_BANANA = 40                # a banana peel. Cars spin out, people fall over. Classic.
@@ -591,7 +633,25 @@ PRICE_WHOOPEE = 15               # (v0.9) a whoopee cushion: lay it down, wait f
 PRICE_BOX = 40                   # (v0.9) a cardboard box. Stand still in it and you're furniture
 PISTOL_AMMO = 24
 SHOTGUN_AMMO = 10
+SMG_AMMO = 45                    # a mag and a half
+AR_AMMO = 30
+SNIPER_AMMO = 5                  # it's a bolt-action hand cannon, not a mag dump
+GRENADE_AMMO = 4
+RPG_AMMO = 2                     # two rockets. Make them count.
 MAX_AMMO = 99
+# (v0.12, Bryce: "shop 1 has just basic parts and the pistol") what's for sale at each shop,
+# by index into World.shop_owned -- 0 is the home base, 1-3 the fences you buy. Each tier is
+# a superset of the last: buy shop 3 and its crates carry everything shop 2 had too, plus the
+# new stuff. World._market_buy doesn't care which shop you bought an item at -- this list only
+# controls which crates physically exist for you to walk up to.
+SHOP_MARKET = (
+    ("pistol", "ammo", "spikes", "roadblock", "ticket"),
+    ("pistol", "shotgun", "ammo", "spikes", "roadblock", "banana", "donuts", "ticket"),
+    ("pistol", "shotgun", "smg", "ar", "ammo", "spikes", "roadblock", "banana", "donuts",
+     "chicken", "whoopee", "box", "ticket"),
+    ("pistol", "shotgun", "smg", "ar", "sniper", "grenade", "rpg", "ammo", "spikes", "roadblock",
+     "banana", "donuts", "chicken", "whoopee", "box", "ticket"),
+)
 MAX_TRAPS_EACH = 5
 BUY_TIME = 0.6
 TRAP_PLACE_DIST = 3.5            # traps go down this far in front of you, snapped across the road
@@ -618,12 +678,16 @@ CARJACK_HEAT = 12.0              # worse than a quiet break-in: there's a witnes
 # Economy (shared wallet)
 # --------------------------------------------------------------------------
 START_CASH = 300
-# Rent is due once a day, at midnight, and the landlord gets greedier every day:
-# day 1 is $100, day 2 $175, day 3 $250... Early days are a breather, by day 6
-# you're paying more than the old $150-a-minute and it only goes up.
 DAY_LENGTH = 180.0               # seconds: dawn to midnight
-RENT_BASE = 100
-RENT_PER_DAY = 75
+# (v0.12, Bryce: "make multiple garages, make them available for purchase... stop increase
+# of rent / day and make it on a shop basis") rent used to get steeper every single day
+# forever, which meant a long session eventually paid more in rent than it could ever make.
+# Now it's flat per shop you own: day 1 costs the same as day 100, and the only way the bill
+# goes up is buying another shop yourself. Index 0 is the home base (free, you start with
+# it); 1-3 are the fences you can buy from World.shop_owned. SHOP_PRICE is what buying one
+# costs, once; SHOP_RENT is what it adds to the daily bill forever after.
+SHOP_PRICE = (0, 4000, 12000, 30000)
+SHOP_RENT = (100, 150, 250, 400)
 DEBT_GRACE = 120.0               # two minutes in the red and the landlord changes the locks
 # (save files) how often a hosting server with --save writes the crew's progress to disk,
 # real seconds, so a crash or a yanked power cord costs at most this much. Also saved once,
@@ -709,10 +773,6 @@ FP_SPRITE_DIST = 95.0            # beyond this, cars and people aren't drawn (ma
 FP_TURN_SPEED = 2.8              # rad/s turning with the arrow keys
 MOUSE_SENS = 0.0032              # rad per mouse pixel
 FP_BOB = 0.06                    # metres of head bob when walking (Doom had lots; this has some)
-
-
-def rent_for_day(day):
-    return RENT_BASE + RENT_PER_DAY * (max(1, day) - 1)
 
 
 def lerp(a, b, t):

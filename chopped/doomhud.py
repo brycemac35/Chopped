@@ -45,7 +45,8 @@ BIG_GOLD = ((255, 236, 120), (240, 200, 70), (220, 170, 50), (190, 140, 40), (15
 BIG_BLUE = ((170, 200, 255), (130, 170, 255), (90, 130, 240), (60, 100, 210), (40, 70, 170))
 
 
-WEAPON_LABELS = ("HANDS", "PISTOL", "SHOTGUN", "SPIKES", "BLOCKS", "BANANAS", "DONUTS", "CHICKEN", "WHOOPEE")
+WEAPON_LABELS = ("HANDS", "PISTOL", "SHOTGUN", "SPIKES", "BLOCKS", "BANANAS", "DONUTS", "CHICKEN", "WHOOPEE",
+                  "SMG", "RIFLE", "SNIPER", "LAUNCHER", "RPG")
 
 
 INSPECT_CONDITION = ("SCRAP", "ROUGH", "USED", "TIDY", "MINT")
@@ -261,8 +262,9 @@ class DoomHud:
         cx = vw // 2 + int(sway)
         ars = view.snap.arsenal if view.snap is not None else None
         ammo = 1
-        if ars and weapon in (S.ARM_PISTOL, S.ARM_SHOTGUN):
-            ammo = ars[2] if weapon == S.ARM_PISTOL else ars[3]
+        if ars and weapon in S.GUN_SLOTS:
+            idx = S.AMMO_BYTE_OF_ARM[weapon]
+            ammo = ars[idx] if len(ars) > idx else 0
         if weapon == S.ARM_PISTOL:
             # seen from behind and a bit above: the slide's top recedes toward the horizon
             kick = max(0.0, 1.0 - since / 0.14) if ammo or since < 0.02 else 0.0
@@ -294,6 +296,69 @@ class DoomHud:
                 pen.fill(shade(FA.GUN_WOOD, 0.7), (cx - 14, py_ + 5 + k * 7, 28, 2))
             self._fist(pen, cx - 44, vh - 6 + int(bob) + int(kick * 12), skin, sleeve, -1)
             self._fist(pen, cx + 26, py_ + 30, skin, sleeve, 1)
+            return
+        # (v0.12) four more guns. Same recipe as the pistol/shotgun above -- a few polys and a
+        # muzzle flash -- just enough silhouette to tell them apart at a glance.
+        if weapon == S.ARM_SMG:
+            kick = max(0.0, 1.0 - since / 0.09) if ammo or since < 0.02 else 0.0     # fastest kick: it's automatic
+            top = vh - 66 + int(bob) + int(kick * 9)
+            if kick > 0.45 and ammo:
+                self._flash(pen, cx + 34, top + 4, 9)
+            pen.rect((34, 34, 42), (cx - 12, top, 66, 15))                          # receiver
+            pen.rect((22, 22, 28), (cx + 40, top + 2, 22, 10))                      # short barrel shroud
+            pen.fill((16, 16, 20), (cx + 2, top + 15, 9, 24))                       # stick mag hanging down
+            pen.poly((52, 42, 32), [(cx - 34, top + 30), (cx - 12, top + 4), (cx - 12, top + 13), (cx - 30, top + 34)])
+            self._fist(pen, cx - 28, top + 26, skin, sleeve, -1)
+            self._fist(pen, cx + 32, top + 8, skin, sleeve, 1)
+            return
+        if weapon == S.ARM_AR:
+            kick = max(0.0, 1.0 - since / 0.12) if ammo or since < 0.02 else 0.0
+            top = vh - 86 + int(bob) + int(kick * 11)
+            if kick > 0.5 and ammo:
+                self._flash(pen, cx + 46, top + 6, 12)
+            pen.rect((36, 38, 34), (cx - 16, top, 78, 18))                          # upper receiver
+            pen.rect((24, 26, 22), (cx + 50, top + 3, 22, 12))                      # front sight post + barrel
+            pen.fill((44, 46, 40), (cx - 4, top + 18, 10, 6))                       # front pistol grip
+            pen.fill((16, 16, 16), (cx - 6, top + 20, 8, 22))                       # curved magazine
+            pen.poly((60, 62, 56), [(cx - 40, top + 36), (cx - 16, top + 6), (cx - 16, top + 16), (cx - 36, top + 40)])
+            self._fist(pen, cx - 32, top + 30, skin, sleeve, -1)
+            self._fist(pen, cx + 40, top + 10, skin, sleeve, 1)
+            return
+        if weapon == S.ARM_SNIPER:
+            kick = max(0.0, 1.0 - since / 0.5) if ammo or since < 0.02 else 0.0      # bolt-action: a long, slow kick
+            top = vh - 90 + int(bob) + int(kick * 16)
+            if kick > 0.75 and ammo:
+                self._flash(pen, cx + 70, top + 6, 13)
+            pen.rect((30, 30, 34), (cx - 20, top, 100, 14))                         # barrel + stock, one long line
+            pen.rect((18, 18, 20), (cx + 70, top + 2, 20, 10))                      # muzzle brake
+            pen.fill((20, 20, 24), (cx - 10, top - 16, 40, 12))                     # scope body
+            pen.circle((60, 90, 70), (int(cx + 22), top - 10), 5)                   # objective lens, catching the light
+            self._fist(pen, cx - 34, top + 24, skin, sleeve, -1)
+            self._fist(pen, cx + 20, top + 8, skin, sleeve, 1)
+            return
+        if weapon == S.ARM_GRENADE:
+            kick = max(0.0, 1.0 - since / 0.3) if ammo or since < 0.02 else 0.0
+            top = vh - 78 + int(bob) + int(kick * 14)
+            if kick > 0.6 and ammo:
+                self._flash(pen, cx + 40, top + 8, 18)
+            pen.rect((50, 46, 30), (cx - 18, top, 58, 26))                          # a chunky single-shot barrel
+            pen.fill((30, 28, 18), (cx - 18, top + 20, 58, 6))                      # under-rail
+            pen.circle((26, 24, 16), (int(cx + 40), top + 13), 13)                  # the business end, nice and round
+            pen.fill((70, 64, 40), (cx - 26, top + 6, 10, 16))                      # break-action hinge
+            self._fist(pen, cx - 22, top + 26, skin, sleeve, -1)
+            self._fist(pen, cx + 30, top + 12, skin, sleeve, 1)
+            return
+        if weapon == S.ARM_RPG:
+            kick = max(0.0, 1.0 - since / 0.6) if ammo or since < 0.02 else 0.0      # the biggest, slowest kick in the game
+            top = vh - 96 + int(bob) + int(kick * 20)
+            if kick > 0.7 and ammo:
+                self._flash(pen, cx + 76, top + 10, 24)                             # backblast up front, not behind you
+            pen.rect((58, 54, 34), (cx - 40, top, 120, 22))                         # the tube, slung under the arm
+            pen.fill((36, 34, 22), (cx + 60, top - 4, 20, 30))                      # the warhead's flare at the front
+            pen.poly((80, 76, 50), [(cx - 40, top + 22), (cx - 10, top - 6), (cx - 10, top + 6), (cx - 34, top + 28)])
+            pen.fill((20, 20, 20), (cx - 4, top + 4, 30, 4))                        # the sight, roughly where you'd want it
+            self._fist(pen, cx - 30, top + 24, skin, sleeve, -1)
+            self._fist(pen, cx + 50, top + 6, skin, sleeve, 1)
             return
         if weapon == S.ARM_BANANA:
             top = vh - 70 + int(bob)
@@ -568,7 +633,7 @@ class DoomHud:
                 low.blit(self.icons2[hands[0]], (hx + 16, by + 4))
             elif not hands and info.get("weapon", S.ARM_FISTS) not in (S.ARM_FISTS, S.ARM_CHICKEN) and snap.arsenal:
                 w = info["weapon"]
-                n = snap.arsenal[2] if w == S.ARM_PISTOL else snap.arsenal[3] if w == S.ARM_SHOTGUN \
+                n = snap.arsenal[S.AMMO_BYTE_OF_ARM[w]] if w in S.AMMO_BYTE_OF_ARM \
                     else snap.arsenal[4 + S.GEAR_OF_ARM[w]]
                 low.fill((92, 90, 96), (hx, by + 2, 52, 20))
                 num = self.big("%d" % n, BIG_RED if n else BIG_BLUE)
@@ -798,7 +863,7 @@ class DoomHud:
         if not info.get("fp"):
             return
         mm = self.minimap
-        s = 0.5                                             # half size: it's a radar, not the automap
+        s = 0.75    # (Bryce: "make the minimap bigger"; was 0.5) still a radar, not the automap
         mw, mh = int(mm.get_width() * s), int(mm.get_height() * s)
         key = ("mm", mw)
         small = self._panels.get(key)
@@ -867,13 +932,16 @@ class DoomHud:
             pygame.draw.polygon(low, col, [(x - 4, 22), (x + 4, 22), (x, 27)])
 
     def _arms_panel(self, low, snap, me, info, by):
-        """Left of the bar, Doom's ARMS box: 1-5, lit if you own it, gold in hand."""
+        """Left of the bar, Doom's ARMS box: 1-9, lit if you own it, gold in hand.
+        (v0.12: 5 more guns past the number row -- SMG through the RPG -- live only on the
+        mouse wheel/Q now; there's no room left in this strip for two-digit pips, so it still
+        only numbers the original 9. The name below reads correctly for all 14 regardless.)"""
         if BX < 40:
             return
         f = self.font
         ars = snap.arsenal
         cur = info.get("weapon", S.ARM_FISTS)
-        for k in range(S.ARM_COUNT):
+        for k in range(min(S.ARM_COUNT, 9)):
             owned = S.arsenal_owns(ars, k)
             col = P["gold"] if k == cur and owned else P["white"] if owned else (70, 68, 76)
             f.draw(low, str(k + 1), BX // 2 - 36 + k * 9, by + 4, col, scale=1)
@@ -1034,10 +1102,11 @@ class DoomHud:
         y += 6
         for l in ("MOUSE / ARROWS LOOK (UP AND DOWN TOO)     WASD MOVE / DRIVE     SPACE JUMP (IN A CAR: HANDBRAKE)",
                   "SHIFT SPRINT (IN A CAR WITH NOS: BOOST)     E USE (HOLD FOR TIMED ACTIONS)     F EXIT CAR",
-                  "V CHASE CAM     TAB MAP     H HORN (CONFUSES COPS)     T DANCE     M MUSIC     F9 BIG HEADS",
+                  "V CHASE CAM     TAB MAP     H HORN (CONFUSES COPS)     T DANCE     M MUSIC",
+                  "F8 FISHEYE LENS     F9 BIG HEADS     F10 DISCO FLOOR",
                   "IN A CAR: W+S TOGETHER = BURNOUT (+STEER: DONUTS)     X = HYDRAULIC HOP (IF FITTED)",
                   "CLICK / CTRL: PUNCH, SHOOT, PLACE A TRAP OR THROW WHATEVER'S IN YOUR HANDS",
-                  "HOLD CLICK WITH EMPTY FISTS, LET GO: HAYMAKER.  1-7 / WHEEL / Q: PICK A WEAPON",
+                  "HOLD CLICK WITH EMPTY FISTS, LET GO: HAYMAKER.  1-9 / WHEEL / Q: PICK A WEAPON",
                   "G: DROP A PART / LET GO OF THE DOLLY / PICK UP A PERSON (THEN CLICK TO THROW THEM)",
                   "PUNCH SOMEONE OR POINT A GUN AT THEM, THEN HOLD E TO ROB THEM. SOME PUNCH BACK.",
                   "TRAFFIC WON'T STOP: SPIKES, A ROADBLOCK OR A BANANA, THEN HOLD E TO CARJACK",

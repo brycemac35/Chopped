@@ -15,7 +15,7 @@ from . import config as C
 from .parts import SLOTS, PART_INDEX, PART_IDS, NO_PART, engine_spec, gear_count
 from .drivetrain import engine_byte
 from .garage import encode_menu, decode_menu
-from .enums import ARSENAL_LEN
+from .enums import ARSENAL_LEN, ARM_SMG, ARM_AR, ARM_SNIPER, ARM_GRENADE, ARM_RPG
 from .sim import (COP, TRAFFIC, TUMBLE, FOOT, DRIVER, PASSENGER, DEAD, OFFICER, GUARD, KEYGUARD, DOG,
                   TRAP_GATE, TRAP_SMOKE, TRAP_CELL, TRAP_DOOR)
 from .quests import QUEST_ORDER
@@ -151,8 +151,14 @@ def encode_self(world, me):
     """The SELF block: exactly what the client's Predictor needs to rewind to,
     plus your arsenal (only you need to know how many bullets you've got), plus
     (v0.7) the trunk you're looking into and, in the mod shop, the menu."""
+    # (v0.12) the arms bitmask outgrew one byte once there were more than 8 real weapons, so
+    # its high half rides at the end of the array (byte 10) instead of next to byte 1 -- that
+    # way nothing already reading arsenal[0..9] by a fixed index had to change. The 5 new guns'
+    # ammo counts (bytes 11-15) are appended the same way, for the same reason.
     arsenal = (me.weapon, me.arms & 255, min(255, me.ammo[1]), min(255, me.ammo[2])) + \
-        tuple(min(255, g) for g in (list(me.gear) + [0] * 5)[:5]) + (1 if me.has_box else 0,) \
+        tuple(min(255, g) for g in (list(me.gear) + [0] * 5)[:5]) + (1 if me.has_box else 0,) + \
+        ((me.arms >> 8) & 255,) + \
+        tuple(min(255, me.ammo[w]) for w in (ARM_SMG, ARM_AR, ARM_SNIPER, ARM_GRENADE, ARM_RPG)) \
         if me is not None else (0, 1) + (0,) * (ARSENAL_LEN - 2)
     out = [_encode_motion(world, me), _encode_extra(world, me), bytes(arsenal)]
     blocks = 0

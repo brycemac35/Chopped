@@ -76,6 +76,9 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         self.patrol_t = 2.0
         self.wanted_level = 0
         self.scare_accum = 0.0
+        # (v0.12) shop 1 (home base) is free and always yours; shops 2-4 are fences you buy
+        # with crew cash -- see config.SHOP_PRICE/SHOP_RENT and World._buy_shop.
+        self.shop_owned = [True] + [False] * (len(C.SHOP_PRICE) - 1)
         self.personal_id = None
         self.player_car = {}        # (v0.10) player id -> their own personal car's id
         self.bay_owner_name = {}    # (save files) bay index -> the name that claimed it, forever
@@ -197,10 +200,17 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             return pk
         return None
 
+    def _roll_wallet(self):
+        """(v0.12) one pedestrian in JACKPOT_CHANCE is quietly loaded. No way to tell which
+        one from the outside -- you find out the way you find out anything in this game."""
+        if self.rng.random() < C.JACKPOT_CHANCE:
+            return self.rng.randint(*C.JACKPOT_WALLET)
+        return self.rng.randint(C.WALLET_MIN, C.WALLET_MAX)
+
     def _spawn_ped(self):
         tx, ty = self.rng.choice(self.map.sidewalk_tiles)
         n = NPC(self.new_id(), PED, (tx + 0.5) * C.TILE_M, (ty + 0.5) * C.TILE_M)
-        n.wallet = self.rng.randint(C.WALLET_MIN, C.WALLET_MAX)
+        n.wallet = self._roll_wallet()
         n.dirx, n.diry = self.rng.choice(((1, 0), (-1, 0), (0, 1), (0, -1)))
         self._roll_bravery(n)
         self.npcs[n.id] = n
@@ -245,8 +255,9 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         sx, sy = self.map.player_spawns[(pid - 1) % 4]
         p.x, p.y = sx, sy
         if self.give_loadout:
-            p.arms |= (1 << ARM_PISTOL) | (1 << ARM_SHOTGUN)
-            p.ammo = [0, C.MAX_AMMO, C.MAX_AMMO]
+            for slot in GUN_SLOTS:
+                p.arms |= 1 << slot
+                p.ammo[slot] = C.MAX_AMMO
             p.gear = [C.MAX_TRAPS_EACH] * 4
         self.players[pid] = p
         # (v0.10, Bryce: "a bay for each player that joins") the first player to ever join
@@ -467,7 +478,8 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
 
     # ------------------------------------------------------------------ economy
     def rent_due(self):
-        return C.rent_for_day(self.day)
+        """(v0.12) flat per shop you own, not per day -- see config.SHOP_RENT."""
+        return sum(r for r, owned in zip(C.SHOP_RENT, self.shop_owned) if owned)
 
     def _earn(self, amount, parts=0):
         self.cash += amount
@@ -515,6 +527,10 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         self.witness = W_NONE
         self.witness_rate = 0.0
         self.targets = []
+        # (v0.12) the landlord repossesses the fences too -- only the free home base survives
+        # SHOP SEIZED, same "the new run resets everything except your personal car" rule as
+        # the locker and the city's civilian cars.
+        self.shop_owned = [True] + [False] * (len(C.SHOP_PRICE) - 1)
         # (v0.10) every player's own personal car keeps its mods, back in its own bay --
         # not just bay 0's any more. A car nobody's claimed (kind == PERSONAL but no owner
         # yet, or the shared bay-0 one at first launch) survives the reset too.
@@ -559,7 +575,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             p.hold = 0.0
             p.hold_key = None
             p.dolly = None
-            p.arms, p.ammo, p.gear, p.weapon = 1 << ARM_FISTS, [0, 0, 0], [0, 0, 0, 0], ARM_FISTS
+            p.arms, p.ammo, p.gear, p.weapon = 1 << ARM_FISTS, [0] * ARM_COUNT, [0, 0, 0, 0], ARM_FISTS
             p.jailed = p.keys = p.jumpsuit = False
             p.pants_t = p.tased_t = p.dead_t = p.cuff_prog = 0.0
             p.arrests = 0
@@ -638,6 +654,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             car.horn = car.horn or bool(b & B_HORN)
             if b & B_HORN and not p.prev_horn and p.state == DRIVER:
                 self._door_remote(p, car)      # (v0.9) honk at the shop: the door opens (or shuts)
+                self._honk_icecream(car)       # (v0.12) or at the world's most persistent ice cream van
             p.prev_horn = bool(b & B_HORN)
             p.seat_t += dt
             if p.state == DRIVER:
@@ -646,6 +663,11 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
                 if hop and not p.prev_hop:
                     self._hop(p, car)
                 p.prev_hop = hop
+                if car.boosting and not p.prev_nos:
+                    # (v0.12) one confetti puff the instant NOS kicks in -- reuses the exact
+                    # same event delivery already fires with, so no new wire/client code
+                    self.sfx(S_CONFETTI, car.x, car.y)
+                p.prev_nos = car.boosting
                 if p.seat_t < C.CAR_PROMPT_TIME:
                     p.prompt = "F: OUT  SPACE: HANDBRAKE  W+S: BURNOUT  H: HORN  V: CAMERA" + (
                         "  SHIFT: NOS" if car.nos else "") + ("  X: HOP" if car.hydraulics else "")
@@ -666,7 +688,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         # (v0.9: this said <= ARM_BLOCK, a leftover from v0.6 -- so keys 6 and 7, the banana and the
         # donuts, quietly gave you your fists. Everything up to key 9 now.)
         p.weapon = inp.weapon if (0 <= inp.weapon < ARM_COUNT and p.owns(inp.weapon)) else ARM_FISTS
-        if p.weapon in (ARM_PISTOL, ARM_SHOTGUN) and not p.hands and p.dolly is None:
+        if p.weapon in GUN_SLOTS and not p.hands and p.dolly is None:
             self._menace(p)
         if b & B_TAUNT:
             self._dance(p, dt)
@@ -786,6 +808,9 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         market = self._market_interaction(p, ax, ay)
         if market is not None:
             return market
+        fence = self._fence_interaction(p, ax, ay)
+        if fence is not None:
+            return fence
         if p.dolly is not None:
             return self._dolly_interaction(p, p.dolly)
         gate = self._gate_interaction(p, ax, ay) or self._door_interaction(p, ax, ay)
@@ -963,7 +988,15 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
     def _hotwire(self, p, car):
         car.state = RUNNING
         self.sfx(S_HOTWIRE, car.x, car.y)
-        self.toast("%s HOTWIRED IT. GO GO GO!" % p.name, T_INFO)
+        # (v0.12) one in five stolen cars has a little loose change down the seats. Doesn't
+        # apply to your own personal car (nobody's stealing that, hotwiring never runs on it)
+        if self.rng.random() < C.SEAT_CHANGE_CHANCE:
+            change = self.rng.randint(C.SEAT_CHANGE_MIN, C.SEAT_CHANGE_MAX)
+            self._earn(change)
+            self.toast("%s HOTWIRED IT. GO GO GO! (+$%d FOUND IN THE SEATS. GROSS BUT FREE.)" %
+                       (p.name, change), T_MONEY)
+        else:
+            self.toast("%s HOTWIRED IT. GO GO GO!" % p.name, T_INFO)
         self._enter_car(p, car, DRIVER)
 
     def _strip(self, p, car, slot):
@@ -1004,7 +1037,22 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         part = p.hands.pop()
         self._earn(part.value, 1)
         self.sfx(S_SELL, p.x, p.y)
-        self.toast("SOLD %s: +$%d" % (part.name.upper(), part.value), T_MONEY)
+        tip = self._tip_jar()
+        if tip:
+            self.toast("SOLD %s: +$%d (+$%d TIP FROM A PASSERBY WHO LIKES YOUR HUSTLE)" %
+                       (part.name.upper(), part.value, tip), T_MONEY)
+        else:
+            self.toast("SOLD %s: +$%d" % (part.name.upper(), part.value), T_MONEY)
+
+    def _tip_jar(self):
+        """(v0.12) selling at the bench, once in a while somebody walking past chips in.
+        Doesn't apply to selling from the mod shop locker -- you're not visibly hustling in
+        there, there's nobody to tip you."""
+        if self.rng.random() >= C.TIP_JAR_CHANCE:
+            return 0
+        tip = self.rng.randint(C.TIP_JAR_MIN, C.TIP_JAR_MAX)
+        self._earn(tip)
+        return tip
 
     # ------------------------------------------------------------------ the hand dolly
     def _nearest_dolly(self, x, y, reach):
@@ -1172,7 +1220,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         elif w == ARM_CHICKEN:
             p.fire_cd = C.CHICKEN_COOLDOWN
             self._punch(p, chicken=True)
-        elif w in (ARM_PISTOL, ARM_SHOTGUN):
+        elif w in GUN_SLOTS:
             if p.ammo[w] <= 0:
                 p.fire_cd = 0.3
                 self.sfx(S_EMPTY, p.x, p.y)
@@ -1229,20 +1277,28 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             self.toast(self.rng.choice(lines), T_WHITE)
 
     def _shoot(self, p, w):
-        shotgun = w == ARM_SHOTGUN
-        p.fire_cd = C.SHOTGUN_COOLDOWN if shotgun else C.PISTOL_COOLDOWN
-        self.sfx(S_SHOTGUN if shotgun else S_PISTOL, p.x, p.y)
-        rng_ = C.SHOTGUN_RANGE if shotgun else C.PISTOL_RANGE
-        pellets = C.SHOTGUN_PELLETS if shotgun else 1
+        """(v0.12) every gun past the shotgun still calls this: the per-weapon numbers come
+        out of GUN_STATS instead of a pile of if/elif, so adding gun #8 someday is a config
+        entry, not a new branch here. The two launchers (SPLASH_GUNS) hitscan exactly like
+        the others, then hand their impact point to _blast instead of _shot_hits -- a mortar
+        strike, not a thrown grenade, but at these ranges nobody can tell the difference."""
+        rng_, cd, pellets, spread, splash, _ = GUN_STATS[w]
+        p.fire_cd = cd
+        self.sfx(GUN_SOUND[w], p.x, p.y)
         for k in range(pellets):
-            spread = ((k / (pellets - 1)) * 2 - 1) * C.SHOTGUN_SPREAD if pellets > 1 else 0.0
-            ang = p.ang + spread + (self.rng.uniform(-0.02, 0.02) if shotgun else 0.0)
+            if pellets > 1:
+                off = ((k / (pellets - 1)) * 2 - 1) * spread + self.rng.uniform(-0.02, 0.02)
+            else:
+                off = self.rng.uniform(-spread, spread) if spread else 0.0
+            ang = p.ang + off
             dist, target = self._ray_hit(p, ang, rng_)
             ex, ey = p.x + math.cos(ang) * dist, p.y + math.sin(ang) * dist
             if k == 0 or k == pellets - 1 or k == pellets // 2:
                 self.tracer(w, p.x, p.y, ex, ey)
-            if target is not None:
-                self._shot_hits(p, target, ex, ey, ang, shotgun)
+            if splash > 0:
+                self._blast(p, ex, ey, splash)
+            elif target is not None:
+                self._shot_hits(p, target, ex, ey, ang, pellets > 1)
         # gunshots carry: anyone within earshot notices, everyone nearby runs
         near = any((n.x - p.x) ** 2 + (n.y - p.y) ** 2 < C.GUNSHOT_EARSHOT ** 2 for n in self.npcs.values()) or \
             any(c.kind == COP and (c.x - p.x) ** 2 + (c.y - p.y) ** 2 < C.GUNSHOT_EARSHOT ** 2
@@ -1252,6 +1308,49 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         self._charge(p, "gun")
         self._escalate(p.x, p.y)                # cops who hear it stop reaching for the taser
         self._scare(p.x, p.y, C.PED_FLEE_CRASH_RADIUS * 1.6)
+
+    def _blast(self, p, x, y, radius):
+        """Where a grenade or rocket lands. Everything within `radius` gets the same
+        treatment _shot_hits gives a direct hit -- lethal to the law and civilians, a tumble
+        for a player, a fire for a cop car, a shredded tyre for anything else -- just applied
+        to everyone in range instead of whoever the ray happened to touch."""
+        self.sfx(S_BOOM, x, y)
+        self.toast("KA-BOOM!", T_COP)
+        self._scare(x, y, max(C.PED_FLEE_CRASH_RADIUS, radius * 2.5))
+        for n in list(self.npcs.values()):
+            if n.carried_by is not None or (n.x - x) ** 2 + (n.y - y) ** 2 > radius ** 2:
+                continue
+            if n.kind == OFFICER:
+                self.lethal_t = C.LETHAL_TIME
+            if n.kind in (OFFICER, GUARD, KEYGUARD, PED, OWNER, CLOWN):
+                self._kill_npc(p, n)
+                continue
+            fx, fy = n.x - x, n.y - y
+            m = math.hypot(fx, fy) or 1.0
+            self._knock_down_npc(n, fx / m * 8, fy / m * 8, C.SHOT_KNOCKDOWN * 1.5, p)
+        for q in self.players.values():
+            if q is p or q.state != FOOT or (q.x - x) ** 2 + (q.y - y) ** 2 > radius ** 2:
+                continue
+            fx, fy = q.x - x, q.y - y
+            m = math.hypot(fx, fy) or 1.0
+            self._hurt_player(q, fx / m * 9, fy / m * 9, C.SHOT_PLAYER_TUMBLE * 1.5, BN_HUMBLED)
+            self.toast("%s CAUGHT THE BLAST. THEY'RE FINE. THEY'RE FURIOUS." % q.name, T_BAD)
+        for car in list(self.cars.values()):
+            if car.id == p.car_id or (car.x - x) ** 2 + (car.y - y) ** 2 > (radius + car.bound) ** 2:
+                continue
+            if car.kind == COP:
+                self._crime(C.SHOOT_COP_HEAT)
+                self.lethal_t = C.LETHAL_TIME
+                if car.fire_t <= 0:
+                    car.fire_t = C.COP_BURN_TIME
+                    self.sfx(S_IGNITE, car.x, car.y)
+                    self.toast("THE COP CAR'S ON FIRE! GET CLEAR!", T_COP)
+            else:
+                if car.kind == TRAFFIC:
+                    car.shaken_t = max(car.shaken_t, C.TRAFFIC_SHAKEN_TIME)
+                ws = [w for w in WHEEL_SLOTS if car.parts.get(w) is not None]
+                if ws:
+                    self._knock_off(car, self.rng.choice(ws))
 
     def _ray_hit(self, p, ang, reach):
         """Hitscan, Doom style: first thing along the ray -> (distance, thing or None)."""
@@ -1392,7 +1491,12 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             self._crime(C.ROB_HEAT if n.kind not in LAW else C.ASSAULT_OFFICER_HEAT)
             self._charge(p, "rob")
         self.sfx(S_ROB, n.x, n.y)
-        self.toast("%s LIFTED A WALLET: +$%d %s" % (p.name, cash, self.rng.choice(WALLET_EXTRAS)), T_MONEY)
+        if cash >= C.JACKPOT_WALLET[0]:
+            # (v0.12) that wallet was never going to say "average pedestrian" on the label
+            self.toast("%s HIT THE JACKPOT: A WALLET WITH $%d IN IT. SOMEONE'S HAVING A BAD DAY." %
+                       (p.name, cash), T_MONEY)
+        else:
+            self.toast("%s LIFTED A WALLET: +$%d %s" % (p.name, cash, self.rng.choice(WALLET_EXTRAS)), T_MONEY)
         n.surrender_t = 0.0
         n.laugh_t = 0.0
         p.robbed_from[n.id] = p.robbed_from.get(n.id, 0) + cash
@@ -1432,9 +1536,46 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         self._enter_car(p, car, DRIVER)
 
     # ------------------------------------------------------------------ black market
+    def _market_crates(self):
+        """(v0.12) every crate you can currently reach: the home shop's, plus whichever
+        fences you've bought. An unbought fence's crates aren't in this list at all -- you
+        see the "BUY THIS SHOP" sign there instead (_fence_interaction), not empty shelves."""
+        crates = list(self.map.market)
+        for i, fs in enumerate(self.map.fence_shops):
+            if self.shop_owned[i + 1]:
+                crates.extend(fs["market"])
+        return crates
+
+    def _fence_interaction(self, p, ax, ay):
+        """(v0.12, Bryce: "make multiple garages, make them available for purchase") the
+        plaque outside an unbought fence shop. Bought shops don't show up here again -- the
+        market crates they unlock take over instead (_market_crates)."""
+        for i, fs in enumerate(self.map.fence_shops):
+            idx = i + 1
+            if self.shop_owned[idx]:
+                continue
+            sx, sy = fs["sign"]
+            if math.hypot(ax - sx, ay - sy) >= C.INTERACT_RANGE_BENCH:
+                continue
+            price = C.SHOP_PRICE[idx]
+            if self.cash < price:
+                return (None, "SHOP %d: $%d TO BUY - CAN'T AFFORD IT YET" % (idx + 1, price), 0, None)
+            return (("buyshop", idx), "HOLD E: BUY SHOP %d - $%d (+$%d/DAY RENT)" % (idx + 1, price, C.SHOP_RENT[idx]),
+                    C.BUY_TIME, lambda: self._buy_shop(idx))
+        return None
+
+    def _buy_shop(self, idx):
+        if self.shop_owned[idx] or self.cash < C.SHOP_PRICE[idx]:
+            return
+        self.cash -= C.SHOP_PRICE[idx]
+        self.shop_owned[idx] = True
+        cx, cy = self.map.fence_shops[idx - 1]["center"]
+        self.sfx(S_CASH, cx, cy)
+        self.toast("SHOP %d IS YOURS. RENT'S UP TO $%d/DAY." % (idx + 1, self.rent_due()), T_MONEY)
+
     def _market_interaction(self, p, ax, ay):
         best, bd = None, 1.7            # crates are 1.75 m apart (v0.9: ten of them): nearest wins
-        for (x, y, item) in self.map.market:
+        for (x, y, item) in self._market_crates():
             d = math.hypot(x - ax, y - ay)
             if d < bd:
                 best, bd = item, d
@@ -1445,7 +1586,10 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             return (None, "BLACK MARKET: YOU'VE GOT A PISTOL. AMMO'S TWO CRATES DOWN.", 0, None)
         if best == "shotgun" and p.arms & (1 << ARM_SHOTGUN):
             return (None, "BLACK MARKET: YOU'VE GOT A SHOTGUN. AMMO'S NEXT DOOR.", 0, None)
-        if best == "ammo" and not (p.arms & ((1 << ARM_PISTOL) | (1 << ARM_SHOTGUN))):
+        # (v0.12) the 5 new guns get the same "already own it" guard as the pistol/shotgun did
+        if best in ITEM_GUN and p.arms & (1 << ITEM_GUN[best]):
+            return (None, "BLACK MARKET: YOU'VE ALREADY GOT ONE OF THOSE.", 0, None)
+        if best == "ammo" and not any(p.arms & (1 << g) for g in GUN_SLOTS):
             return (None, "BLACK MARKET: AMMO. BUY A GUN FIRST, GENIUS.", 0, None)
         if best == "chicken" and p.arms & (1 << ARM_CHICKEN):
             return (None, "BLACK MARKET: ONE RUBBER CHICKEN PER CUSTOMER. HOUSE RULES.", 0, None)
@@ -1472,11 +1616,16 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             p.ammo[ARM_SHOTGUN] = min(C.MAX_AMMO, p.ammo[ARM_SHOTGUN] + C.SHOTGUN_AMMO)
             tip = "PRESS 3 TO DRAW IT"
         elif item == "ammo":
-            if p.arms & (1 << ARM_PISTOL):
-                p.ammo[ARM_PISTOL] = min(C.MAX_AMMO, p.ammo[ARM_PISTOL] + C.PISTOL_AMMO)
-            if p.arms & (1 << ARM_SHOTGUN):
-                p.ammo[ARM_SHOTGUN] = min(C.MAX_AMMO, p.ammo[ARM_SHOTGUN] + C.SHOTGUN_AMMO)
+            # (v0.12) one crate tops up every gun you own now, not just the first two
+            for g in GUN_SLOTS:
+                if p.arms & (1 << g):
+                    p.ammo[g] = min(C.MAX_AMMO, p.ammo[g] + GUN_STATS[g][5])
             tip = "LOCKED AND LOADED"
+        elif item in ITEM_GUN:
+            slot = ITEM_GUN[item]
+            p.arms |= 1 << slot
+            p.ammo[slot] = min(C.MAX_AMMO, p.ammo[slot] + GUN_STATS[slot][5])
+            tip = "WHEEL OR Q TO DRAW IT"
         elif item == "spikes":
             p.gear[0] += 1
             tip = "PRESS 4, CLICK TO LAY IT ACROSS THE ROAD"
@@ -1495,11 +1644,35 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         elif item == "box":
             p.has_box = True
             tip = "PRESS C TO HIDE IN IT. STAND STILL AND NOBODY SEES YOU. MOVE AND... WELL."
+        elif item == "ticket":
+            self._scratch_ticket(p)
+            return
         else:
             p.gear[3] += 1
             tip = "PRESS 7, CLICK TO THROW. COPS CAN'T RESIST."
         self.sfx(S_BUY, p.x, p.y)
         self.toast("BOUGHT %s: -$%d. %s" % (MARKET[item][0].split(" (")[0], price, tip), T_INFO)
+
+    def _scratch_ticket(self, p):
+        """(v0.12) a scratch ticket off the black market: TICKET_ODDS is a chance/payout
+        table, checked in order. It nets negative on average -- PRICE_TICKET is worth more
+        than the expected payout -- same as any real scratch ticket, which is the joke."""
+        self.sfx(S_BUY, p.x, p.y)
+        roll, acc, payout = self.rng.random(), 0.0, 0
+        for chance, amount in C.TICKET_ODDS:
+            acc += chance
+            if roll < acc:
+                payout = amount
+                break
+        if payout <= 0:
+            self.toast("SCRATCH TICKET: NOTHING. THE HOUSE THANKS YOU FOR YOUR SERVICE.", T_INFO)
+            return
+        self._earn(payout)
+        if payout >= 500:
+            self.sfx(S_CASH, p.x, p.y)
+            self.toast("SCRATCH TICKET: JACKPOT! +$%d. FRAME IT. OR SPEND IT. SPEND IT." % payout, T_MONEY)
+        else:
+            self.toast("SCRATCH TICKET: +$%d. NOT NOTHING." % payout, T_MONEY)
 
     def _toggle_box(self, p):
         """(v0.9) C: into the cardboard box, or out of it. Stand still in it and nobody
@@ -2122,7 +2295,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             if n.wallet <= 0:
                 n.wallet_t -= dt
                 if n.wallet_t <= 0:
-                    n.wallet = self.rng.randint(C.WALLET_MIN, C.WALLET_MAX)   # payday
+                    n.wallet = self._roll_wallet()   # payday
             if n.surrender_t > 0:
                 n.surrender_t -= dt
                 if n.surrender_t <= 0 and n.tumble_t <= 0:
@@ -2564,7 +2737,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         if p.arms & ~1:
             self.toast("THE COPS KEPT %s'S GUNS" % p.name, T_COP)
         p.arms = 1 << ARM_FISTS       # guns: confiscated. Fists: they tried.
-        p.ammo = [0, 0, 0]
+        p.ammo = [0] * ARM_COUNT
         p.weapon = ARM_FISTS
         p.state = CUFFED
         p.cuffed_t = C.CUFFED_TIME

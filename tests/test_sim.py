@@ -165,9 +165,9 @@ class TestCoreLoop(unittest.TestCase):
         cash0 = w.cash
         w.day_t = 0.001
         w.step(DT)
-        self.assertEqual(w.cash, cash0 - C.RENT_BASE)
+        self.assertEqual(w.cash, cash0 - C.SHOP_RENT[0])
         self.assertEqual(w.day, 2)
-        self.assertEqual(w.rent_due(), C.RENT_BASE + C.RENT_PER_DAY)
+        self.assertEqual(w.rent_due(), C.SHOP_RENT[0], "flat per shop now, not steeper by the day")
         self.assertAlmostEqual(w.day_t, C.DAY_LENGTH, delta=0.1)
         # --- debt -> SHOP SEIZED -> new run
         personal.x += 30.0          # drive it off somewhere; it should come home
@@ -618,7 +618,10 @@ if __name__ == "__main__":
 
 
 class TestDays(unittest.TestCase):
-    def test_rent_goes_up_every_day(self):
+    def test_rent_is_flat_by_the_day_now(self):
+        """(v0.12, Bryce: "stop increase of rent / day and make it on a shop basis") rent used
+        to get steeper forever; now day 1 costs the same as day 4, and only buying another
+        shop moves the bill."""
         w = quiet_world()
         cash = []
         for day in range(1, 5):
@@ -627,9 +630,39 @@ class TestDays(unittest.TestCase):
             w.day_t = 0.001
             w.step(DT)
             cash.append(c0 - w.cash)
-        self.assertEqual(cash, [C.rent_for_day(d) for d in range(1, 5)])
-        self.assertEqual(cash, sorted(cash), "the landlord only ever gets greedier")
+        self.assertEqual(cash, [C.SHOP_RENT[0]] * 4)
         self.assertLess(cash[0], 150, "day 1 is cheaper than the old $150-a-minute")
+
+    def test_buying_a_shop_raises_the_daily_rent(self):
+        w = quiet_world()
+        self.assertEqual(w.shop_owned, [True, False, False, False])
+        self.assertEqual(w.rent_due(), C.SHOP_RENT[0])
+        w.cash = 1_000_000
+        w._buy_shop(1)
+        self.assertTrue(w.shop_owned[1])
+        self.assertEqual(w.cash, 1_000_000 - C.SHOP_PRICE[1])
+        self.assertEqual(w.rent_due(), C.SHOP_RENT[0] + C.SHOP_RENT[1])
+
+    def test_cant_afford_it_doesnt_charge_or_unlock(self):
+        w = quiet_world()
+        w.cash = 0
+        w._buy_shop(1)
+        self.assertFalse(w.shop_owned[1])
+        self.assertEqual(w.cash, 0)
+
+    def test_a_shops_market_only_sells_its_own_tier(self):
+        """Shop 1 (Bryce: "shop 1 has just basic parts and the pistol") shouldn't offer the
+        shotgun or any of the new guns until a fancier shop is bought."""
+        w = quiet_world()
+        items = {item for (_, _, item) in w._market_crates()}
+        self.assertIn("pistol", items)
+        self.assertNotIn("shotgun", items)
+        self.assertNotIn("smg", items)
+        self.assertNotIn("rpg", items)
+        w.cash = 1_000_000
+        w._buy_shop(1)
+        items = {item for (_, _, item) in w._market_crates()}
+        self.assertIn("shotgun", items, "shop 2's crates should be live now")
 
     def test_day_summary_counts_the_haul(self):
         w = quiet_world()

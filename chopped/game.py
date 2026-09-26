@@ -335,6 +335,14 @@ class App:
                         self.fp.big_heads = not self.fp.big_heads
                         self.hud.add_toast("BIG HEAD MODE: %s" % ("ON. OBVIOUSLY." if self.fp.big_heads else "OFF"),
                                            S.T_INFO, time.perf_counter())
+                    elif ev.key == pygame.K_F10 and self.fp is not None:
+                        self.fp.disco = not self.fp.disco
+                        self.hud.add_toast("DISCO MODE: %s" % ("ON. FEEL IT." if self.fp.disco else "OFF"),
+                                           S.T_INFO, time.perf_counter())
+                    elif ev.key == pygame.K_F8 and self.fp is not None:
+                        self.fp.fisheye = not self.fp.fisheye
+                        self.hud.add_toast("FISHEYE LENS: %s" % ("ON. VERY EXTREME." if self.fp.fisheye else "OFF"),
+                                           S.T_INFO, time.perf_counter())
                     elif ev.key == pygame.K_v:
                         self.chase = not self.chase
                         self.cam_yaw = None

@@ -209,7 +209,7 @@ class Player:
                  "charge_t", "dancing", "chute", "banner", "banner_t", "robbed_from", "menu", "menu_ack",
                  "trunk_view", "jailed", "keys", "jumpsuit", "pants_t", "tased_t", "dead_t", "cuffer",
                  "cuff_prog", "arrests", "rap", "prev_hop", "slide_t", "prev_alt", "prev_horn", "boxed", "has_box",
-                 "grace_t", "inspect", "prev_box", "still_t", "health", "hurt_t", "sneak")
+                 "grace_t", "inspect", "prev_box", "still_t", "health", "hurt_t", "sneak", "prev_nos")
 
     def __init__(self, pid, name, color):
         self.id = pid
@@ -241,7 +241,7 @@ class Player:
         self.dolly = None             # the Dolly you're pushing (it takes both hands)
         self.weapon = ARM_FISTS
         self.arms = 1 << ARM_FISTS    # bitmask of what you own; everyone owns fists
-        self.ammo = [0, 0, 0]         # per ARM_ slot (fists don't need any)
+        self.ammo = [0] * ARM_COUNT   # per ARM_ slot, indexed directly (v0.12: 14 slots, was 3)
         self.gear = [0, 0, 0, 0, 0]   # spike strips, roadblocks, banana peels, boxes of donuts, whoopee cushions
         self.fire_cd = 0.0
         self.prev_fire = 0
@@ -276,6 +276,7 @@ class Player:
         # v0.9
         self.slide_t = 0.0            # > 0: hit by a car, skidding along the road
         self.prev_horn = False        # (v0.9) honk edges: the shop door's remote
+        self.prev_nos = False         # (v0.12) NOS edges: one backfire puff when it kicks in, not every tick
         self.prev_alt = False         # X on foot (sell whole / post bail): a tap, not a hold
         self.boxed = False            # hiding under a cardboard box
         self.has_box = False          # ...if you bought one

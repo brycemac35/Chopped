@@ -800,6 +800,10 @@ class Police:
                     if p is not None:
                         self._banner(p, BN_SMILE)
                         self._charge(p, "speed")
+                        # (v0.12) enough tickets and the local news notices. Purely a toast --
+                        # nobody actually shows up, this game doesn't have paparazzi NPCs (yet)
+                        if p.rap["speed"] == C.SPEEDCAM_FAME_COUNT:
+                            self.toast("%s IS FAMOUS NOW. A LOCAL NEWS VAN IS ASKING QUESTIONS." % p.name, T_INFO)
                     self.toast("SMILE! SPEED CAMERA. -$%d TICKET, POSTED TO THE SHOP." % C.SPEEDCAM_FINE, T_BAD)
 
     # ------------------------------------------------------------------ smoke screens

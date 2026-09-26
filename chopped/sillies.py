@@ -35,10 +35,14 @@ class Sillies:
         self.chicken_t = self.rng.uniform(*C.CHICKEN_EVERY)
         self.mime_t = 0.0
         self.splat_cd = 0.0
+        self.highfive_cd = 0.0          # (v0.12) shared cooldown: see Brawl._dance
+        self.icecream_honk_cd = 0.0     # (v0.12) shared cooldown: see _honk_icecream
         self.air_total = {}             # car id -> (seconds of air it took off with, who was driving)
 
     def _sillies(self, dt):
         self.splat_cd -= dt
+        self.highfive_cd -= dt
+        self.icecream_honk_cd -= dt
         self._chickens(dt)
         self.mime_t -= dt
         if self.mime_t <= 0:
@@ -201,3 +205,16 @@ class Sillies:
         self._crime(C.MONEY_TRUCK_HEAT)
         self.sfx(S_CASH, bx, by)
         self.toast(self.rng.choice(MONEY_TRUCK_LINES), T_MONEY)
+
+    # ------------------------------------------------------------------ ice cream jingle
+    def _honk_icecream(self, car):
+        """(v0.12) honk near the ice cream van and it honks back. It does not play its
+        jingle for you -- that's reserved for people actually buying ice cream, apparently."""
+        if self.icecream_honk_cd > 0:
+            return
+        for van in self.cars.values():
+            if van.model == V.ICECREAM and (van.x - car.x) ** 2 + (van.y - car.y) ** 2 < C.HORN_CONFUSE_RANGE ** 2:
+                self.icecream_honk_cd = 4.0
+                self.sfx(S_HONK, van.x, van.y)
+                self.toast("THE ICE CREAM VAN HONKS BACK. IT DOES NOT PLAY ITS JINGLE FOR YOU.", T_WHITE)
+                return

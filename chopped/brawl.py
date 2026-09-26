@@ -468,6 +468,17 @@ class Brawl:
         """Hold T. Peds nearby either laugh (and stop to watch: easy to rob)
         or take it personally. Cops take it very personally."""
         p.dancing = True
+        # (v0.12) two crewmates dancing together sync up: a shared cooldown so a packed dance
+        # floor doesn't spam the toast, one bonus per HIGHFIVE_COOLDOWN however many are on it.
+        if self.highfive_cd <= 0:
+            for q in self.players.values():
+                if q is not p and q.dancing and q.state == FOOT and \
+                        (q.x - p.x) ** 2 + (q.y - p.y) ** 2 < C.HIGHFIVE_RADIUS ** 2:
+                    self.highfive_cd = C.HIGHFIVE_COOLDOWN
+                    p.stamina = min(C.STAMINA_MAX, p.stamina + C.HIGHFIVE_STAMINA)
+                    q.stamina = min(C.STAMINA_MAX, q.stamina + C.HIGHFIVE_STAMINA)
+                    self.toast("%s AND %s SYNCED UP. TEAM SPIRIT! (+STAMINA)" % (p.name, q.name), T_WHITE)
+                    break
         if self.rng.random() > dt * 2.0:
             return                     # ~twice a second, somebody reacts
         r2 = C.DANCE_RADIUS ** 2

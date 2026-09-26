@@ -63,6 +63,9 @@ def dump(world):
         # whatever's mid-progress don't -- those reset fresh on load, same as heat does.
         "story_points": world.story_points, "act": world.act, "campaign_won": world.campaign_won,
         "completed_ever": sorted(world.completed_ever),
+        # (v0.12) which shops the crew owns -- rent (World.rent_due) is computed from this,
+        # so losing it on load would quietly refund every fence the crew ever bought.
+        "shop_owned": list(world.shop_owned),
     }
 
 
@@ -83,6 +86,11 @@ def apply(world, data):
     world.act = max(1, min(3, int(data.get("act", world.act))))
     world.campaign_won = bool(data.get("campaign_won", world.campaign_won))
     world.completed_ever = set(data.get("completed_ever", [])) | world.completed_ever
+    saved_shops = data.get("shop_owned")
+    if isinstance(saved_shops, list):
+        for i in range(1, len(world.shop_owned)):    # shop 0 (home base) is always owned
+            if i < len(saved_shops):
+                world.shop_owned[i] = bool(saved_shops[i])
     world._rotate_quests()   # a fresh day's 3, now that story points may have unlocked more
     return True
 

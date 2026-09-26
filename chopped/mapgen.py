@@ -39,6 +39,7 @@ class CityMap:
         self.precinct_outer = self.precinct_rect = self.gate = None
         self.jail_spawns, self.guard_posts = [], []
         self.cells, self.cell_doors, self.cell_bars = [], [], []
+        self.fence_shops = []    # (v0.12) shops 2-4: {"tier", "center", "sign", "market"}, buyable
 
         # ---- choose block types --------------------------------------------
         shop = (C.BLOCKS // 2, C.BLOCKS // 2)
@@ -53,6 +54,10 @@ class CityMap:
         rest = [c for c in far[C.PARK_BLOCKS + C.LOT_BLOCKS:]
                 if abs(c[0] - shop[0]) + abs(c[1] - shop[1]) >= C.PRECINCT_MIN_BLOCKS]
         precinct = rest[0] if rest else None
+        # (v0.12) shops 2-4, purchasable: tier N sits at fences[N-1]. Skip -- and cheerfully
+        # ship a 1-shop city -- if a tiny custom BLOCKS/PARK_BLOCKS/LOT_BLOCKS combo (a test
+        # fixture, say) leaves nothing free after the precinct's had its pick.
+        fences = rest[1:1 + (len(C.SHOP_MARKET) - 1)]
 
         for i in range(C.BLOCKS):
             for j in range(C.BLOCKS):
@@ -62,6 +67,8 @@ class CityMap:
                     self._make_shop(ox, oy)
                 elif (i, j) == precinct:
                     self._make_precinct(ox, oy)
+                elif (i, j) in fences:
+                    self._make_fence(rng, ox, oy, fences.index((i, j)) + 1)
                 elif (i, j) in parks:
                     self._make_park(rng, ox, oy)
                 elif (i, j) in lots:
@@ -166,6 +173,33 @@ class CityMap:
             self.parking.append((x, by + 3.0, math.pi / 2))
             self.parking.append((x, by + span - 3.0, -math.pi / 2))
 
+    def _make_fence(self, rng, ox, oy, tier):
+        """(v0.12, Bryce: "make multiple garages, make them available for purchase") shops
+        2-4: an open lot, not a real building -- buy it and its market crates come alive. No
+        bays, no roller door of its own: a second full garage/door/raycaster system was a lot
+        of plumbing for "the black market has more stuff now" (see CLAUDE.md's build notes).
+        It deliberately isn't added to self.lots, so it gets no parking-space paint, no stunt
+        ramp, and no civilian cars trying to park on top of the crates.
+
+        Calls _make_buildings first purely to burn the same rng draws an ordinary block would
+        have, then throws away the tiles and buildings it made -- the same trick _make_ramps
+        uses its own rng stream for. Without this, buying (or not buying) fence shops would
+        reshuffle every random choice made for the rest of the city after them: traffic
+        models, camera spots, ped spawns, all of it, for a feature that's supposed to just
+        add some crates in an empty lot. A real, reproducible case of this cost us a very
+        rare pre-existing traffic pathing edge case surfacing in testing before this fix."""
+        nb = len(self.buildings)
+        self._make_buildings(rng, ox, oy)
+        del self.buildings[nb:]
+        inner = C.BLOCK_TILES - 2
+        self._fill(ox + 1, oy + 1, inner, inner, LOT)
+        cx = (ox + 1 + inner / 2) * C.TILE_M
+        cy = (oy + 1 + inner / 2) * C.TILE_M
+        items = C.SHOP_MARKET[tier]
+        x0 = cx - 1.75 * (len(items) - 1) / 2
+        market = [(x0 + k * 1.75, cy + 2.0, item) for k, item in enumerate(items)]
+        self.fence_shops.append({"tier": tier, "center": (cx, cy), "sign": (cx, cy - 3.0), "market": market})
+
     def _make_shop(self, ox, oy):
         """The chop shop: open-fronted garage facing south onto the road."""
         b = C.BLOCK_TILES
@@ -196,9 +230,11 @@ class CityMap:
         # the hand dolly's parking spot, tucked in the north-east corner
         self.dolly_spot = (gx + gw - 2.5, gy + 4.5)
         # the black market: a row of crates along the west wall. Don't ask where they came from.
+        # (v0.12, Bryce: "shop 1 has just basic parts and the pistol") the rest of the old
+        # lineup -- the shotgun, the silly stuff -- moved out to the fence shops (SHOP_MARKET
+        # tiers 1-3); buy those and their crates carry it instead.
         self.market = [(gx + 1.0, gy + 3.2 + k * 1.75, item)
-                       for k, item in enumerate(("pistol", "shotgun", "ammo", "spikes", "roadblock", "banana", "donuts",
-                                                 "chicken", "whoopee", "box"))]
+                       for k, item in enumerate(C.SHOP_MARKET[0])]
         self.sell_bench = (gx + 5.0, gy, 6.0, 1.6)
         self.tune_bench = (gx + gw - 11.0, gy, 6.0, 1.6)
         self.static_rects.append(self.sell_bench)

@@ -11,8 +11,10 @@ things (texture shading, sprite rotations) are done once and cached; the
 per-frame work is arithmetic, subsurface() and transform.scale().
 """
 
+import colorsys
 import math
 import random
+import time
 
 import pygame
 
@@ -72,6 +74,7 @@ class FPRenderer:
         self.hor0 = vh // 2
         self.hor = self.hor0          # moves with pitch (looking up/down: Build-engine y-shearing)
         self.fov = math.radians(C.FP_FOV)
+        self._cur_fov = self.fov      # (v0.12) F8 fisheye wobbles this away from self.fov and back
         self.tanh = math.tan(self.fov / 2)
         self.D = (vw / 2) / self.tanh
         self.view = pygame.Surface((vw, vh)).convert()
@@ -105,6 +108,8 @@ class FPRenderer:
         self.skies = {k: FA.make_sky(k, 4 * vw, self.sky_h) for k in FA.SKY_KEYS}
         self.hires = None             # the car the chase camera is following: drawn in more detail
         self.big_heads = False        # F9. You know you want to.
+        self.disco = False            # F10: the floor gets a hue-cycling tint. Purely cosmetic.
+        self.fisheye = False          # F8: a wider, wobblier FOV, like a cheap dashcam.
         self._build_static_sprites()
         self.car_cache = {}
         self.person_cache = {}
@@ -456,6 +461,16 @@ class FPRenderer:
         cx, cy, yaw, eye = cam
         self.hor = int(clamp(self.hor0 + pitch, 6, self.vh - 6))
         self.hires = hires
+        # (v0.12, F8) fisheye: a wider FOV that wobbles like a cheap dashcam suction mount.
+        # Recomputing ray_k (one float per column) is cheap enough to do every frame; snaps
+        # straight back to self.fov -- and only rebuilds once more -- the moment it's off.
+        want_fov = self.fov + math.radians(35.0 + 18.0 * math.sin(time.perf_counter() * 1.3)) \
+            if self.fisheye else self.fov
+        if want_fov != self._cur_fov:
+            self._cur_fov = want_fov
+            self.tanh = math.tan(want_fov / 2)
+            self.D = (self.vw / 2) / self.tanh
+            self.ray_k = [(2.0 * (x + 0.5) / self.vw - 1.0) * self.tanh for x in range(self.vw)]
         if self.shake > 0.05:
             yaw += self.rng.uniform(-0.01, 0.01) * self.shake
             eye += self.rng.uniform(-0.02, 0.02) * self.shake
@@ -544,6 +559,14 @@ class FPRenderer:
                 fog.set_at((0, r), haze + (a,))
             self._fog_rows = pygame.transform.scale(fog, (vw, vh - hor))
         surf.blit(self._fog_rows, (0, hor + 1))
+        if self.disco:
+            # (v0.12, F10) a hue-cycling multiply over the floor only -- cheap (one fill, no
+            # new surface) and keeps the street's own shading, just recoloured like a dance
+            # floor. Doesn't touch the walls or sky: full disco was a bit much even for this.
+            hue = (time.perf_counter() * 0.25) % 1.0
+            r, g, b = colorsys.hsv_to_rgb(hue, 0.85, 1.0)
+            surf.fill((int(r * 255), int(g * 255), int(b * 255)), (0, hor + 1, vw, vh - hor - 1),
+                     special_flags=pygame.BLEND_RGB_MULT)
 
     def _walls(self, surf, cx, cy, yaw, eye, dark, night):
         cm = self.map

@@ -448,9 +448,9 @@ class Renderer:
                 if h1 != 255:
                     ic = self.bank.icons_small[h1]
                     low.blit(ic, (sx + int(fx * 5 - fy * 4) - 3, sy + int(fy * 5 + fx * 4) - 3))
-            elif state == S.FOOT and len(p) > 14 and p[14] in (S.ARM_PISTOL, S.ARM_SHOTGUN):
+            elif state == S.FOOT and len(p) > 14 and p[14] in S.GUN_SLOTS:
                 fx, fy = math.cos(ang), math.sin(ang)
-                n = 6 if p[14] == S.ARM_SHOTGUN else 4
+                n = S.GUN_LINE_LEN[p[14]]
                 pygame.draw.line(low, (40, 40, 48), (sx + int(fx * 2), sy + int(fy * 2)),
                                  (sx + int(fx * n), sy + int(fy * n)), 2)
             if flags & PR.PF_SPRINT and self.rng.random() < 0.3:

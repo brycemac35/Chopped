@@ -11,6 +11,135 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
 
 ## 1. Status and your tasks, in order
 
+### Where things stand (Sept 26, 2026, session 2, RELEASE 0.12.0: more guns, more garages, more silly)
+- **v0.12** (Bryce: "now make multiple garages, make them available for purcahse, with each sdhop
+  have more available weapns and parts available in the shop. shop 1 has just bsic parts and the
+  pistol, stop increase of rent / day and make it on a shop bnasis. make the minimap bigger, and
+  add moire guns, SMG, AR, Sniper, grenade launcher RPG, etc. also add 10 more sillyfeatures").
+  Five separate asks in one message; no clarifying questions asked this round (the pattern from
+  the save-file and quest rounds), scoping decisions made and documented below instead. All done:
+  - **Five more guns** (`enums.GUN_STATS`, `enums.GUN_SLOTS`, `enums.SPLASH_GUNS`): SMG, assault
+    rifle and sniper rifle are hitscan exactly like the pistol and shotgun always were, just with
+    their own range/cooldown/spread numbers in `config.py`. There's no hold-to-fire model in this
+    game (a "shot" is always one click), so the SMG/AR's automatic *feel* comes entirely from a
+    short cooldown between taps, not real full-auto. The grenade launcher and RPG (`SPLASH_GUNS`)
+    hitscan to an impact point exactly the same way, then hand it to a new `World._blast(p, x, y,
+    radius)` instead of `_shot_hits` -- a mortar strike, not a thrown grenade or a real rocket,
+    but at these ranges nobody can tell the difference, and it meant zero new projectile-entity
+    wire/physics infrastructure. `_blast` kills anyone lethal-eligible in range the same way a
+    direct hit does (civilians, officers, guards), tumbles players and other NPCs, and ignites a
+    cop car or shreds a tyre on anything else caught in it. `World._shoot` itself is now a single
+    generic method driven by `GUN_STATS[w]` instead of the old pistol/shotgun-only if/elif chain,
+    so a hypothetical gun #8 would be a config entry, not a new branch.
+  - **The arms bitmask outgrew one byte.** `Player.arms` is a plain Python int, but the wire only
+    ever gave it 8 bits (`arms & 255`); with 5 more real weapons past bit 7, `arsenal_owns()` now
+    reads a second byte (`(arsenal[10] << 8) | arsenal[1]`) -- appended at the very END of the
+    16-byte arsenal array (position 10), with the 5 new guns' ammo counts after that (11-15),
+    rather than inserted after the existing low byte. That's the same append-only trick
+    `QUEST_ORDER` uses for quests: nothing that already read `arsenal[0..9]` by a fixed index
+    anywhere in `doomhud.py`/`fp.py`/`render.py` had to change. `ARSENAL_LEN` 10 -> 16.
+  - **Selecting them:** keys 1-9 still map straight to `ARM_` slots 0-8 (unchanged); the 5 new
+    guns (slots 9-13) live only on the mouse wheel / Q, since there's no key 10-14. Confirmed by
+    reading `game.py`'s `_cycle_weapon`/`_select_weapon` that this needed zero client-side
+    changes -- both already iterate `range(1, S.ARM_COUNT + 1)` generically. The HUD's cramped
+    "ARMS" pip strip (`doomhud._arms_panel`) had an ~80px budget already nearly full at 9 pips, so
+    it's capped at `min(S.ARM_COUNT, 9)` rather than trying to fit two-digit numbers in; the
+    weapon-name text underneath it is generic and reads correctly for all 14 regardless.
+  - **First-person art** for all 5 (`doomhud._weapon_view`): held two-handed like the shotgun,
+    each with its own silhouette and its own kick/muzzle-flash timing (the sniper's kick is
+    slowest -- working a bolt between shots -- the RPG's is slowest and biggest of all).
+  - **Multiple garages, purchasable** (`config.SHOP_PRICE`/`SHOP_RENT`/`SHOP_MARKET`,
+    `World.shop_owned`, `mapgen.CityMap._make_fence`, `World._buy_shop`/`_fence_interaction`/
+    `_market_crates`). Scoping call: making the home shop *relocatable* would have meant rebuilding
+    `fp.py`'s per-building door-column raycasting and `garage.ShopDoor`'s trap system for every
+    possible shop location -- a lot of plumbing for "the black market has more stuff now". Instead
+    Shop 1 (home base) is untouched -- same bays, same roller doors, same personal cars -- and
+    shops 2-4 are simpler fences: an open lot (no walls, no bays, no doors) with a market crate row
+    and, until bought, a "BUY THIS SHOP" sign in the same spot (`_fence_interaction`, same
+    hold-E-to-commit pattern as everything else in `_find_interaction`). `mapgen.py` places them on
+    3 more of the ordinary city blocks the precinct already picks from (far from the shop, not a
+    park or lot). **A real bug this cost us, caught by the test suite:** the very first version of
+    `_make_fence` just filled the block with `LOT` tiles directly, which meant those 3 blocks
+    skipped `_make_buildings`'s random draws entirely -- shifting the map generator's shared `rng`
+    stream for every block generated after them, which occasionally (2 of 11 seeds tried) exposed
+    a separate, pre-existing, rare traffic-pathing edge case that just happened to never get hit at
+    the old stream position (`tests/test_traffic.py`'s offroad-tolerance test, at map_seed 99).
+    Fixed by having `_make_fence` call `_make_buildings` first -- burning the identical rng draws
+    an ordinary block would have -- then discarding the tiles and the entries it appended to
+    `self.buildings` before laying down the actual open lot. Same trick `_make_ramps` already uses
+    its own separate rng stream for, applied here instead by matching consumption rather than
+    avoiding it (fences needed to share the `rest`-block-selection stream with the precinct).
+  - **Tiered markets** (`config.SHOP_MARKET`, a tuple of 4 item lists, each a superset of the
+    last): Shop 1 now sells only the pistol, ammo, spikes and roadblocks -- the shotgun and every
+    silly-item crate that used to sit alongside it moved out to shops 2-4, alongside the new guns.
+    `World._market_buy` doesn't care which shop an item was bought at (it never did); only
+    `_market_crates()` (home shop's list plus every *owned* fence's list) controls which crates
+    physically exist for you to walk up to, so an unbought fence's items simply aren't there yet.
+  - **Rent, flat per shop, not steeper by the day** (`config.SHOP_RENT`, `World.rent_due`). The old
+    `config.rent_for_day(day)` (and `RENT_BASE`/`RENT_PER_DAY`) are gone entirely, replaced by
+    `rent_due() = sum(SHOP_RENT[i] for owned shops)`: day 1 costs exactly what day 100 costs, and
+    the only way the bill goes up is buying another shop yourself. SHOP SEIZED repossesses every
+    fence you bought, same as it already emptied the locker and reset the civilian cars -- only the
+    free home base survives a reset.
+  - **Save files** persist `shop_owned` now (an additive field, same `save_version`; an old save
+    missing it just defaults to "only Shop 1", no version bump needed -- same pattern as `quests`'
+    `story_points`/`act` addition last round).
+  - **Bigger minimap** (`doomhud._minimap`): the radar's scale factor 0.5 -> 0.75. Still capped
+    well short of the automap's own scale -- it's a radar, not a second Tab map.
+  - **10 more silly features:**
+    - **Scratch tickets** ($20, at every shop including Shop 1 -- `World._scratch_ticket`,
+      `config.TICKET_ODDS`): mostly nothing, sometimes a few bucks, a 2% shot at a $500 jackpot.
+      Nets negative on average on purpose, same as a real one.
+    - **Some pedestrians are quietly loaded** (`World._roll_wallet`, `config.JACKPOT_CHANCE`/
+      `JACKPOT_WALLET`): about 1 in 50 wallets carries $400-900 instead of the usual $15-90, with
+      its own toast on the rob. No way to tell which one from the outside.
+    - **Loose change in stolen cars** (`World._hotwire`, `config.SEAT_CHANGE_*`): about 1 in 5
+      finds a few dollars down the seats the moment you hotwire it.
+    - **The tip jar** (`World._sell`/`_tip_jar`): selling a part at the bench, about 1 in 7
+      passersby chips in a few extra dollars. Bench only, not the mod shop locker -- there's
+      nobody around to tip you in there.
+    - **High fives** (`Brawl._dance`, `config.HIGHFIVE_*`): two crewmates dancing (T) within arm's
+      reach sync up for a shared stamina bonus, on a shared cooldown so a packed dance floor
+      doesn't spam the toast.
+    - **Local celebrity** (`police._speed_cameras`, `config.SPEEDCAM_FAME_COUNT`): enough speeding
+      tickets on your rap sheet and a toast declares you famous. Purely a toast -- no actual news
+      van NPC, matching the same scope call v0.10 made for the ambulance.
+    - **Honk at the ice cream van** (`Sillies._honk_icecream`) and it honks back at you. It does
+      not, under any circumstances, play its jingle for you.
+    - **A confetti puff on NOS activation** (`Player.prev_nos`, edge-detected in the DRIVER tick
+      block): reuses the exact same `S_CONFETTI` event the delivery fanfare already fires, so it's
+      zero new wire or client code -- just one `sfx()` call on the rising edge, not every tick
+      NOS is held.
+    - **Fisheye lens (F8)** and **disco floor (F10)** (`fp.FPRenderer.fisheye`/`disco`, both
+      client-local toggles with zero wire cost, the same pattern `big_heads` already used):
+      fisheye wobbles the FOV (recomputing `tanh`/`D`/`ray_k` only when the value actually
+      changes) like a cheap dashcam suction mount; disco is a single hue-cycling `BLEND_RGB_MULT`
+      fill over the floor rows only, cheap enough to run every frame.
+  - **Protocol VERSION 12, RELEASE 0.12.0:** arsenal is 16 bytes now (was 10; see above); no other
+    wire-format changes -- shop ownership and rent are host-only economy state, not per-entity.
+  - **Tests:** `tests/test_v12.py` (new), 15 tests, plus more added to `test_sim.py`'s `TestDays`
+    for the shop/rent changes (rent flat by the day, buying a shop raising it, can't-afford not
+    charging, a shop's market only selling its own tier) and two arsenal-length assertions fixed
+    in `test_combat.py`/`test_v09.py` for the new 16-byte layout. **253 tests, all OK**, game-loop
+    selftest about 43-50 fps.
+- **Decisions flagged for Bryce:**
+  - **"shop 1 has just basic parts and the pistol"** was read literally: the shotgun and every
+    silly-item crate (chicken, whoopee, box, banana, donuts) that used to be at the home shop moved
+    out to shops 2-4. If that's more of a downgrade than intended, the fix is one line --
+    `config.SHOP_MARKET[0]`.
+  - **Fence shops have no bays, doors or personal cars of their own** -- they're black-market
+    crates and nothing else. Making them full second garages (their own roller doors, their own
+    per-player bays) is a real feature, not a small extension of this one; flag if that's wanted.
+  - **"add more guns... etc."** was read as 5 (the ones actually named): SMG, AR, sniper, grenade
+    launcher, RPG. No caltrops or a tow hook this round (still on the "remaining gaps" list below).
+  - **Splash weapons hitscan to an impact point and explode there** rather than lobbing a real
+    projectile -- the same simplification v0.7-v0.9's ramps/throws all made, and for the same
+    reason: no new projectile-entity wire or physics.
+  - **The RNG-stream fix for fence shops** (see above) was a genuine pre-existing latent bug in
+    traffic pathing, just newly exposed by this round's map-generation change, not something
+    introduced by the fence-shop feature itself -- worth a mention in case it resurfaces from an
+    unrelated angle later.
+
 ### Where things stand (Sept 26, 2026, session 2, RELEASE 0.11.0: jobs and a story arc)
 - **Jobs and the story arc** (Bryce uploaded `CHOPPED_QUEST_SYSTEM.md`, a design doc written for
   the Unity side -- NetworkBehaviours, ScriptableObject quest assets, named NPCs. Asked where it
@@ -218,6 +347,7 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
 ### Task 1: Play the exe on a real Windows PC
 1. Download the **Chopped-windows** artifact from the latest green **Build** run (Actions tab). If a future run fails, read the **smoke-logs** artifact.
 2. By hand on a real PC: run `Chopped.exe --host`, then `Chopped.exe --join 127.0.0.1 --name TWO --fake-lag 150`. With prediction the joiner's own car should feel instant. Compare with `--no-predict`. With a third/fourth `--join`, check everyone actually gets their own bay and car.
+   - v0.12 things to feel out: are the new guns priced right relative to what a run can actually earn (`PRICE_SMG`/`PRICE_AR`/`PRICE_SNIPER`/`PRICE_GRENADE`/`PRICE_RPG`)? Is the grenade/RPG splash radius fair to a crewmate standing nearby (`GRENADE_SPLASH`, `RPG_SPLASH`)? Are the fence shop prices worth it for what they unlock (`SHOP_PRICE`, `SHOP_RENT`) -- is shop 4 ever worth $30k plus $400/day just for the sniper/launcher/RPG? Is Shop 1 too bare now with just the pistol? Is the 2% jackpot-wallet chance and 1-in-50 scratch-ticket jackpot worth chasing, or noise (`JACKPOT_CHANCE`, `TICKET_ODDS`)?
    - v0.10 things to feel out: is a health bar too forgiving compared to the old one-hit WASTED (`BULLET_DAMAGE`, `HEALTH_REGEN_*`)? Do cops miss too often or not enough now (`COP_GUN_ACCURACY`, `OFFICER_GUN_ACCURACY`)? Does losing a cop around a corner actually feel possible (`COP_TRACK_LOSE_TIME`)? Is the 10-15 s phone-in window too generous or too tight to reach a witness in time (`PHONE_IN_DELAY`, `PHONE_IN_HEAT`)? Is 1-in-4 fair odds for cutting the wires, and is the penalty for guessing wrong scary enough (`ALARM_CUT_WIRES`, `ALARM_CUT_FAIL_HEAT`)? Does the automap feel right stretched to an ultrawide or a tiny window? Is `COPS_PER_DAY` too stingy on a long session?
    - v0.9 things to feel out: is the drift now too tight or still too loose (`DRIFT_ASSIST_*`, `HANDBRAKE_MU`, `TIRE_C`)? Are the cells too easy to walk out of (`CELL_PICK_TIME`, `GUARD_NOTICE_R`) or the guards too tough (`GUARD_GRIT`, `GUARD_DOWN_TIME`)? Is 70% for a whole car the right trade (`WHOLE_SALE_RATE`)? Is the cardboard box overpowered (`BOX_STILL_TIME`, `BOX_SPEED_MULT`)? Can you hit the ramps at speed without clipping the car park's kerb?
    - v0.8 things to feel out: is the drift assist too strong now (`DRIFT_ASSIST_*`, `YAW_CAP_*`, `COUNTERSTEER_*`)? Do the engine notes sound right on real speakers (`enginesynth.VOICES`)? Is the lockup too hard or too easy (`JAIL_GUARDS`, `GUARD_*`)? Is `DEATH_LOSS` too harsh solo?
@@ -250,17 +380,17 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
 - **The sim modules must not import pygame:** `sim.py`, `physics.py`, `brawl.py`, `garage.py`, `police.py`, `sillies.py`, `quests.py`, `entities.py`, `enums.py`, `vehicles.py`, `parts.py`, `lines.py` (and the client-side pure modules `drivetrain.py`, `enginesynth.py`). They're the authoritative, testable simulation. (`tests/test_v09.py` checks this.)
 - **All tuning numbers live in `chopped/config.py`**, each with a comment explaining why.
 - **Bump `config.VERSION`** whenever the wire protocol changes. Clients with a different version get rejected politely.
-- **Keep packets under `MAX_PACKET` (1150 bytes).** `tests/test_misc.py` checks a worst-case snapshot, rush-hour traffic included.
+- **Keep packets under `MAX_PACKET` (1200 bytes).** `tests/test_misc.py` checks a worst-case snapshot, rush-hour traffic included.
 - **Movement and collision code lives in `physics.Physics`** (`_drive`, `_car_vs_world`, `_car_pair`, `_walk`, `_fall`, `_body_vs_*`; `sim.Physics` is the same class). The client's `predict.Predictor` inherits the same class. If the server's physics reads anything the client doesn't get, prediction silently diverges. Anything new that affects your own movement must go in the SELF block (`protocol.encode_self`). `tests/test_predict.py` fails loudly if the two drift apart.
 - **Run the tests before claiming anything works:**
   ```
   set SDL_VIDEODRIVER=dummy & set SDL_AUDIODRIVER=dummy & python -m unittest discover -s tests -v
   ```
-  (On Linux/macOS: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests -v`.) At handoff (session 2, RELEASE 0.11.0): **233 tests, all OK**, and the game-loop selftest ran at about 45-52 fps.
+  (On Linux/macOS: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests -v`.) At handoff (session 2, RELEASE 0.12.0): **253 tests, all OK**, and the game-loop selftest ran at about 43-50 fps.
 
 ## 3. Architecture (details in README.md)
 - `main.py` is the command line: `--host`, `--join IP[:PORT]`, `--server` (headless), `--selftest`, `--port`, `--name`, `--mute`, `--no-upnp`, `--log FILE`, `--fake-lag MS`, `--no-predict`.
-- **Networking model (protocol VERSION 11):**
+- **Networking model (protocol VERSION 12):**
   - The host runs the simulation at 60 Hz in-process.
   - Clients send one input per 60 Hz tick. One-shot keys are sent as counters, so a lost packet can't eat a tap.
   - The server sends each client its own zlib snapshot at 20 Hz. Far-away peds, pickups and traffic are culled beyond 95 m.
@@ -307,10 +437,16 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
   - Stamina pool is 100. Sprint drain is 12, 22 or 38 per second (empty, one-handed, two-handed). Walking two-handed drains 8/s.
   - Loose parts vanish after 10 minutes.
 - **Money:**
-  - Start with $300. **v0.5 (Bryce's request): rent is due once a day at midnight.** A day is 3 minutes. Rent is $100 on day 1 and $75 more each day after (`config.rent_for_day`).
-  - 120 s below $0 means SHOP SEIZED. The new run resets cash, city cars, heat and loose parts, but **the personal car keeps its mods**.
+  - Start with $300. **v0.5 (Bryce's request): rent is due once a day at midnight.** A day is 3 minutes. **(v0.12, Bryce: "stop increase of rent / day and make it on a shop basis")** rent is flat per shop you own now, not steeper by the day: $100/day for the home base, `config.SHOP_RENT[i]` for each fence shop bought on top (see [Shops](#shops) in README.md; `World.rent_due`).
+  - 120 s below $0 means SHOP SEIZED. The new run resets cash, city cars, heat, loose parts and any fence shops bought, but **the personal car keeps its mods**.
   - A stock Kei Hatch is worth about $1,070 in parts.
 - **Specials:** 12% of cars are clown cars (4 clowns burst out). 15% have an angry owner who chases at 5.5 m/s and counts as a heat witness.
+- **Shops (v0.12):** the home base (Shop 1) is free and sells only the pistol, ammo, spikes and
+  roadblocks. Three more shops (`config.SHOP_PRICE`/`SHOP_RENT`/`SHOP_MARKET`) sit elsewhere in the
+  city as open lots with a market crate row -- buy one (hold E at its sign) and its tier's items
+  become available: shop 2 adds the shotgun and the novelty items, shop 3 the SMG/AR, shop 4 the
+  sniper/grenade launcher/RPG. No bays or doors of their own; see the v0.12 changelog entry above
+  for why.
 - **Session 2 decisions, flagged for Bryce** (all tunable in `config.py`):
   - **Traffic drivers are not heat witnesses**, and their horns don't confuse cops. This keeps the agreed heat balance. Making them witnesses would be a one-line change in `_witness_scan`.
   - **Traffic can't be stolen while driven.** A hard crash (at or above the eject delta-v) makes the driver bail and lock it. It becomes a normal LOCKED civilian car: normal break-in, alarm, +10 heat.

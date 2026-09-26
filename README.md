@@ -86,6 +86,7 @@ Command-line shortcuts:
 | **C** | Get into (or out of) your **cardboard box**, if you bought one | - |
 | **Left click** / **Ctrl** | Punch, shoot or place a trap. **With something in your hands: throw it.** Hold the click with empty fists, then let go: **haymaker** | - |
 | **1-9**, **mouse wheel**, **Q** | Fists, pistol, shotgun, spike strip, roadblock, banana peel, box of donuts, rubber chicken, whoopee cushion (whatever you own) | - |
+| **Mouse wheel**, **Q** only | Five more guns past the number row: **SMG, assault rifle, sniper rifle, grenade launcher, RPG** (v0.12) | - |
 | **G** | Drop the part you're holding / let go of the dolly / **pick up a person** (then click to throw them, G to put them down) | - |
 | **T** | Dance. Everyone nearby has an opinion | - |
 | **F** | - | Get out. At speed, with an ejector seat fitted: up through the roof |
@@ -94,12 +95,14 @@ Command-line shortcuts:
 | **Tab** | Automap: the top-down view of the city | |
 | **M** | Music on/off | |
 | **F9** | Big head mode (just for you) | |
+| **F8** | Fisheye lens: a wider, wobblier FOV, like a cheap dashcam (v0.12) | |
+| **F10** | Disco floor: a hue-cycling tint on the street under your feet (v0.12) | |
 | **Esc** | Pause overlay: players, host IP, ping, all the controls. Releases the mouse. **Q** leaves | |
 | **F11** | Toggle fullscreen | |
 
 Being carried by a crewmate, or being cuffed by an officer? Mash **Space** to wriggle free.
 
-The status bar reads, left to right: **ARMS** (the weapons you own, 1-9), **CASH**, **HEAT %**, **HANDS** (the dolly, or your ammo when a gun is out), your crook's **face** (it sweats as the heat rises, grins when money comes in, and sees stars when you get run over), **STAMINA %** (**KM/H** in a car), **COPS** (it reads **LETHAL** while the police are shooting to kill), **DAY / RENT**, and **GEAR** (traps in your pocket; in a car, or on foot at its bumper, the trunk contents and the NOS gauge). The radar is top right, and every teammate shows on it as an outlined dot in their own colour; if one's too far off to see, small coloured lines name them and point the way. Under the radar: today's 3 jobs and your crew's reputation and act (see [Jobs and the story](#jobs-and-the-story)). When you're carrying loot, a **SHOP** marker at the top of the screen points home; when you're empty-handed, a green **CAR TO STEAL** marker points at the nearest parked car. Look at a car for half a second and an **inspect card** slides in on the right (see below). Hold a slide and the **DRIFT** meter counts it up. In a car, the dashboard has a **tachometer** next to the speedo: revs, redline, the gear you're in, and a boost gauge if there's a turbo (blue) or a supercharger (gold) under the bonnet. Hop in your cardboard box and a line above the bar tells you whether you're actually hidden yet or still an obvious box with legs.
+The status bar reads, left to right: **ARMS** (the weapons you own, 1-9), **CASH**, **HEAT %**, **HANDS** (the dolly, or your ammo when a gun is out), your crook's **face** (it sweats as the heat rises, grins when money comes in, and sees stars when you get run over), **STAMINA %** (**KM/H** in a car), **COPS** (it reads **LETHAL** while the police are shooting to kill), **DAY / RENT**, and **GEAR** (traps in your pocket; in a car, or on foot at its bumper, the trunk contents and the NOS gauge). The radar (bigger now, v0.12) is top right, and every teammate shows on it as an outlined dot in their own colour; if one's too far off to see, small coloured lines name them and point the way. Under the radar: today's 3 jobs and your crew's reputation and act (see [Jobs and the story](#jobs-and-the-story)). When you're carrying loot, a **SHOP** marker at the top of the screen points home; when you're empty-handed, a green **CAR TO STEAL** marker points at the nearest parked car. Look at a car for half a second and an **inspect card** slides in on the right (see below). Hold a slide and the **DRIFT** meter counts it up. In a car, the dashboard has a **tachometer** next to the speedo: revs, redline, the gear you're in, and a boost gauge if there's a turbo (blue) or a supercharger (gold) under the bonnet. Hop in your cardboard box and a line above the bar tells you whether you're actually hidden yet or still an obvious box with legs.
 
 ---
 
@@ -121,7 +124,7 @@ The status bar reads, left to right: **ARMS** (the weapons you own, 1-9), **CASH
 
 6. **Mind the doors.** The shop has a roof, and a **roller door for every player's own bay**, plus a separate **walking door** so you're not forever opening a whole bay just to nip out on foot. Each one is independent: E at any door (inside or out) rolls that one down; honk near the shop and the remote on your sun visor does the nearest bay for you. Shut, a door stops cop cars and officers, and nobody can see you through it. It stops you too, so open your bay before you come home at 80 km/h. None of them come down on anything: there's a safety sensor, and it beeps. Everyone's bay has to actually be sealed -- doors down, whole crew and whatever they're driving inside -- for the shop to count as a genuine hideout: heat drops to 0 the moment it is, same as a delivery, and comes right back the moment someone pokes a wheel out.
 
-7. **Pay the rent.** A day lasts 3 minutes, from dawn to midnight, and the sky changes with it. At midnight the landlord takes the rent from the shared wallet: **$100 on day 1, then $75 more every day** ($175, $250, $325...). You get a summary of the day's haul. If cash stays below $0 for 2 minutes, you get **SHOP SEIZED** and a new run starts back on day 1. Your personal car **keeps its mods**.
+7. **Pay the rent.** A day lasts 3 minutes, from dawn to midnight, and the sky changes with it. At midnight the landlord takes the rent from the shared wallet. **(v0.12)** rent is flat now, not steeper every day: **$100/day for the home base**, and it only goes up if you buy another shop (see [Shops](#shops) below). You get a summary of the day's haul. If cash stays below $0 for 2 minutes, you get **SHOP SEIZED** and a new run starts back on day 1. Your personal car **keeps its mods** (any fences you bought don't survive the seizure).
 
 ### The mod shop
 
@@ -134,6 +137,19 @@ Look at the **TUNE-UP** bench and press E. Whatever you're holding (and the engi
 - **Paint** $150 (16 colours). **Liveries** $250: racing stripes, two-tone, flames, checkers, polka dots, camo, taxi, pastel, lightning. **Horns**: stock, clown, La Cucaracha, wet fart, goat, air horn, ice cream jingle (hover one to hear it). **Underglow** $300. **Extras:** NOS $900, ejector seat $600, a hood gnome $80 (free if you bring your own gnome), hydraulics $500.
 - **W/S**, the arrows or the mouse wheel move. **Enter** or **E** picks; with the mouse, click a row to highlight it and click it again to buy or fit it. **A**, **Backspace** or right click goes back a level; **Esc** leaves. In **LIVERY**, A/D picks the second colour. In the **LOCKER**, Enter sells and **X** takes the part out.
 - The locker holds 40 parts; overflow gets shoved out onto the floor by the bench. **SHOP SEIZED** empties it. The car keeps its mods.
+
+### Shops
+
+**(v0.12, Bryce: "make multiple garages, make them available for purchase")** The home base is Shop 1, and its black market only carries the basics: the pistol, ammo, spike strips and roadblocks. Three more shops sit elsewhere in the city -- open lots with a "BUY THIS SHOP" sign and a locked market stall. Walk up and hold E to buy one:
+
+| Shop | Price | Rent/day | Adds to the market |
+|---|---|---|---|
+| 1 (home base) | free | $100 | Pistol, ammo, spikes, roadblocks |
+| 2 | $4,000 | +$150 | Shotgun, banana peels, donuts |
+| 3 | $12,000 | +$250 | SMG, assault rifle, rubber chicken, whoopee cushion, cardboard box |
+| 4 | $30,000 | +$400 | Sniper rifle, grenade launcher, RPG |
+
+Buying a shop is permanent (until SHOP SEIZED) and its crates work exactly like the home shop's: look at one and hold E. There are no bays or roller doors at a fence shop -- just the market. Rent is billed once, at midnight, for every shop you own added together.
 
 ### Vehicles and styles
 
@@ -194,8 +210,8 @@ The cars run on a tyre model now, not a rail:
 - **People fight back now.** About a third of pedestrians are brave: hit one (or one of their friends nearby) and they come at you swinging, and bystanders pile in. A punch from them puts you on the floor and empties your hands. About one in ten carries a pistol and will use it from 22 m. They take three knockdowns before they've had enough, give up if you outrun them by 45 m, and forget after 25 s. Rob a brave one and they come after you: if they land a punch, they take their money back out of the crew's cash. Half of all carjacked drivers come back for their car.
 - **Robbing:** look at someone who's on the floor, or who has their hands up, and hold E for 0.8 s. Wallets hold $15-90 and refill after 3 minutes. +4 heat.
 - **Hands up:** point a gun at someone within 10 m and they freeze with their hands up. Lower it and they run.
-- **Black market:** ten crates along the west wall of the shop. Look at one and hold E. Pistol $350 (24 rounds), shotgun $800 (10 shells, 7 pellets), ammo $60 (tops up the guns you own), spike strip $120, roadblock $200, banana peel $40, box of donuts $30, and (v0.9) a rubber chicken $25, a whoopee cushion $15 and a cardboard box $40. You can carry five of each trap.
-- **Guns** are hitscan. Shoot a **pedestrian, an owner, an officer or a guard and they're dead**, not knocked down: it's the quiet way to lose a witness, but it's still murder (+18 heat, on your rap sheet forever, and an ambulance comes for the body). Cops and the law shoot back hard once you've gone that far. Shoot **tyres** (a hit near a wheel knocks it clean off), and cop cars (8 hits and it burns, then explodes into loot). Every shot within earshot of a pedestrian or cop adds +8 heat; hitting a cop maxes it out. **Any shot the police can hear makes them shoot back, for real** (see [Heat and cops](#heat-and-cops)). Getting busted **confiscates your guns** (dying doesn't).
+- **Black market:** crates at each shop you own (see [Shops](#shops)). Look at one and hold E. Pistol $350 (24 rounds), shotgun $800 (10 shells, 7 pellets), ammo $60 (tops up every gun you own), spike strip $120, roadblock $200, banana peel $40, box of donuts $30, a rubber chicken $25, a whoopee cushion $15, a cardboard box $40, and (v0.12) **SMG** $1,400 (45 rounds), **assault rifle** $2,400 (30), **sniper rifle** $3,200 (5), **grenade launcher** $2,800 (4) and **RPG** $5,500 (2 rockets). Scratch tickets are $20 everywhere, even Shop 1 -- mostly nothing, sometimes a few bucks, rarely a $500 jackpot. You can carry five of each trap.
+- **Guns** are hitscan -- even the launchers, which land where you're looking and blow up on arrival rather than lobbing a real projectile. Shoot a **pedestrian, an owner, an officer or a guard and they're dead**, not knocked down: it's the quiet way to lose a witness, but it's still murder (+18 heat, on your rap sheet forever, and an ambulance comes for the body). Cops and the law shoot back hard once you've gone that far. Shoot **tyres** (a hit near a wheel knocks it clean off), and cop cars (8 hits and it burns, then explodes into loot). The **grenade launcher and RPG** catch everyone and everything within their blast radius, not just whatever's dead centre -- mind the splash. Every shot within earshot of a pedestrian or cop adds +8 heat; hitting a cop maxes it out. **Any shot the police can hear makes them shoot back, for real** (see [Heat and cops](#heat-and-cops)). Getting busted **confiscates your guns** (dying doesn't).
 - **A witness doesn't tell the cops straight away.** A pedestrian or angry owner who clocks you doesn't add heat on the spot any more -- they bolt, and phone it in 10-15 seconds later, a flat **+15 heat** when the call lands. Kill them (or knock them out of the picture some other way) before then and the call never happens. They don't need to keep watching you once they've decided to call, so ducking out of sight isn't enough on its own.
 - **Traps:** select one (4-7, 9) and click. Spike strips and roadblocks go down 3.5 m in front of you, square across the road. (v0.9 fixed a bug that had been there since v0.7: keys 6 and 7 used to give you your fists instead of the banana and the donuts.)
   - **Spike strip:** shreds the tyres of anything that drives over it (three cars, then it's blunt). Traffic that loses two wheels stops, and the driver runs off and leaves the engine running.
@@ -220,6 +236,16 @@ The cars run on a tyre model now, not a rail:
 - **Ice cream van:** drive one slowly and pedestrians queue up for it. People in a queue don't witness crimes.
 - **The mobility scooter.**
 - Get hit by a car doing more than 15 m/s and you're **YEETED** into the air. Other banners: **HUMBLED** (a pedestrian beat you up, or a banana did), **BONKED**, **STRIKE!**, **HOME RUN!**, **EJECTED**, **TASED**, **PANTSED**, **BUSTED**, **JAILBREAK!**, **SMILE!**, **WASTED**.
+- **v0.12's additions:**
+  - **Scratch tickets.** $20 at any black market crate. Mostly nothing, sometimes a few bucks, once in a while a $500 jackpot. The house always wins on average -- that's the joke.
+  - **Some pedestrians are quietly loaded.** About 1 in 50 wallets carries $400-900 instead of the usual $15-90. No way to tell which one from the outside.
+  - **Loose change in the seats.** About 1 in 5 stolen cars has a few dollars down the seats, found the moment you hotwire it.
+  - **The tip jar.** Selling a part at the bench, about 1 in 7 passersby chips in a few extra dollars for the show.
+  - **High fives.** Two crewmates dancing (T) within arm's reach of each other sync up for a shared stamina bonus.
+  - **Local celebrity.** Enough speed camera tickets and the local news takes an interest. Purely a toast -- no actual news van shows up. Yet.
+  - **Honk at the ice cream van** and it honks back. It will not play its jingle for you.
+  - **A confetti puff** goes off the instant your NOS kicks in.
+  - **Fisheye lens (F8)** and **disco floor (F10)** -- see [Controls](#controls).
 - **v0.10's additions:**
   - **The ambulance.** Kill a member of the law and it's sent for the body, siren and all -- and every cop in the city is now shooting to kill.
   - **The chopper.** Once heat's high enough, a helicopter joins the hunt. Walls stop it seeing you; being outdoors doesn't.
@@ -329,7 +355,7 @@ Other details:
 
 By default nothing persists: close the host and the next run starts fresh at $300, day 1, with a stock Kei. Host with `--save FILE` (works with `--host` or `--server`) and the crew's progress survives instead:
 
-- **What's saved:** the shared cash, the day and rent clock, the parts locker, and every player's own car -- model, every fitted part and its condition, paint, livery, horn, underglow and extras -- keyed by the name they joined with.
+- **What's saved:** the shared cash, the day and rent clock, the parts locker, **which shops the crew owns (v0.12)**, and every player's own car -- model, every fitted part and its condition, paint, livery, horn, underglow and extras -- keyed by the name they joined with.
 - **What isn't:** heat, cops, traffic, pedestrians, and everyone's position. Loading a save always drops the crew back at the shop on a quiet morning, never mid-chase.
 - **When it writes:** every 30 seconds while hosting, and once more on a clean shutdown (closing the window, Ctrl+C on `--server`, or leaving to the menu). A crash or a yanked power cord costs at most the last 30 seconds.
 - **A returning name gets their car back.** Join under a name that owned a car last time and you're handed that car, mods and all, instead of a fresh Kei -- even if you've since switched to a nicer stolen ride (the mod shop's SWITCH CAR remembers whatever you're driving when the save happens, not what you started with). A new name always gets an ordinary stock car.
@@ -399,7 +425,9 @@ SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests
 
 - `tests/test_quests.py` covers the jobs and the story arc: the daily rotation only offering unlocked jobs, story points moving you through the acts (and campaign victory at 25 without a 4th act), Hot Wire Special (model, heat and damage gates), Heat Run (a blown attempt isn't a permanent lock -- a real bug this suite caught), Part Collector (one-handed parts only), a crash ending The Perfect Steal, an arrest failing Night Job, today's 3 jobs and REP/act surviving the wire in `SNAP_HDR`, and reputation/completed-ever persisting through a save while today's specific rotation resets fresh.
 
-233 tests in total.
+- `tests/test_v12.py` covers the round: every new gun burning ammo and hitting lethal (a direct hit for the hitscan guns, everyone in the blast radius for the grenade launcher and RPG, a cop car catching fire), the arsenal's two-byte weapons bitmask and its 5 new ammo counts on the wire, the market selling every new gun and topping all of them up from one ammo crate, arrest confiscating every gun (not just the first three), buying a fence shop through the normal hold-E flow and it unlocking that shop's crates, shop ownership surviving a save/load round trip, and the 10 silly features (scratch tickets, jackpot wallets, loose change in stolen cars, the tip jar, high fives, speed camera fame, the ice cream van honking back, and the NOS backfire puff).
+
+253 tests in total.
 
 ---
 
@@ -413,7 +441,8 @@ chopped/lines.py     every joke the game tells you
 chopped/entities.py  Car, Player, NPC, Dolly, Trap, Pickup, InputState
 chopped/parts.py     part catalogue, slots, styles on parts, loadouts, trunk loot
 chopped/vehicles.py  the 11 vehicle models, paints, liveries, horns, part styles, performance maths
-chopped/mapgen.py    deterministic procedural city (seeded; clients rebuild it locally)
+chopped/mapgen.py    deterministic procedural city (seeded; clients rebuild it locally), including the
+                     home shop, the precinct and (v0.12) three purchasable fence shops
 chopped/physics.py   the shared Physics mixin: tyre model, collisions, walking, jumping
 chopped/brawl.py     fighting back, throwing parts and people, haymakers, dancing (World mixin)
 chopped/garage.py    trunks and the mod shop's host side (including switching your personal car), plus
@@ -422,7 +451,8 @@ chopped/garage.py    trunks and the mod shop's host side (including switching yo
 chopped/police.py    officers, tasers, lethal force, health and dying, ambulances and the chopper, the
                      precinct lockup and its cells, K9s, the streaker, speed cameras, smoke screens,
                      hydraulics (World mixin)
-chopped/sillies.py   v0.9's chickens, mimes, stunt ramps and money trucks (World mixin)
+chopped/sillies.py   v0.9's chickens, mimes, stunt ramps and money trucks, plus (v0.12) the ice cream
+                     van honk-along and the crew high-five (World mixin)
 chopped/quests.py    the 15 daily jobs, rotation and the 3-act story arc (World mixin, no pygame)
 chopped/drivetrain.py  revs, gears and boost for the tachometer and the engine notes (client, no pygame)
 chopped/enginesynth.py the engine voices, turbo whistle, blow-off, pops, screech (pure Python synthesis)
