@@ -9,7 +9,7 @@ import math
 from . import config as C
 from .config import clamp
 from .enums import *  # noqa: F401,F403
-from .parts import WHEEL_SLOTS, DOLLY, PART_DEFS, SLOT_ANCHOR, part_power
+from .parts import WHEEL_SLOTS, DOLLY, PART_DEFS, SLOT_ANCHOR, part_power, wheel_slots
 from . import vehicles as V
 
 # parts counter: every category's parts, cheapest first
@@ -163,6 +163,8 @@ class Car:
     def anchor(self, slot):
         """SLOT_ANCHOR is drawn on a Kei; stretch it to this body."""
         ax, ay = SLOT_ANCHOR[slot]
+        if slot in ("WheelFL", "WheelRL") and V.model(self.model).wheels == 2:
+            ay = 0.0                     # (v0.13) a bike's wheels are down the middle
         return ax * self.hl / 2.2, ay * self.hw / 1.2
 
     def trunk_used(self):
@@ -182,7 +184,7 @@ class Car:
         return math.hypot(self.vx, self.vy)
 
     def missing_wheels(self):
-        return sum(1 for s in WHEEL_SLOTS if self.parts.get(s) is None)
+        return sum(1 for s in wheel_slots(self.model) if self.parts.get(s) is None)
 
     def to_world(self, lx, ly):
         c, s = math.cos(self.ang), math.sin(self.ang)

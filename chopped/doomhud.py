@@ -573,6 +573,9 @@ class DoomHud:
     def _dashboard(self, pen, car, driving, steer, now, tacho=None):
         vw, vh = pen.size
         kind, color = car[1], car[2]
+        if len(car) > 15 and V.is_bike(car[15]):
+            self._handlebars(pen, car, driving, steer, now, tacho)
+            return
         body = (36, 36, 48) if kind == S.COP else CAR_COLORS[color % len(CAR_COLORS)]
         # hood, sloping away from you
         pen.poly(shade(body, 0.8), [(40, vh), (vw - 40, vh), (vw - 130, vh - 58), (130, vh - 58)])
@@ -609,6 +612,40 @@ class DoomHud:
             a = math.pi / 2 + k + rot
             pen.line((30, 30, 36), (wx, wy), (wx + int(math.cos(a) * r), wy - int(math.sin(a) * r)), 7)
         pen.circle((40, 40, 48), (wx, wy), 10)
+
+    def _handlebars(self, pen, car, driving, steer, now, tacho=None):
+        """(v0.13) on a motorbike there's no dashboard: a tank between your knees, bars in your
+        fists (they turn with you), a pair of clocks, and a very clear view of how much danger
+        you are in."""
+        vw, vh = pen.size
+        body = CAR_COLORS[car[2] % len(CAR_COLORS)]
+        cx = vw // 2
+        pen.poly(shade(body, 0.75), [(cx - 70, vh), (cx + 70, vh), (cx + 40, vh - 34), (cx - 40, vh - 34)])
+        pen.poly(body, [(cx - 52, vh), (cx + 52, vh), (cx + 30, vh - 30), (cx - 30, vh - 30)])
+        pen.fill(shade(body, 1.2), (cx - 6, vh - 30, 12, 30))                           # the tank's stripe
+        if not driving:                                                                # (pillion: a back to hug)
+            pen.fill((40, 40, 50), (cx - 60, vh - 70, 120, 70))
+            return
+        rot = -steer * 0.35
+        c, s = math.cos(rot), math.sin(rot)
+        by = vh - 46
+        ends = []
+        for side in (-1, 1):
+            x, y = side * 150, 8
+            ends.append((cx + int(x * c - y * s), by + int(x * s + y * c)))
+        pen.line((30, 30, 38), (cx, by), ends[0], 6)
+        pen.line((30, 30, 38), (cx, by), ends[1], 6)
+        for ex, ey in ends:
+            pen.fill((16, 16, 20), (ex - 14, ey - 5, 28, 10))                           # grips
+        spd = math.hypot(car[9], car[10]) * 3.6
+        dx, dy = cx + 22, by - 18
+        pen.circle((14, 14, 20), (dx, dy), 15)
+        pen.circle((120, 120, 130), (dx, dy), 15, 1)
+        a = math.radians(210 - min(240, spd * 1.0))
+        pen.line((255, 90, 60), (dx, dy), (dx + int(math.cos(a) * 12), dy - int(math.sin(a) * 12)), 2)
+        pen.text(self.font, "%d" % spd, dx, dy + 5, P["white"], align="center")
+        if tacho is not None:
+            self._tacho(pen, cx - 22, dy, 15, tacho, now)
 
     # ------------------------------------------------------------------ the bar
     def draw(self, low, view, now, info):

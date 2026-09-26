@@ -389,7 +389,9 @@ class FPRenderer:
         if spr is None:
             if len(self.person_cache) > C.SPRITE_CACHE_PEOPLE:
                 self.person_cache.clear()
-            boxes = FA.person_boxes(shirt, skin, hair, frame, extra, gun=gun, outfit=outfit)
+            boxes = FA.person_boxes(shirt, skin, hair, 0 if frame == 2 else frame, extra, gun=gun, outfit=outfit)
+            if frame == 2:
+                boxes = FA.seated(boxes)                # (v0.13) frame 2 = on a motorbike
             if self.big_heads:
                 boxes = FA.big_head(boxes)
             if down:
@@ -1057,6 +1059,18 @@ class FPRenderer:
                     add(row[7] - math.cos(row[11]) * 0.2, row[8] - math.sin(row[11]) * 0.2,
                         lambda s=col, k=SKINS[drv[0] % 4], h=HAIRS[drv[0] % 6], a=az2:
                         self._person_sprite(s, k, h, 0, None, False, a), z=0.25)
+            elif V.is_bike(row[15]) and row[0] != hide_car:
+                # (v0.13) a bike's rider (and pillion) sit on top of it, hunched over the bars
+                seat_z = 0.42 if row[15] == V.SPORTBIKE else 0.5
+                az2 = math.atan2(row[8] - cy, row[7] - cx) - row[11]
+                for pid, back in ((row[12], 0.25), (row[13] if len(row) > 13 else 0, 0.75)):
+                    rider = view.players.get(pid) if pid else None
+                    if rider is None:
+                        continue
+                    col = PLAYER_COLORS[rider[1] % 4]
+                    add(row[7] - math.cos(row[11]) * back, row[8] - math.sin(row[11]) * back,
+                        lambda s=col, k=SKINS[rider[0] % 4], h=HAIRS[rider[0] % 6], a=az2:
+                        self._person_sprite(s, k, h, 2, "fists", False, a), z=seat_z)
             if row[1] == S.COP and row[18] & PR.CX_DONUT:
                 add(row[7], row[8], None, z=2.2, tag=("say", "NOM NOM"))
             hop = 0.0

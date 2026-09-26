@@ -431,6 +431,8 @@ def car_boxes(kind, color, mask, styles, damage, lights, model=V.KEI, livery=0, 
     sec = CAR_COLORS[second % len(CAR_COLORS)]
     if model == V.SCOOTER:
         return _scooter_boxes(body, mask, st, lights)
+    if V.is_bike(model):
+        return _bike_boxes(model, body, mask, lights, extras)
     if model == V.ARMOURED:
         body = (122, 126, 134)                         # armour plate grey, whatever colour it rolled
     hl, hw = m.length / 2.0, m.width / 2.0
@@ -745,6 +747,65 @@ def _scooter_boxes(body, mask, st, lights):
     return b
 
 
+def _bike_boxes(model, body, mask, lights, extras):
+    """(v0.13) a motorbike, x forward. Two wheels down the middle, the engine slung between
+    them, a tank you could lie on, a saddle, forks, bars and a headlight. The sports bike
+    wears a fairing; the dirt bike wears a high mudguard and a number board, and sits taller
+    on knobbly tyres. Every strippable bit is its own box, so a stripped bike looks stripped."""
+    dirt = model == V.DIRTBIKE
+    r = 0.36 if dirt else 0.32                   # wheel radius
+    wx = 0.72                                    # axle, forward/back of centre
+    b = []
+    glow = (extras >> 4) & 15
+    if glow:
+        gc = CAR_COLORS[(glow - 1) % len(CAR_COLORS)]
+        b.append((-0.9, 0.9, -0.35, 0.35, 0.0, 0.02, shade(gc, 1.3)))
+    for slot, x in (("WheelFL", wx), ("WheelRL", -wx)):
+        if _bit(mask, slot):
+            # a wheel out of two boxes, crossed: reads as round(ish) from the side, not as a crate
+            tire = (40, 38, 36) if dirt else P["tire"]
+            k = 0.62
+            b.append((x - r * k, x + r * k, -0.07, 0.07, 0.0, 2 * r, tire))
+            b.append((x - r, x + r, -0.07, 0.07, r * (1 - k), r * (1 + k), tire))
+            b.append((x - r * 0.5, x + r * 0.5, -0.075, 0.075, r * 0.5, r * 1.5, P["rim"]))    # the rim
+            b.append((x - 0.05, x + 0.05, -0.1, 0.1, r - 0.05, r + 0.05, P["metal"]))          # hub
+    top = 2 * r + 0.16                           # the frame's top rail
+    # the frame: a spine from the headstock to the tail, and the swingarm to the rear axle
+    b.append((-0.35, 0.5, -0.05, 0.05, top - 0.06, top, P["metal_l"]))
+    b.append((-wx, -0.2, -0.06, 0.06, r - 0.04, r + 0.04, P["metal_l"]))
+    # forks, raked back a touch (two boxes, stepping)
+    b.append((wx - 0.04, wx + 0.04, -0.07, 0.07, r, r + 0.35, P["metal_l"]))
+    b.append((wx - 0.12, wx - 0.04, -0.07, 0.07, r + 0.35, top + 0.25, P["metal_l"]))
+    # the engine, where you'd expect one (or a hole where one was)
+    if _bit(mask, "Engine"):
+        b.append((-0.3, 0.3, -0.17, 0.17, r - 0.12, top - 0.08, {"*": P["metal"], "+z": P["metal_l"]}))
+    if _bit(mask, "Exhaust"):
+        b.append((-0.85, -0.1, 0.13, 0.22, r - 0.1, r + 0.02, P["metal_l"]))
+        b.append((-0.95, -0.85, 0.12, 0.23, r - 0.12, r + 0.04, P["ink2"]))
+    # tank, saddle, tail
+    b.append((0.0, 0.48, -0.2, 0.2, top - 0.02, top + 0.2, {"*": body, "+z": shade(body, 1.12)}))
+    if _bit(mask, "Seats"):
+        b.append((-0.55, 0.02, -0.16, 0.16, top, top + 0.1, (40, 40, 48)))
+    b.append((-0.9, -0.5, -0.12, 0.12, top + 0.02, top + 0.12, body))
+    b.append((-0.94, -0.9, -0.1, 0.1, top + 0.02, top + 0.1, (255, 60, 50) if lights & 1 else (150, 30, 30)))
+    # the business end: bars, clocks, a lamp
+    b.append((wx - 0.2, wx - 0.12, -0.38, 0.38, top + 0.22, top + 0.27, P["ink2"]))
+    lamp = P["light"] if lights & 1 else (230, 226, 190)
+    if dirt:
+        # knobbly: a high front mudguard, a number board, a skid plate
+        b.append((wx - 0.25, wx + 0.3, -0.1, 0.1, 2 * r + 0.02, 2 * r + 0.08, body))
+        b.append((wx - 0.06, wx + 0.02, -0.2, 0.2, top + 0.02, top + 0.26, {"*": (240, 240, 236), "+x": P["ink"]}))
+        b.append((wx + 0.02, wx + 0.06, -0.06, 0.06, top + 0.08, top + 0.16, lamp))
+        b.append((-0.3, 0.3, -0.14, 0.14, r - 0.18, r - 0.12, P["metal"]))
+    else:
+        # the fairing: a nose cone wrapped round the forks, with the headlight in it
+        b.append((wx - 0.18, wx + 0.12, -0.22, 0.22, top - 0.25, top + 0.22, {"*": body, "+z": None}))
+        b.append((wx + 0.12, wx + 0.16, -0.1, 0.1, top - 0.05, top + 0.08, lamp))
+        b.append((wx - 0.2, wx - 0.08, -0.16, 0.16, top + 0.22, top + 0.34, P["glass"]))      # the screen
+        b.append((wx - 0.1, wx + 0.35, -0.08, 0.08, 2 * r + 0.0, 2 * r + 0.05, body))         # mudguard
+    return b
+
+
 GUN_METAL = (44, 44, 52)
 GUN_WOOD = (110, 70, 40)
 
@@ -1035,6 +1096,24 @@ def big_head(boxes, k=2.1):
             out.append((x0 * k, x1 * k, y0 * k, y1 * k, 1.42 + (z0 - 1.42) * k, 1.42 + (z1 - 1.42) * k, c))
         else:
             out.append((x0, x1, y0, y1, z0, z1, c))
+    return out
+
+
+def seated(boxes, hip=0.8, seat=0.5):
+    """(v0.13) the same crook, astride a motorbike: thighs along the saddle, shins down to the
+    pegs, everything above the belt dropped onto the seat. (Sprites are boxes, so "sitting" is
+    just moving the leg boxes -- no new art.)"""
+    drop = hip - seat
+    out = []
+    for x0, x1, y0, y1, z0, z1, c in boxes:
+        if z1 <= hip + 0.001:
+            if z1 > 0.12:                         # a leg
+                out.append((0.0, 0.42, y0, y1, seat - 0.14, seat, c))
+                out.append((0.3, 0.42, y0, y1, 0.08, seat - 0.1, c))
+            else:                                  # a shoe, on the footpeg
+                out.append((0.3, 0.52, y0, y1, 0.02, 0.1, c))
+        else:
+            out.append((x0, x1, y0, y1, z0 - drop, z1 - drop, c))
     return out
 
 

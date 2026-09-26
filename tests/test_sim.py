@@ -58,7 +58,8 @@ def quiet_world(seed=4242):
 
 
 def civ_cars(w):
-    return [c for c in w.cars.values() if c.kind == S.CIV]
+    # (v0.13: the precinct's impound bikes are their own thing, not part of the parked-car count)
+    return [c for c in w.cars.values() if c.kind == S.CIV and c.special != "impound"]
 
 
 def road_point(w):
@@ -354,7 +355,14 @@ class TestHeat(unittest.TestCase):
         self.assertEqual(w.witness, S.W_PED)
         self.assertAlmostEqual(w.heat, 20.0, delta=0.05, msg="no live heat from a ped any more")
         self.assertGreater(ped.call_t, 0.0)
-        step(w, C.PHONE_IN_DELAY[1] + 0.5)      # long enough that even the slow roll landed
+        # step until the call lands (at most the slow roll), then check the lump arrived in one go.
+        # (v0.13: it used to check half a second later, which was fine until the ped happened to
+        # wander out of sight first and the ordinary cool-down had begun by the time it looked)
+        t = 0.0
+        while ped.call_t > 0 and t < C.PHONE_IN_DELAY[1] + 0.5:
+            step(w, 0.1)
+            t += 0.1
+        self.assertEqual(ped.call_t, 0.0)
         self.assertAlmostEqual(w.heat, 20.0 + C.PHONE_IN_HEAT, delta=0.5)
 
     def test_killing_the_witness_cancels_the_call(self):

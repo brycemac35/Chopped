@@ -33,7 +33,8 @@ EXTRA_NOS, EXTRA_EJECTOR, EXTRA_GNOME, EXTRA_HYDRO = range(4)
 EXTRA_NAMES = ("NITROUS (SHIFT)", "EJECTOR SEAT (F AT SPEED)", "GNOME HOOD ORNAMENT", "HYDRAULICS (X: HOP)")
 
 # parts you can't buy new (they come off scooters, out of trunks, or out of gardens)
-NOT_FOR_SALE = {"eng_electric", "whl_scooter", "gnome", "cash_bag", "briefcase", "rubber_duck"}
+NOT_FOR_SALE = {"eng_electric", "whl_scooter", "gnome", "cash_bag", "briefcase", "rubber_duck",
+                "eng_bike_600", "eng_bike_450", "whl_bike", "seat_saddle"}   # (v0.13: strip a bike for those)
 
 
 def catalogue(slot):
@@ -281,6 +282,9 @@ class Garage:
         part = self.stash[i]
         if part.category != SLOT_CATEGORY[slot]:
             return
+        if slot in V.model(car.model).no_slots:
+            self.toast("IT'S A BIKE. WHERE WOULD THAT EVEN GO?", T_BAD)     # (v0.13)
+            return
         self.stash.pop(i)
         old = car.parts.get(slot)
         car.parts[slot] = part
@@ -299,6 +303,9 @@ class Garage:
         if not 0 <= k < len(cat):
             return
         tid, style, price = cat[k]
+        if slot in V.model(car.model).no_slots:
+            self.toast("IT'S A BIKE. WHERE WOULD THAT EVEN GO?", T_BAD)     # (v0.13: before taking the money)
+            return
         if not self._pay(price):
             return
         old = car.parts.get(slot)

@@ -262,7 +262,7 @@ class Physics:
         mu = car.grip * C.TIRE_GRIP * (C.GRASS_GRIP_MULT if on_grass else 1.0)
         mu_f = mu_r = mu
         for slot, front in (("WheelFL", True), ("WheelFR", True), ("WheelRL", False), ("WheelRR", False)):
-            if car.parts.get(slot) is None:
+            if car.parts.get(slot) is None and slot not in mdl.no_slots:   # (v0.13: a bike's "missing" pair)
                 if front:
                     mu_f *= C.MISSING_WHEEL_GRIP
                 else:

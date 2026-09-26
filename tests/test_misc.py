@@ -88,7 +88,10 @@ class TestMisc(unittest.TestCase):
         self.assertEqual(snap.pid, 1)
         self.assertEqual(snap.cash, w.cash)
         self.assertEqual(snap.ack_input, 987654)
-        self.assertEqual(len(snap.cars), len(w.cars), "nearby cars are all sent")
+        # (v0.13: every car here is in sight except the precinct's parked impound bikes, which are
+        # culled like far-off traffic -- five rows nobody at the shop needs)
+        in_sight = [c for c in w.cars.values() if c.special != "impound"]
+        self.assertEqual(len(snap.cars), len(in_sight), "nearby cars are all sent")
         # far-off traffic is culled, stealable cars never are
         far = next(c for c in w.cars.values() if c.kind == S.TRAFFIC)
         far.x, far.y = 5.0, 5.0

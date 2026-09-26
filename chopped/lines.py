@@ -159,3 +159,10 @@ BIG_AIR_LINES = [
     "SEND IT! %.1f SECONDS OF HANG TIME. +$%d",
     "%.1f SECONDS AIRBORNE. THE SUSPENSION FILED A COMPLAINT. +$%d",
 ]
+
+# (v0.13) somebody took a bike from the precinct impound. The keys were in it. Of course they were.
+IMPOUND_LINES = (
+    "%s 'BORROWED' AN IMPOUND BIKE. KEYS WERE IN IT",
+    "%s STOLE A BIKE FROM A POLICE STATION. BOLD",
+    "%s: 'IT'S NOT STEALING IF IT WAS ALREADY STOLEN'",
+)

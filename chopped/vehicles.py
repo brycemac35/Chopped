@@ -12,7 +12,7 @@ No pygame in here (the sim and the predictor both import it).
 from .config import clamp
 
 # ---- models --------------------------------------------------------------------
-KEI, SEDAN, COUPE, MUSCLE, PICKUP, VAN, ICECREAM, SCOOTER, RICE, TRUCK4, ARMOURED = range(11)
+KEI, SEDAN, COUPE, MUSCLE, PICKUP, VAN, ICECREAM, SCOOTER, RICE, TRUCK4, ARMOURED, SPORTBIKE, DIRTBIKE = range(13)
 
 
 class Model:
@@ -21,11 +21,11 @@ class Model:
     of parts fit in the back (a door is 2, a wheel is 1)."""
     __slots__ = ("id", "name", "length", "width", "height", "mass", "grip", "top", "accel", "trunk",
                  "bed", "fwd", "cg_h", "hood", "roof", "cab", "civ_weight", "traffic_weight", "sporty",
-                 "awd", "offroad")
+                 "awd", "offroad", "wheels", "open_seat", "no_slots")
 
     def __init__(self, mid, name, length, width, height, mass, grip, top, accel, trunk, bed=False,
                  fwd=False, cg_h=0.5, hood=0.3, roof=0.5, cab=0.45, civ_weight=0, traffic_weight=0,
-                 sporty=False, awd=False, offroad=False):
+                 sporty=False, awd=False, offroad=False, wheels=4, open_seat=False, no_slots=()):
         self.id = mid
         self.name = name
         self.length, self.width, self.height = length, width, height
@@ -45,7 +45,13 @@ class Model:
         self.sporty = sporty          # rolls the good loot table
         self.awd = awd                # (v0.8) all four wheels drive: no power slides, no brake stands
         self.offroad = offroad        # (v0.8) grass is just more road
+        self.wheels = wheels          # (v0.13) 2 = a bike: only WheelFL (front) and WheelRL (rear) exist
+        self.open_seat = open_seat    # (v0.13) you can see the rider (scooter, bikes)
+        self.no_slots = no_slots      # (v0.13) slots this body doesn't have (a bike has no doors)
 
+
+# (v0.13) what a bike doesn't have: the second wheel of each pair, and every panel
+BIKE_NO_SLOTS = ("WheelFR", "WheelRR", "Hood", "DoorL", "DoorR", "BumperF", "BumperR", "Spoiler")
 
 # Sizes are real-ish; top speeds are "fun-real". The Kei stays exactly the
 # old 4.4 x 2.4 box so every collision test from v0.4 still means something.
@@ -65,7 +71,7 @@ MODELS = [
     Model(ICECREAM, "ICE CREAM VAN", 5.6, 2.7, 2.5, 2100, 0.86, 34.0, 0.7, 6, bed=True, fwd=True, hood=0.14,
           roof=1.2, cab=0.2, civ_weight=3, traffic_weight=2, cg_h=0.95),
     Model(SCOOTER, "MOBILITY SCOOTER", 1.6, 0.9, 0.9, 160, 0.9, 12.0, 0.55, 1, hood=0.2, roof=0.0,
-          cab=0.5, civ_weight=3, traffic_weight=0, cg_h=0.4),
+          cab=0.5, civ_weight=3, traffic_weight=0, cg_h=0.4, open_seat=True),
     # v0.8, Bryce: "add riced out cars and 4x4 trucks". The rice rocket is a hatch with a wing
     # taller than its roof, a fart-can exhaust and stickers that add 5 hp each (they don't).
     # Loud, low, twitchy, and genuinely quite quick when someone's dropped a turbo in it.
@@ -79,7 +85,24 @@ MODELS = [
     # traffic, MONEY_TRUCK_CHANCE of the time). Its back doors are its weak point.
     Model(ARMOURED, "MONEY TRUCK", 5.8, 2.7, 2.6, 3400, 0.85, 36.0, 0.7, 4, fwd=False, hood=0.18,
           roof=1.2, cab=0.24, civ_weight=0, traffic_weight=0, cg_h=1.0),
+    # v0.13, Bryce: "add motor bikes, and place more of them around the precinct to help escape
+    # when you're solo". The sports bike is the fastest thing in town -- 56 m/s flat out, cops do
+    # 48 -- and weighs about as much as a vending machine, so it wins every straight and loses
+    # every argument with a lamppost (see config.BIKE_EJECT_DV). The dirt bike is slower and
+    # doesn't care about grass. Both carry a passenger, pillion. Neither has a boot worth the name.
+    # Parked only, never in traffic: the traffic AI rides them like it drives a van, and at
+    # BIKE_EJECT_DV that meant a steady drizzle of AI riders falling off at every kerb.
+    Model(SPORTBIKE, "SPORTS BIKE", 2.1, 0.8, 1.15, 230, 1.06, 56.0, 1.9, 1, hood=0.3, roof=0.0, cab=0.3,
+          civ_weight=5, traffic_weight=0, cg_h=0.6, wheels=2, open_seat=True, no_slots=BIKE_NO_SLOTS),
+    Model(DIRTBIKE, "DIRT BIKE", 2.1, 0.8, 1.25, 180, 1.0, 44.0, 1.7, 1, hood=0.3, roof=0.0, cab=0.3,
+          civ_weight=3, traffic_weight=0, cg_h=0.65, offroad=True, wheels=2, open_seat=True,
+          no_slots=BIKE_NO_SLOTS),
 ]
+BIKES = (SPORTBIKE, DIRTBIKE)
+
+
+def is_bike(mid):
+    return mid in BIKES
 MODEL_NAMES = [m.name for m in MODELS]
 COP_MODEL = SEDAN             # interceptors are sedans with attitude
 PERSONAL_MODEL = KEI          # your ride starts humble
@@ -209,7 +232,8 @@ def unpack_styles(word):
 # ---- performance from parts -----------------------------------------------------------
 # The mod shop's bars and the physics read the same numbers. Power still does
 # the heavy lifting; wheels, aero and weight shave off the rest.
-WHEEL_GRIP = {"whl_worn_steel": 0.93, "whl_stock_alloy": 1.0, "whl_tuned_light": 1.08, "whl_scooter": 0.9}
+WHEEL_GRIP = {"whl_worn_steel": 0.93, "whl_stock_alloy": 1.0, "whl_tuned_light": 1.08, "whl_scooter": 0.9,
+              "whl_bike": 1.0}
 SPOILER_GRIP = {"spl_lip": 0.02, "spl_wing": 0.05, "spl_whale": 0.06, "spl_shelf": 0.09}
 SPOILER_DRAG = {"spl_lip": 0.0, "spl_wing": 0.01, "spl_whale": 0.015, "spl_shelf": 0.05}
 MASS_DELTA = {"hood_tuned_cf": -25, "seat_tuned_bkt": -20, "bmp_tuned_aero": -5, "whl_tuned_light": -4,

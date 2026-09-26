@@ -96,6 +96,12 @@ PART_DEFS = {
     "cash_bag":        ("Bag of cash",       "loot",    1,    180,   0, False),
     "briefcase":       ("Mystery briefcase", "loot",    2,    420,   0, False),
     "rubber_duck":     ("Giant rubber duck", "loot",    2,     90,   0, False),
+    # (v0.13) bike bits. The first engines in the game you can pick up with your hands -- and
+    # yes, you can bolt one into your Kei. It'll rev to thirteen grand and sound like a wasp.
+    "eng_bike_600":    ("600cc bike engine", "engine",  2,    900,  75, False),
+    "eng_bike_450":    ("450cc dirt engine", "engine",  2,    500,  55, False),
+    "whl_bike":        ("Bike wheel",        "wheel",   1,     70,   0, False),
+    "seat_saddle":     ("Bike saddle",       "seat",    1,     60,   0, False),
 }
 PART_IDS = list(PART_DEFS.keys())          # index = network id
 
@@ -119,10 +125,18 @@ ENGINE_SPECS = {
     "eng_rotary_13b": (V_ROTARY,   ASP_NA,     9000,   1000),
     "eng_tt_3_0":     (V_I6,       ASP_TURBO,  7200,    750),
     "eng_sc_6_2":     (V_V8,       ASP_SC,     6600,    700),
+    "eng_bike_600":   (V_I4,       ASP_NA,    13000,   1400),   # (v0.13) four cylinders, all screaming
+                                                                # (not V_VTEC: it'd claim VTEC kicked in, yo)
+    "eng_bike_450":   (V_I4,       ASP_NA,    10500,   1300),   # one big thumper, pretending
 }
 NO_ENGINE_SPEC = (V_I4, ASP_NA, 6500, 800)
 # gears per gearbox (the tachometer shifts through them; the physics doesn't care)
 GEARBOX_GEARS = {"trn_worn_4mt": 4, "trn_stock_5mt": 5, "trn_tuned_6mt": 6}
+
+
+def wheel_slots(mid):
+    """(v0.13) the wheel slots this body actually has: all four, or a bike's front and rear."""
+    return ("WheelFL", "WheelRL") if V.model(mid).wheels == 2 else WHEEL_SLOTS
 
 
 def engine_spec(parts):
@@ -322,6 +336,19 @@ def model_loadout(rng, mid):
         parts["Seats"] = Part("seat_stock", rng.uniform(0.3, 0.9))
         for w in WHEEL_SLOTS:
             parts[w] = Part("whl_scooter", rng.uniform(0.4, 1.0))
+        return parts
+    if V.is_bike(mid):
+        # (v0.13) an engine, a gearbox, a pipe, a saddle, two wheels. That's a motorbike.
+        sport = mid == V.SPORTBIKE
+        parts = {s: None for s in SLOTS}
+        parts["Engine"] = Part("eng_bike_600" if sport else "eng_bike_450", rng.uniform(0.5, 1.0))
+        parts["Transmission"] = Part("trn_stock_5mt", rng.uniform(0.5, 1.0))
+        parts["Exhaust"] = Part("exh_tuned" if sport and rng.random() < 0.3 else "exh_stock", rng.uniform(0.4, 1.0))
+        if sport:
+            parts["ECU"] = Part("ecu_stock", rng.uniform(0.5, 1.0))
+        parts["Seats"] = Part("seat_saddle", rng.uniform(0.4, 1.0))
+        for w in ("WheelFL", "WheelRL"):
+            parts[w] = Part("whl_bike", rng.uniform(0.5, 1.0))
         return parts
     if mid == V.RICE:
         table, lo = RICE_TABLE, 0.45

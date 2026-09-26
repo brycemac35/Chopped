@@ -254,8 +254,11 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
     r2 = C.NET_CULL_RADIUS ** 2
     cars = []
     for car in world.cars.values():
-        if car.kind == TRAFFIC and (car.x - px) ** 2 + (car.y - py) ** 2 > r2:
-            continue          # far-off traffic is scenery; everything stealable is always sent
+        if (car.kind == TRAFFIC or (car.special == "impound" and car.driver is None)) and \
+                (car.x - px) ** 2 + (car.y - py) ** 2 > r2:
+            continue          # far-off traffic is scenery; everything stealable is always sent...
+            #                   (v0.13) ...except the precinct's parked impound bikes: five rows for
+            #                   something only an escapee standing next to them has any use for
         mask = 0
         for s, part in car.parts.items():
             if part is not None:

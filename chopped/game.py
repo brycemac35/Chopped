@@ -639,8 +639,12 @@ class App:
         elif state in (S.DRIVER, S.PASSENGER) and car is not None:
             a = car[11]
             m = V.model(car[15])
-            cam = (car[7] + math.cos(a) * 0.3, car[8] + math.sin(a) * 0.3, a,
-                   C.FP_EYE_CAR * (m.height / 1.55 if car[15] != V.SCOOTER else 1.0))
+            if V.is_bike(car[15]):
+                back = 0.25 if state == S.DRIVER else 0.75          # (pillion sits further back)
+                cam = (car[7] - math.cos(a) * back, car[8] - math.sin(a) * back, a, C.FP_EYE_BIKE)
+            else:
+                cam = (car[7] + math.cos(a) * 0.3, car[8] + math.sin(a) * 0.3, a,
+                       C.FP_EYE_CAR * (m.height / 1.55 if car[15] != V.SCOOTER else 1.0))
             hide = car[0] if car[15] != V.SCOOTER else None
             moving = 0.0
         elif state in (S.TUMBLE, S.DEAD):

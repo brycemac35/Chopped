@@ -14,7 +14,7 @@ from . import config as C
 from .config import clamp, lerp, wrap_angle
 from .mapgen import CityMap, GRASS, SIDEWALK
 from .parts import (SLOTS, SLOT_CATEGORY, WHEEL_SLOTS, PANEL_SLOTS, STRIP_TIME, DOLLY, Part,
-                    kei_loadout, cop_loadout, personal_loadout, model_loadout, roll_trunk)
+                    kei_loadout, cop_loadout, personal_loadout, model_loadout, roll_trunk, wheel_slots)
 from . import vehicles as V
 from .brawl import Brawl
 from .garage import Garage, Appraisal, ShopDoor
@@ -101,6 +101,11 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         self._init_door()
         self._init_police()
         self._init_sillies()
+        self.impound_t = 0.0         # (v0.13) the precinct's impound bikes: restock clock...
+        # ...and their own dice, so adding them didn't reshuffle every other random thing in the city
+        self.impound_rng = random.Random((rng_seed if rng_seed is not None else map_seed) * 7919 + 13)
+        for k, (x, y, a) in enumerate(self.map.bike_spots):
+            self._spawn_impound_bike(k, x, y, a)
         self._init_story()           # (v0.13; before the quests: their first rotation pokes it)
         self._init_quests()
 
@@ -161,7 +166,8 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             car = Car(self.new_id(), CIV, x, y, a, model_loadout(self.rng, mid),
                       color=self.rng.randrange(1, len(V.PAINT_NAMES)), model=mid)
             self._dress(car)
-            car.trunk = roll_trunk(self.rng, V.model(mid).sporty)
+            if not V.is_bike(mid):                   # (a bike's "boot" is one saddlebag of nothing)
+                car.trunk = roll_trunk(self.rng, V.model(mid).sporty)
             r = self.rng.random()
             if r < C.CLOWN_CHANCE:
                 car.special = "clown"
@@ -171,6 +177,36 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             self.cars[car.id] = car
             return car
         return None
+
+    def _impound_bikes(self, dt):
+        """(v0.13, Bryce: "place more of them around the precinct to help escape when you're
+        solo") the precinct's impound: bikes parked along its walls with the keys left in,
+        because the desk sergeant is Having A Day. One is put back on an empty spot every
+        IMPOUND_RESTOCK seconds -- only when nobody's close enough to watch it appear."""
+        spots = self.map.bike_spots
+        if not spots:
+            return
+        self.impound_t -= dt
+        if self.impound_t > 0:
+            return
+        self.impound_t = C.IMPOUND_RESTOCK
+        for k, (x, y, a) in enumerate(spots):
+            if any(math.hypot(c.x - x, c.y - y) < 2.5 for c in self.cars.values()):
+                continue
+            if any(math.hypot(p.x - x, p.y - y) < C.IMPOUND_HIDE_DIST for p in self.players.values()):
+                continue
+            self._spawn_impound_bike(k, x, y, a)
+            return                                   # one per restock: it's a sergeant, not a factory
+
+    def _spawn_impound_bike(self, k, x, y, a):
+        mid = V.SPORTBIKE if k % 2 == 0 else V.DIRTBIKE
+        car = Car(self.new_id(), CIV, x, y, a, model_loadout(self.impound_rng, mid), color=5 if k % 2 == 0 else 4,
+                  model=mid)
+        car.state = RUNNING                          # keys in, engine ticking over
+        car.special = "impound"
+        car.refresh()
+        self.cars[car.id] = car
+        return car
 
     def _dress(self, car):
         """A paint job to go with the parts: most cars are one boring colour,
@@ -359,7 +395,11 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             # a car whose driver bailed, engine still running: finders keepers, says nobody
             car.stolen = True
             self._crime(C.HEAT_BREAKIN)
-            self.toast("%s TOOK A CAR IN BROAD DAYLIGHT. +%d HEAT" % (p.name, C.HEAT_BREAKIN), T_BAD)
+            if car.special == "impound":
+                car.special = None
+                self.toast(self.rng.choice(IMPOUND_LINES) % p.name, T_BAD)
+            else:
+                self.toast("%s TOOK A CAR IN BROAD DAYLIGHT. +%d HEAT" % (p.name, C.HEAT_BREAKIN), T_BAD)
             self._quest_on_steal(p, car)
         if seat == DRIVER:
             car.driver = p.id
@@ -415,7 +455,8 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             self._leave_car(p, place=True)
             self._tumble(p, car.vx * 0.6 + self.rng.uniform(-3, 3),
                          car.vy * 0.6 + self.rng.uniform(-3, 3), t)
-            self.toast("%s WENT THROUGH THE WINDSHIELD" % p.name, T_BAD)
+            self.toast(("%s WENT OVER THE HANDLEBARS" if V.is_bike(car.model) else
+                        "%s WENT THROUGH THE WINDSHIELD") % p.name, T_BAD)
 
     def _eject_seat(self, p, car):
         """F at speed, ejector seat fitted: straight up through the roof,
@@ -883,16 +924,22 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
                 return (("cutwires", car.id),
                         "HOLD E: CUT THE WIRES (1 IN %d QUIET)   X: FORGET IT, SMASH IT" % C.ALARM_CUT_WIRES,
                         C.ALARM_CUT_TIME, lambda: self._cut_wires(p, car), lambda: setattr(p, "sneak", False))
-            return (("breakin", car.id), "HOLD E: BREAK IN (SETS OFF ALARM)   X: CUT THE WIRES INSTEAD (SLOWER)",
+            return (("breakin", car.id), ("HOLD E: SNAP THE STEERING LOCK (ALARM)" if V.is_bike(car.model) else
+                                          "HOLD E: BREAK IN (SETS OFF ALARM)") + "   X: CUT THE WIRES INSTEAD (SLOWER)",
                     C.BREAKIN_TIME, lambda: self._break_in(p, car), lambda: setattr(p, "sneak", True))
         if car.state == BROKEN_IN:
             return (("hotwire", car.id), "HOLD E: HOTWIRE", C.HOTWIRE_TIME, lambda: self._hotwire(p, car))
         if car.state == RUNNING:
+            bike = V.is_bike(car.model)
             if car.driver is None:
-                return (("drive", car.id), "E: DRIVE", 0, lambda: self._enter_car(p, car, DRIVER))
+                label = "E: RIDE IT" if bike else "E: DRIVE"
+                if car.special == "impound":
+                    label = "E: 'BORROW' THE IMPOUND BIKE (KEYS ARE IN IT)"
+                return (("drive", car.id), label, 0, lambda: self._enter_car(p, car, DRIVER))
             if car.passenger is None:
-                return (("shot", car.id), "E: RIDE SHOTGUN", 0, lambda: self._enter_car(p, car, PASSENGER))
-            return (None, "CAR IS FULL", 0, None)
+                return (("shot", car.id), "E: HOP ON THE BACK" if bike else "E: RIDE SHOTGUN", 0,
+                        lambda: self._enter_car(p, car, PASSENGER))
+            return (None, "BIKE IS FULL" if bike else "CAR IS FULL", 0, None)
         # delivered: strip or crush -- or (v0.9) X: sell the whole thing to a man called Dave
         res = self._strip_interaction(p, car)
         whole = self.whole_price(car)
@@ -1407,7 +1454,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             # which bit did we hit? a wheel if we landed close to one
             c, s_ = math.cos(car.ang), math.sin(car.ang)
             lx, ly = (ex - car.x) * c + (ey - car.y) * s_, -(ex - car.x) * s_ + (ey - car.y) * c
-            wheel = min(WHEEL_SLOTS, key=lambda w: (car.anchor(w)[0] - lx) ** 2 + (car.anchor(w)[1] - ly) ** 2)
+            wheel = min(wheel_slots(car.model), key=lambda w: (car.anchor(w)[0] - lx) ** 2 + (car.anchor(w)[1] - ly) ** 2)
             wx, wy = car.anchor(wheel)
             if car.parts.get(wheel) is not None and math.hypot(wx - lx, wy - ly) < C.TIRE_HIT_RADIUS:
                 car.parts[wheel].condition *= 0.3            # shredded
@@ -2192,8 +2239,14 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             side, wheels = ["DoorL"], ["WheelFL", "WheelRL"]
         else:
             side, wheels = ["DoorR"], ["WheelFR", "WheelRR"]
+        # (v0.13) a bike throws you off at a much gentler knock than a car does
+        eject_dv = C.BIKE_EJECT_DV if V.is_bike(car.model) else C.CRASH_EJECT_DV
         if dv >= C.CRASH_EJECT_DV:
             self._scare(car.x, car.y, C.PED_FLEE_CRASH_RADIUS)
+        if dv >= eject_dv and car.occupants() and dv < C.CRASH_EJECT_DV:
+            self.eject(car, dv)                     # (off the bike, nothing else dramatic)
+            if car.kind == TRAFFIC:
+                self._traffic_bail(car)
         if dv < C.CRASH_EJECT_DV:
             if self.rng.random() < C.CRASH_PANEL_CHANCE:
                 self._knock_panels(car, side, 1)
@@ -2946,12 +2999,48 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             if 0.5 < f < bf + other.hl:
                 # oncoming cars only count if they're properly in our lane
                 cosd = math.cos(other.ang - car.ang)
-                w = 1.5 if cosd < -0.8 else car_w
+                # (v0.13: was a flat 1.5 m, narrower than the cars themselves -- so a van nosing
+                # out of a turn, or anyone a metre off their line, got T-boned by oncoming traffic
+                # that never saw it. Both half-widths plus a hand's breadth still clears a normal
+                # pass: the two lanes run 2 x TRAFFIC_LANE_OFFSET = 3.2 m apart.)
+                w = (car.hw + other.hw + 0.2) if cosd < -0.8 else car_w
                 lat = abs(-dx * fy + dy * fx)
                 if lat < w:
-                    if other.kind == TRAFFIC and cosd < 0.87 and other.id > car.id and lat > 1.0:
+                    if other.kind == TRAFFIC and cosd < 0.87 and other.id > car.id and lat > 1.0 and \
+                            other.speed() > 2.0:
                         continue      # right of way at junctions: lower id goes first, no standoffs
+                        #               (v0.13: ...but not through a car that's already stopped to let
+                        #               you by -- it can't get out of your way, so you'd just hit it)
                     best, bf = other, f - other.hl     # their half-length (roughly: they may be turning)
+        if car.kind == TRAFFIC:
+            # (v0.13) crossing traffic at a junction: the lane check above only sees a car once
+            # it's already in front of us, by which time two cars entering a crossroads together
+            # have met in the middle. Predict the closest approach of anything crossing our path
+            # and, if it'll come within a car's width in the next couple of seconds, yield --
+            # same right of way as above (lower id goes first), so nobody waits on anybody forever.
+            vx, vy = car.vx, car.vy
+            for other in self.cars.values():
+                if other is car or other.kind != TRAFFIC or other.id > car.id:
+                    continue
+                cosd = math.cos(other.ang - car.ang)
+                if cosd > C.TRAFFIC_CROSS_COS:
+                    continue                            # following the same way: the lane check's job
+                # crossing: a car's width and then some. Oncoming: only if it's actually coming at
+                # us (lanes pass 3.2 m apart centre to centre -- a normal pass mustn't brake anybody),
+                # which is what an overtaker in the wrong lane or a turn across our bows looks like
+                need = C.TRAFFIC_CROSS_GAP if cosd > -C.TRAFFIC_CROSS_COS else C.TRAFFIC_ONCOMING_GAP
+                rx, ry = other.x - car.x, other.y - car.y
+                if rx * rx + ry * ry > 40.0 * 40.0 or rx * fx + ry * fy < 0.0:
+                    continue
+                wx_, wy_ = other.vx - vx, other.vy - vy
+                w2 = wx_ * wx_ + wy_ * wy_
+                if w2 < 1.0:
+                    continue
+                t = clamp(-(rx * wx_ + ry * wy_) / w2, 0.0, C.TRAFFIC_CROSS_LOOKAHEAD)
+                if math.hypot(rx + wx_ * t, ry + wy_ * t) < need:
+                    gap = max(0.0, math.hypot(vx, vy) * t - need) + car.hl
+                    if gap < bf:
+                        best, bf = other, gap
         for p in self.players.values():
             if p.state in (FOOT, TUMBLE, CUFFED):
                 dx, dy = p.x - car.x, p.y - car.y
@@ -3112,7 +3201,8 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
 
     # ------------------------------------------------------------------ parked civilian cars
     def _traffic(self, dt):
-        civs = [c for c in self.cars.values() if c.kind == CIV and c.state != DELIVERED]
+        civs = [c for c in self.cars.values() if c.kind == CIV and c.state != DELIVERED and c.special != "impound"]
+        self._impound_bikes(dt)
         # tow abandoned stolen cars so the city doesn't run dry
         for car in civs:
             if car.stolen and not car.occupants() and all(

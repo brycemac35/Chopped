@@ -33,6 +33,7 @@ class CityMap:
         self.lamps = []         # (x, y) metres, decorative
         self.cameras = []       # (x, y) metres
         self.parking = []       # (x, y, angle) metres
+        self.bike_spots = []    # (v0.13) the precinct impound's bikes: (x, y, angle)
         self.cop_spawns = []    # (x, y, angle)
         self.sidewalk_tiles = []
         self.static_rects = []  # solid rectangles that aren't tiles (benches), metres (x, y, w, h)
@@ -317,6 +318,18 @@ class CityMap:
         self.bail_desk = (px + pw / 2 - 2.25, py + 1.0, 4.5, 1.4)     # in the hall, between the cells
         self.static_rects.append(self.bail_desk)
         self.precinct_exit = ((door + 0.5) * T, (y0 + inner + 0.6) * T)   # the street, just outside
+        # (v0.13) the impound: bikes parked along the outside of the walls, keys in, for the
+        # solo escapee. Two either side of the gate, one round each side wall, all tucked in
+        # against the brickwork (the lamps are on the kerb side of the pavement). No rng: this
+        # must not shift the city's random stream (see _make_fence for why that matters).
+        # Parked nose-out, backs to the wall, pointing at the road -- the first version parked
+        # them nose to tail along the pavement, and the first one you rode straight into the next.
+        sy = (y0 + inner) * T + 1.35                           # south pavement, rear wheel by the wall
+        gx = (door + 0.5) * T
+        self.bike_spots = [(gx - 6.0, sy, math.pi / 2), (gx + 6.0, sy, math.pi / 2),
+                           (gx - 9.0, sy, math.pi / 2),
+                           ((x0 * T) - 1.35, (y0 + inner - 1.5) * T, math.pi),       # west wall, facing west
+                           ((x0 + inner) * T + 1.35, (y0 + inner - 1.5) * T, 0.0)]  # east wall, facing east
 
     def cell_at(self, x, y):
         """Index of the jail cell (x, y) is inside, or -1."""
