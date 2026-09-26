@@ -17,6 +17,7 @@ from chopped import protocol as P
 from chopped import savefile as SF
 from chopped import vehicles as V
 from chopped import garage as G
+from chopped import story as STORY
 from chopped.parts import SLOTS
 
 
@@ -130,6 +131,7 @@ class TestTalkingNPCs(unittest.TestCase):
     def test_paige_offers_a_prompt_and_reads_out_the_jobs(self):
         w = quiet_world()
         p = w.add_player("ALICE")
+        w.story_ch = len(STORY.CHAPTERS)          # (v0.13: story over, so she's back to small talk)
         paige = next(n for n in w.map.story_npcs if n[0] == "paige")
         it = w._talk_interaction(p, paige[2], paige[3] + 0.5)
         self.assertIsNotNone(it)

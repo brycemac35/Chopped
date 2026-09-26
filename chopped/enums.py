@@ -25,6 +25,7 @@ B_BOX = 2048                        # (v0.9) C: get in (or out of) your cardboar
 # toast colours
 T_WHITE, T_MONEY, T_BAD, T_INFO, T_COP = range(5)
 T_SAY = 5       # (v0.12.1) somebody talking to you: the HUD's dialogue box, not the ticker
+T_STORY = 6     # (v0.13) a whole story scene by key ("B:<key>"): the client has the script (story.BEATS)
 
 # sound ids (client maps these to procedural sfx)
 (S_CRASH, S_CRASH_BIG, S_BOOM, S_SELL, S_PICKUP, S_BREAKIN, S_HOTWIRE, S_STRIP,

@@ -23,6 +23,7 @@ from .art import P, PixelFont, PLAYER_COLORS, CAR_COLORS, GLYPHS, SKINS, shade
 from .parts import PART_IDS, PART_DEFS, PART_INDEX, NO_PART, Part
 from . import vehicles as V
 from .quests import QUESTS, QUEST_ORDER, ACT_NAMES
+from . import story as ST
 
 W, H = C.LOW_W, C.LOW_H
 BAR_H = 32
@@ -106,8 +107,11 @@ class DoomHud:
         self.bank = bank
         self.minimap = minimap
         self.toasts = deque(maxlen=5)
-        self.speech = deque(maxlen=8)  # (v0.12.1) T_SAY lines: Paige, the Fixer, Tommy talking to you
-        self.help_until = time.perf_counter() + 20.0
+        # (v0.13) the dialogue box's queue: [speaker, [lines]] blocks, played one at a time.
+        # T_SAY lines (small talk) and T_STORY scenes (story.BEATS, by key) both land here.
+        self.dialogue = deque()
+        self.dlg = None                # the block on screen: [speaker, lines, shown_at]
+        self.help_until = time.perf_counter() + 10.0
         self.bar = self._make_bar()
         self._big = {}
         self._faces = {}
@@ -182,12 +186,17 @@ class DoomHud:
 
     def add_toast(self, text, color, now):
         if color == S.T_SAY:
-            name, sep, _ = text.partition(": ")
+            name, sep, rest = text.partition(": ")
             if sep and not text.startswith(" "):
-                if name != getattr(self, "speaker", None):
-                    self.speech.clear()      # somebody new talking: they get the box to themselves
-                self.speaker = name
-            self.speech.append((text, now))
+                self._dlg_add(name, rest)
+            else:
+                self._dlg_add(None, text.strip())          # (the rest of a wrapped line)
+            return
+        if color == S.T_STORY:
+            for speaker, line in ST.BEATS.get(text[2:] if text.startswith("B:") else text, ()):
+                self.dialogue.append([speaker, [line]])
+            while len(self.dialogue) > 40:
+                self.dialogue.popleft()                    # (somebody's been spamming E at Paige)
             return
         self.toasts.append((text, TOAST_COLORS.get(color, P["white"]), now))
 
@@ -729,20 +738,18 @@ class DoomHud:
                 self._shop_compass(low, view, info, now)
                 self._car_compass(low, view, info, now)
                 self._crew_compass(low, view, info, now)
+                self._story_compass(low, view, info, now)
         self._law_overlay(low, snap, me, now, flash)
         if not info.get("paused") and not info.get("menu"):
             self._inspect_card(low, snap, now)
         self._banners(low, snap, me, now, flash)
         self._comedy_banner(low, me, now)
         if now < self.help_until and not info.get("paused") and not info.get("menu"):
-            lines = ["MOUSE LOOK  WASD MOVE/DRIVE  SPACE JUMP/HANDBRAKE  SHIFT SPRINT/NOS  E USE (HOLD)",
-                     "CLICK/CTRL PUNCH/SHOOT/THROW (HOLD: HAYMAKER)  1-7 WEAPONS  G GRAB/DROP  F EXIT CAR",
-                     "V CHASE CAM  W+S BURNOUT  X HOP  TAB MAP  H HORN  T DANCE  M MUSIC  ESC MENU",
-                     "STEAL CARS (FOLLOW THE GREEN ARROWS). PARK THEM IN THE SHOP. STRIP. SELL.",
-                     "TUNE-UP BENCH = MOD SHOP.  GUNS, TRAPS, BANANAS: THE CRATES.  RENT'S DUE AT MIDNIGHT."]
-            low.blit(self._panel(440, 43, 170), (W // 2 - 220, 30))
-            for i, l in enumerate(lines):
-                f.draw(low, l, W // 2, 33 + i * 8, P["white"] if i < 3 else P["gold"], align="center")
+            # (v0.13) the controls live behind the pause menu's INSTRUCTIONS button now; the
+            # first few seconds of a session just say where to find them
+            t = "ESC: PAUSE / INSTRUCTIONS"
+            low.blit(self._panel(f.width(t) + 12, 12, 170), (W // 2 - f.width(t) // 2 - 6, VIEW_H - 40))
+            f.draw(low, t, W // 2, VIEW_H - 37, P["gold"], align="center")
 
     def _inspect_card(self, low, snap, now):
         """(v0.9) Look at a car and size it up: the engine, the box, the good bits, how
@@ -835,26 +842,63 @@ class DoomHud:
         while self.toasts and now - self.toasts[0][2] > C.TOAST_TIME:
             self.toasts.popleft()
 
-    def _speech(self, low, now):
-        """(v0.12.1) someone talking to you: a box low in the middle of the view, lasting
-        long enough to actually read a job brief (the ticker's TOAST_TIME isn't)."""
-        while self.speech and now - self.speech[0][1] > C.SAY_TIME:
-            self.speech.popleft()
-        if not self.speech:
+    def _dlg_add(self, speaker, text):
+        """Small talk arrives a line at a time: the same speaker keeps adding to their
+        block (up to a screenful), a new speaker gets a new one."""
+        last = self.dialogue[-1] if self.dialogue else self.dlg
+        if last is not None and (speaker is None or speaker == last[0]) and len(last[1]) < 6:
+            last[1].append(text)
             return
-        lines = [t for t, _ in self.speech]
-        w = min(W - 20, max(self.font.width(t) for t in lines) + 10)
-        h = 8 * len(lines) + 5
-        x, y = W // 2 - w // 2, VIEW_H - 22 - h
-        low.blit(self._panel(w, h, 190), (x, y))
-        low.fill(P["gold"], (x, y, w, 1))
-        for i, t in enumerate(lines):
-            name, sep, rest = t.partition(": ")
-            if sep and not t.startswith(" "):
-                self.font.draw(low, name + ":", x + 5, y + 3 + i * 8, P["gold"])
-                self.font.draw(low, rest, x + 5 + self.font.width(name + ": "), y + 3 + i * 8, P["white"])
+        self.dialogue.append([speaker or "", [text]])
+
+    def skip_speech(self):
+        """(v0.13) ENTER: done reading, next line please."""
+        self.dlg = None
+
+    def _dlg_time(self, block):
+        chars = sum(len(t) for t in block[1])
+        return max(3.0, min(C.SAY_TIME, 1.2 + chars * 0.055))
+
+    def _wrap_px(self, text, width):
+        f = self.font
+        out, line = [], ""
+        for word in text.split():
+            trial = (line + " " + word) if line else word
+            if line and f.width(trial) > width:
+                out.append(line)
+                line = word
             else:
-                self.font.draw(low, t, x + 5, y + 3 + i * 8, P["white"])
+                line = trial
+        if line:
+            out.append(line)
+        return out
+
+    def _speech(self, low, now):
+        """(v0.12.1) someone talking to you: a box low in the middle of the view. (v0.13) a
+        queue: a story scene is a conversation, so each speaker gets the box in turn, paced
+        by how much they've got to say, and ENTER skips ahead."""
+        if self.dlg is not None and now - self.dlg[2] > self._dlg_time(self.dlg):
+            self.dlg = None
+        if self.dlg is None:
+            if not self.dialogue:
+                return
+            sp, lines = self.dialogue.popleft()
+            self.dlg = [sp, lines, now]
+        f = self.font
+        speaker, lines = self.dlg[0], self.dlg[1]
+        width = W - 60
+        body = []
+        for t in lines:
+            body.extend(self._wrap_px(t, width - 10))
+        h = 8 * len(body) + 14
+        x, y = W // 2 - width // 2, VIEW_H - 22 - h
+        low.blit(self._panel(width, h, 200), (x, y))
+        low.fill(P["gold"], (x, y, width, 1))
+        f.draw(low, speaker, x + 5, y + 3, P["gold"])
+        for i, t in enumerate(body):
+            f.draw(low, t, x + 5, y + 12 + i * 8, P["white"])
+        if self.dialogue:
+            f.draw(low, "ENTER: NEXT (%d)" % len(self.dialogue), x + width - 5, y + 3, P["metal_l"], align="right")
 
     def _box_status(self, low, me, now):
         """(v0.10, Bryce: "add overlay for in box vs out") the box only actually
@@ -936,7 +980,7 @@ class DoomHud:
         to the screen edge (v0.12.1: it used to start at the radar's left edge and run off
         the right side of the screen -- Bryce: "the daily quests are off the screen")."""
         f = self.font
-        rows = []
+        rows = self._story_rows(snap)
         act = ("I", "II", "III")[max(0, min(2, snap.act - 1))]
         rows.append(("REP %d - ACT %s" % (snap.story_points, act), P["gold"]))
         for i, idx in enumerate(snap.today_quests):
@@ -949,9 +993,29 @@ class DoomHud:
         width = max(f.width(t) for t, _ in rows) + 6
         low.blit(self._panel(width, 8 * len(rows) + 3, 150), (x - width + 2, y - 2))
         for t, col in rows:
-            f.draw(low, t, x, y, col, align="right")
+            if t:
+                f.draw(low, t, x, y, col, align="right")
             y += 8
         self.quest_bottom = y
+
+    def _story_rows(self, snap):
+        """(v0.13) the main story, above the daily jobs: which chapter, and what to do about it
+        -- earn REP, go and talk to somebody, or the objective itself (with a count)."""
+        st = getattr(snap, "story_st", ST.ST_DONE)
+        ch = ST.chapter(getattr(snap, "story_ch", len(ST.CHAPTERS)))
+        if ch is None or st == ST.ST_DONE:
+            return [("STORY: THE END", P["gold"]), ("", None)]
+        rows = [("STORY %d/%d: %s" % (snap.story_ch + 1, len(ST.CHAPTERS), ch.title), P["gold"])]
+        if st == ST.ST_LOCKED:
+            rows.append(("NEEDS %d REP (HAVE %d): DO THE DAILY JOBS" % (ch.rep, snap.story_points),
+                         P["metal_l"]))
+        elif st == ST.ST_TALK:
+            rows.append(("> TALK TO %s %s" % (ST.GIVERS[ch.giver], ST.GIVER_WHERE[ch.giver]), P["money"]))
+        else:
+            for line in self._wrap_px("> " + ch.goal(snap.story_n), 200):
+                rows.append((line, P["white"]))
+        rows.append(("", None))
+        return rows
 
     def _shop_compass(self, low, view, info, now):
         me = view.me
@@ -1035,6 +1099,30 @@ class DoomHud:
         live = sum(1 for t in self.toasts if now - t[2] <= C.TOAST_TIME)
         return 14 if live <= 1 else 3 + 8 * live + 3
 
+    def _story_compass(self, low, view, info, now):
+        """(v0.13) a gold arrow to whoever the story wants you to talk to next."""
+        tgt = info.get("story_target")
+        me = view.me
+        if tgt is None or me is None:
+            return
+        tx, ty, label = tgt
+        dist = math.hypot(tx - me[4], ty - me[5])
+        if dist < 6.0:
+            return
+        yaw = info.get("yaw", 0.0)
+        bearing = (math.atan2(ty - me[5], tx - me[4]) - yaw + math.pi) % (2 * math.pi) - math.pi
+        half = math.radians(C.FP_FOV) / 2
+        x = W / 2 + max(-1.0, min(1.0, bearing / half)) * (W / 2 - 40)
+        if bearing < -half:
+            text = "< %s %dM" % (label, dist)
+        elif bearing > half:
+            text = "%s %dM >" % (label, dist)
+        else:
+            text = "%s %dM" % (label, dist)
+        x = self._clear_of_radar(x, text)
+        y = self._compass_y(now) + 16
+        self.font.draw(low, text, int(x), y, P["gold"], align="center")
+
     def _clear_of_radar(self, x, text):
         """(v0.12.1) the radar doubled in size and now owns the top-right corner: a centred
         compass label that would run under it slides left until it doesn't."""
@@ -1092,7 +1180,7 @@ class DoomHud:
             if dist < 60 and -half < bearing < half:
                 continue                          # already in frame and near
             col = PLAYER_COLORS[p[1] % 4]
-            y = self._compass_y(now) + 20 + row * 8
+            y = self._compass_y(now) + 28 + row * 8
             row += 1
             if row > 3:
                 break
@@ -1151,34 +1239,82 @@ class DoomHud:
             f.draw(low, "NEW RUN IN %d... (YOUR RIDE KEEPS ITS MODS)" % (int(snap.gameover) + 1), W // 2,
                    VIEW_H // 2 + 8, P["gold"], align="center")
 
+    # (v0.13, Bryce: "put the instructions in a hidden window unless you press on the instructions
+    # button in the paused screen") the pause screen is a menu now -- three buttons -- and the
+    # wall of controls lives behind INSTRUCTIONS instead of being the first thing you see.
+    PAUSE_BUTTONS = (("resume", "RESUME", "ESC"), ("help", "INSTRUCTIONS", "I"), ("leave", "LEAVE TO MENU", "Q"))
+    HELP_SECTIONS = (
+        ("MOVING", ("MOUSE / ARROWS: LOOK (UP AND DOWN TOO)     WASD: MOVE / DRIVE     SPACE: JUMP",
+                    "SHIFT: SPRINT (IN A CAR WITH NOS: BOOST)     E: USE (HOLD FOR TIMED ACTIONS)     F: EXIT CAR",
+                    "IN A CAR: SPACE HANDBRAKE, W+S BURNOUT (+STEER: DONUTS), X HYDRAULIC HOP (IF FITTED)",
+                    "BIKES: SAME KEYS. FAST, TINY, AND YOU FALL OFF IF YOU SO MUCH AS SNEEZE AT A LAMPPOST")),
+        ("CRIME", ("CLICK / CTRL: PUNCH, SHOOT, PLACE A TRAP OR THROW WHATEVER'S IN YOUR HANDS",
+                   "HOLD CLICK WITH EMPTY FISTS, LET GO: HAYMAKER.     1-9 / WHEEL / Q: PICK A WEAPON",
+                   "G: DROP A PART / LET GO OF THE DOLLY / PICK UP A PERSON (THEN CLICK TO THROW THEM)",
+                   "PUNCH SOMEONE OR POINT A GUN AT THEM, THEN HOLD E TO ROB THEM. SOME PUNCH BACK.",
+                   "TRAFFIC WON'T STOP: SPIKES, A ROADBLOCK OR A BANANA, THEN HOLD E TO CARJACK",
+                   "X AT A LOCKED CAR: CUT THE WIRES (QUIET, IF YOU GUESS RIGHT). X ON FOOT: THE PROMPT'S OTHER OPTION")),
+        ("THE SHOP", ("PARK A STOLEN CAR INSIDE TO DELIVER IT. HOLD E ON IT TO STRIP PARTS, X SELLS IT WHOLE",
+                      "E AT THE TUNE-UP BENCH: MOD SHOP.  E AT THE BOOT OF A CAR: TRUNK.  ENGINES NEED THE DOLLY",
+                      "E AT A CRATE: THE BLACK MARKET.  RENT IS DUE AT MIDNIGHT.  F5: SAVE (HOST)")),
+        ("STORY", ("THE STORY PANEL (UNDER THE RADAR) SAYS WHO TO TALK TO NEXT. WALK UP AND PRESS E.",
+                   "DAILY JOBS EARN REP, AND REP OPENS THE NEXT CHAPTER.  ENTER: SKIP A LINE OF DIALOGUE")),
+        ("THE LAW", ("OFFICERS CUFF YOU ON FOOT: PUNCH THEM OR MASH SPACE.  SHOOT AT COPS AND THEY SHOOT BACK",
+                     "BUSTED = A CELL: PICK THE LOCK OR PUNCH THE DOOR, THEN KNOCK OUT THE BIG GUARD FOR HIS KEYS",
+                     "THE IMPOUND BIKES OUTSIDE THE PRECINCT HAVE THE KEYS IN.  H: HORN (CONFUSES COPS)")),
+        ("SILLY", ("V CHASE CAM   TAB MAP   T DANCE   M MUSIC   F8 FISHEYE   F9 BIG HEADS   F10 DISCO   C BOX",)),
+    )
+
+    def pause_hit(self, pos):
+        """Which pause button (if any) is under this canvas point."""
+        for name, rect in getattr(self, "pause_rects", {}).items():
+            if rect.collidepoint(pos):
+                return name
+        return None
+
     def draw_pause(self, low, info):
         f = self.font
         low.blit(self._panel(W, H, 222), (0, 0))
-        f.draw(low, "PAUSED", W // 2, 14, P["gold"], None, scale=4, align="center")
-        f.draw(low, "(THE CITY KEEPS MOVING. SO DOES THE CLOCK.)", W // 2, 40, P["metal_l"], align="center")
-        y = 54
+        if info.get("help"):
+            self._draw_instructions(low, info)
+            return
+        f.draw(low, "PAUSED", W // 2, 30, P["gold"], None, scale=4, align="center")
+        f.draw(low, "(THE CITY KEEPS MOVING. SO DOES THE CLOCK.)", W // 2, 58, P["metal_l"], align="center")
+        y = 74
         for line, col in info.get("lines", []):
             f.draw(low, line, W // 2, y, col, align="center")
             y += 9
-        y += 6
-        for l in ("MOUSE / ARROWS LOOK (UP AND DOWN TOO)     WASD MOVE / DRIVE     SPACE JUMP (IN A CAR: HANDBRAKE)",
-                  "SHIFT SPRINT (IN A CAR WITH NOS: BOOST)     E USE (HOLD FOR TIMED ACTIONS)     F EXIT CAR",
-                  "V CHASE CAM     TAB MAP     H HORN (CONFUSES COPS)     T DANCE     M MUSIC",
-                  "F5 SAVE (HOST)     F8 FISHEYE LENS     F9 BIG HEADS     F10 DISCO FLOOR",
-                  "IN A CAR: W+S TOGETHER = BURNOUT (+STEER: DONUTS)     X = HYDRAULIC HOP (IF FITTED)",
-                  "CLICK / CTRL: PUNCH, SHOOT, PLACE A TRAP OR THROW WHATEVER'S IN YOUR HANDS",
-                  "HOLD CLICK WITH EMPTY FISTS, LET GO: HAYMAKER.  1-9 / WHEEL / Q: PICK A WEAPON",
-                  "G: DROP A PART / LET GO OF THE DOLLY / PICK UP A PERSON (THEN CLICK TO THROW THEM)",
-                  "PUNCH SOMEONE OR POINT A GUN AT THEM, THEN HOLD E TO ROB THEM. SOME PUNCH BACK.",
-                  "TRAFFIC WON'T STOP: SPIKES, A ROADBLOCK OR A BANANA, THEN HOLD E TO CARJACK",
-                  "E AT THE BOOT OF YOUR RIDE (OR ANY CAR YOU BROKE INTO): TRUNK. STASH PARTS, FIND LOOT",
-                  "E AT THE TUNE-UP BENCH: MOD SHOP. FIT PARTS, PAINT, LIVERIES, JOKE HORNS, NOS",
-                  "ENGINES ARE TOO HEAVY TO CARRY: USE THE DOLLY IN THE SHOP",
-                  "COPS CAN'T RESIST A BOX OF DONUTS.  RENT IS DUE AT MIDNIGHT AND GOES UP EVERY DAY",
-                  "OFFICERS CUFF YOU ON FOOT: PUNCH THEM OR MASH SPACE.  SHOOT AT COPS AND THEY SHOOT BACK",
-                  "BUSTED = A CELL: PICK THE LOCK OR PUNCH THE DOOR, THEN KNOCK OUT THE BIG GUARD FOR HIS KEYS",
-                  "X ON FOOT: THE PROMPT'S OTHER OPTION (BAIL, SELL A CAR WHOLE, ...)",
-                  "",
-                  "ESC: RESUME        Q: LEAVE TO MAIN MENU"):
-            f.draw(low, l, W // 2, y, P["white"], align="center")
+        y = max(y + 14, 150)
+        mouse = info.get("mouse")
+        self.pause_rects = {}
+        for name, label, key in self.PAUSE_BUTTONS:
+            r = pygame.Rect(W // 2 - 90, y, 180, 22)
+            self.pause_rects[name] = r
+            hot = mouse is not None and r.collidepoint(mouse)
+            low.fill((70, 60, 100) if hot else (40, 36, 58), r)
+            low.fill(P["gold"] if hot else (90, 84, 110), (r.x, r.y, r.w, 1))
+            f.draw(low, label, W // 2, y + 8, P["gold"] if hot else P["white"], align="center")
+            f.draw(low, key, r.right - 6, y + 8, P["metal_l"], align="right")
+            y += 28
+
+    def _draw_instructions(self, low, info):
+        f = self.font
+        w, h = W - 40, H - 24
+        x0, y0 = 20, 12
+        low.blit(self._panel(w, h, 235), (x0, y0))
+        low.fill(P["gold"], (x0, y0, w, 1))
+        f.draw(low, "INSTRUCTIONS", W // 2, y0 + 6, P["gold"], scale=2, align="center")
+        y = y0 + 26
+        for title, lines in self.HELP_SECTIONS:
+            f.draw(low, title, x0 + 10, y, P["gold"])
             y += 9
+            for l in lines:
+                f.draw(low, l, x0 + 18, y, P["white"])
+                y += 8
+            y += 4
+        mouse = info.get("mouse")
+        r = pygame.Rect(W // 2 - 60, y0 + h - 22, 120, 16)
+        self.pause_rects = {"back": r}
+        hot = mouse is not None and r.collidepoint(mouse)
+        low.fill((70, 60, 100) if hot else (40, 36, 58), r)
+        f.draw(low, "BACK (ESC)", W // 2, r.y + 5, P["gold"] if hot else P["white"], align="center")

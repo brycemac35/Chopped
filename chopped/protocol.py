@@ -33,13 +33,14 @@ INPUT = struct.Struct("<IIIHBBBHBBBBBB")  # seq, client_ms, ack_event, buttons (
                                           # yaw16, fire (click counter), weapon slot,
                                           # mod-shop command: counter, op, arg, arg2
 
-SNAP_HDR = struct.Struct("<IIBiHHBBBBHBBIHIBHBBBBBB")
+SNAP_HDR = struct.Struct("<IIBiHHBBBBHBBIHIBHBBBBBBBBB")
 # tick, echo_ms, your_pid, cash, day_left_ds, debt_ds, heat, witness(|128 cooling),
 # cops, gameover_ds, run, hold_byte, nplayers_total, ack_input (last input seq applied for you),
 # day, rent_due, (v0.8) alert bits (AL_*), (quests) story_points, act, today's 3 quest indices
 # into quests.QUEST_ORDER (255 = none), done-today bitmask (bit i = today_quests[i] is done),
 # (v0.12.1) shops owned bitmask (bit i = World.shop_owned[i]; 0 is always set) -- so a client can
-# tell an unbought fence's locked stall from one whose crates are live
+# tell an unbought fence's locked stall from one whose crates are live, (v0.13) the story:
+# chapter index into story.CHAPTERS, status (story.ST_*) and progress (a count, or which step)
 AL_LETHAL = 1                   # the police are shooting to kill
 AL_HELI = 2                     # (v0.10) a helicopter is up (heat >= config.HELI_HEAT)
 NO_QUEST = 255
@@ -246,7 +247,8 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
         max(0, ack_input) & 0xFFFFFFFF, min(65535, world.day), min(0xFFFFFFFF, world.rent_due()),
         (AL_LETHAL if world.lethal_t > 0 else 0) | (AL_HELI if world.heat >= C.HELI_HEAT else 0),
         min(65535, world.story_points), world.act, q_idx[0], q_idx[1], q_idx[2], q_done,
-        sum(1 << i for i, owned in enumerate(world.shop_owned) if owned) & 0xFF)
+        sum(1 << i for i, owned in enumerate(world.shop_owned) if owned) & 0xFF,
+        min(255, world.story_ch), world.story_status(), min(255, world.story_n))
     prompt = encode_text(me.prompt if me else "") + encode_self(world, me)
 
     r2 = C.NET_CULL_RADIUS ** 2
@@ -379,7 +381,7 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
 class Snapshot:
     __slots__ = ("tick", "time", "echo_ms", "pid", "cash", "rent", "debt", "heat", "witness",
                  "cooling", "cops", "gameover", "run", "hold", "nplayers", "prompt", "ack_input", "day",
-                 "rent_due", "alert", "story_points", "act", "today_quests", "quest_done", "shops",
+                 "rent_due", "alert", "story_points", "act", "today_quests", "quest_done", "shops", "story_ch", "story_st", "story_n",
                  "me", "me2", "arsenal", "trunk", "menu", "inspect", "cars", "players", "npcs", "pickups", "dollies", "traps", "events", "arrival")
 
 
@@ -393,7 +395,7 @@ def decode_snapshot(payload):
     s = Snapshot()
     (s.tick, s.echo_ms, s.pid, s.cash, rent, debt, s.heat, wit, s.cops, go, s.run, hold,
      s.nplayers, s.ack_input, s.day, s.rent_due, s.alert, s.story_points, s.act,
-     q0, q1, q2, s.quest_done, s.shops) = SNAP_HDR.unpack_from(data, 0)
+     q0, q1, q2, s.quest_done, s.shops, s.story_ch, s.story_st, s.story_n) = SNAP_HDR.unpack_from(data, 0)
     s.today_quests = (q0, q1, q2)
     s.time = s.tick / C.SIM_HZ
     s.rent, s.debt, s.gameover = rent / 10.0, debt / 10.0, go / 10.0

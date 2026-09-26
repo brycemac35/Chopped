@@ -10,6 +10,7 @@ import pygame
 
 from . import config as C
 from . import savefile as SF
+from .story import CHAPTERS as STORY_CHAPTERS
 from .art import P, PixelFont
 
 W, H = C.LOW_W, C.LOW_H
@@ -175,7 +176,10 @@ class Menu:
                     C.AUTOSAVE_INTERVAL
             else:
                 crew = ", ".join(info["crew"][:4]) or "NOBODY YET"
-                hint = "REP %d  CREW: %s  -  A/D: OTHER SLOTS, DEL: WIPE" % (info["rep"], crew)
+                n = len(STORY_CHAPTERS)
+                ch = info.get("story_ch", 0)
+                story = ("STORY %d/%d" % (ch + 1, n)) if ch < n else "STORY DONE"
+                hint = "%s  REP %d  CREW: %s  -  A/D: OTHER SLOTS, DEL: WIPE" % (story, info["rep"], crew)
             f.draw(low, hint[:100], W // 2, y + 4, P["metal_l"], align="center")
         else:
             f.draw(low, "W/S OR ARROWS TO PICK, ENTER TO GO", W // 2, y + 4, P["metal_l"], align="center")

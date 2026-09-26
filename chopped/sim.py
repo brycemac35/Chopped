@@ -21,6 +21,7 @@ from .garage import Garage, Appraisal, ShopDoor
 from .sillies import Sillies
 from .police import Police
 from .quests import Quests
+from .story import Story
 from .enums import *  # noqa: F401,F403
 from .lines import *  # noqa: F401,F403
 from .entities import *  # noqa: F401,F403
@@ -30,7 +31,7 @@ DIRS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 _REEXPORTS = (kei_loadout,)   # tests (and old habits) reach for S.kei_loadout
 
 
-class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests):
+class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests, Story):
     def __init__(self, map_seed=None, rng_seed=None):
         if map_seed is None:
             map_seed = random.randrange(1, 2 ** 31)
@@ -100,6 +101,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         self._init_door()
         self._init_police()
         self._init_sillies()
+        self._init_story()           # (v0.13; before the quests: their first rotation pokes it)
         self._init_quests()
 
     # ------------------------------------------------------------------ ids/events
@@ -476,6 +478,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         self._traffic_fleet(dt)
         self._patrol_fleet(dt)
         self._quest_tick(dt)
+        self._story_tick(dt)
 
     # ------------------------------------------------------------------ economy
     def rent_due(self):
@@ -1541,6 +1544,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         self.sfx(S_PUNCH, x, y)
         self.toast("%s DRAGGED THE DRIVER OUT. CARJACKED! +%d HEAT" % (p.name, C.CARJACK_HEAT), T_BAD)
         self._quest_on_steal(p, car)
+        self._story_event("carjack", car)
         self._enter_car(p, car, DRIVER)
 
     # ------------------------------------------------------------------ black market
@@ -1580,6 +1584,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         cx, cy = self.map.fence_shops[idx - 1]["center"]
         self.sfx(S_CASH, cx, cy)
         self.toast("SHOP %d IS YOURS. RENT'S UP TO $%d/DAY." % (idx + 1, self.rent_due()), T_MONEY)
+        self._story_event("buy")
 
     def _market_interaction(self, p, ax, ay):
         best, bd = None, 1.7            # crates are 1.75 m apart (v0.9: ten of them): nearest wins

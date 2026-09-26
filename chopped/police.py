@@ -490,6 +490,7 @@ class Police:
                 self._charge(p, "break")
                 self._banner(p, BN_FREE)
                 self._crime(C.JAILBREAK_HEAT)
+                self._story_event("breakout")
                 self.toast("JAILBREAK! %s IS OUT. RUN FOR THE SHOP!" % p.name, T_MONEY)
                 self.toast("(THAT ORANGE JUMPSUIT IS NOT SUBTLE.)", T_INFO)
         if any(p.jailed for p in self.players.values()):
@@ -676,6 +677,7 @@ class Police:
         if t is not None:
             self._open_gate(t, 8.0)
         self.toast("%s POSTED BAIL: -$%d. WALK OUT, HEAD HELD LOW." % (p.name, bail), T_INFO)
+        self._story_event("bail")
 
     # ------------------------------------------------------------------ hitting the law
     def _law_hit(self, n, vx, vy, t, attacker, vz):

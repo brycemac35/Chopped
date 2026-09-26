@@ -72,6 +72,10 @@ def dump(world):
         # anything in the city they were bought in -- load them into a fresh random city
         # and the crew wakes up owning somebody else's warehouse. Also: your city, back.
         "map_seed": world.map_seed,
+        # (v0.13) the main story: which chapter, and whether it's been taken. The progress
+        # inside a chapter (a count, a tracked car id) doesn't survive a reload -- car ids
+        # don't, and "deliver 3 before midnight" was never going to span two sessions.
+        "story_ch": world.story_ch, "story_active": world.story_active,
     }
 
 
@@ -97,6 +101,9 @@ def apply(world, data):
         for i in range(1, len(world.shop_owned)):    # shop 0 (home base) is always owned
             if i < len(saved_shops):
                 world.shop_owned[i] = bool(saved_shops[i])
+    world.story_ch = max(0, int(data.get("story_ch", world.story_ch)))
+    world.story_active = bool(data.get("story_active", world.story_active))
+    world.story_n, world.story_flags, world.story_told = 0, {}, False
     world._rotate_quests()   # a fresh day's 3, now that story points may have unlocked more
     return True
 
@@ -160,6 +167,7 @@ def peek(path):
         return {"day": int(data.get("day", 1)), "cash": int(data.get("cash", 0)),
                 "act": int(data.get("act", 1)), "rep": int(data.get("story_points", 0)),
                 "crew": sorted(data.get("cars", {})), "map_seed": data.get("map_seed"),
+                "story_ch": int(data.get("story_ch", 0)),
                 "age": max(0.0, time.time() - os.path.getmtime(path))}
     except (OSError, ValueError, TypeError):
         return None

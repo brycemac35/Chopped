@@ -156,6 +156,7 @@ class Quests:
         self.today_quests = self.rng.sample(pool, min(3, len(pool)))
         self.quest_progress = {q: {} for q in self.today_quests}
         self.quest_done_today = set()
+        self._story_new_day()
         if self.players:
             self.toast("TODAY'S JOBS: %s" % ", ".join(QUESTS[q][0] for q in self.today_quests), T_INFO)
 
@@ -222,6 +223,8 @@ class Quests:
         if self.time < self.talk_cd.get(key, 0.0):
             return
         self.talk_cd[key] = self.time + C.TALK_COOLDOWN
+        if self._story_talk(key, name):
+            return                  # (v0.13) that was a story scene, not small talk
         pick = self.rng.choice
         if key == "paige":
             self._say(name, pick(PAIGE_HELLO[max(1, min(3, self.act))]))
@@ -313,6 +316,7 @@ class Quests:
 
     # ------------------------------------------------------------------ hooks
     def _quest_on_steal(self, p, car):
+        self._story_event("steal", car)
         for qid in self.today_quests:
             if qid in self.quest_done_today:
                 continue
@@ -337,6 +341,7 @@ class Quests:
                 q["car"], q["t"] = car.id, 0.0
 
     def _quest_on_deliver(self, car, driver_pid, passenger_pid, heat_at_delivery):
+        self._story_event("deliver", car, heat_at_delivery)
         tuned = self._tuned_count(car)
         for qid in self.today_quests:
             if qid in self.quest_done_today:
@@ -424,6 +429,7 @@ class Quests:
                 q["engine_stripped"] = True
 
     def _quest_on_install(self, p, car, slot):
+        self._story_event("install", car)
         if slot != "Engine":
             return
         q = self._q("engine_pull")
@@ -432,6 +438,7 @@ class Quests:
                 self._complete_quest("engine_pull")
 
     def _quest_on_arrest(self, p):
+        self._story_event("arrest")
         for qid in self.today_quests:
             if qid in self.quest_done_today:
                 continue

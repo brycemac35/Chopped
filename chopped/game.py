@@ -15,6 +15,7 @@ from . import config as C
 from . import sim as S
 from . import protocol as PR
 from . import vehicles as V
+from . import story as STORY
 from . import drivetrain as DT
 from .parts import ASP_TURBO, ASP_SC, V_I6, V_DIESEL, SLOT_INDEX
 from . import art
@@ -133,6 +134,7 @@ class App:
         self.chase = False             # V: third-person chase camera when driving
         self.modshop = ModShop(self.font)
         self.ms_backdrop = None        # (v0.12.1) the frozen, darkened world behind the mod shop
+        self.show_help = False         # (v0.13) the pause menu's INSTRUCTIONS window is open
         self.horn_heard = None
         self.tachos = {}               # car id -> drivetrain.Tacho (your car and the ones you can hear)
         self.tacho_view = None         # what the tachometer shows this frame
@@ -221,6 +223,7 @@ class App:
         self.fp = None
         self.hud = None
         self.paused = False
+        self.show_help = False
         self.state = "menu"
         self._grab_mouse(False)
         self.menu.refresh_slots()            # (the slot's DAY/CASH just changed)
@@ -317,6 +320,8 @@ class App:
             elif self.state == "play" and self.modshop.open and not self.paused and \
                     ev.type == pygame.MOUSEBUTTONDOWN and self.modshop.click(self._to_canvas(ev.pos), ev.button):
                 pass
+            elif self.state == "play" and ev.type == pygame.MOUSEBUTTONDOWN and self.paused and ev.button == 1:
+                self._pause_action(self.hud.pause_hit(self._to_canvas(ev.pos)))
             elif self.state == "play" and ev.type == pygame.MOUSEBUTTONDOWN and not self.paused:
                 if not self.mouse_grabbed:
                     self._grab_mouse(True)      # clicked back into the window; that click isn't a punch
@@ -326,10 +331,13 @@ class App:
                 self._cycle_weapon(-1 if ev.y > 0 else 1)
             elif self.state == "play" and ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_ESCAPE:
-                    self.paused = not self.paused
-                    self._grab_mouse(not self.paused)
-                elif self.paused and ev.key == pygame.K_q:
-                    self.leave("YOU LEFT THE CREW")
+                    self._pause_action("back" if self.show_help else "resume" if self.paused else "pause")
+                elif self.paused and ev.key == pygame.K_q and not self.show_help:
+                    self._pause_action("leave")
+                elif self.paused and ev.key == pygame.K_i:
+                    self._pause_action("back" if self.show_help else "help")
+                elif ev.key in (pygame.K_RETURN, pygame.K_KP_ENTER) and not self.paused:
+                    self.hud.skip_speech()              # (v0.13) next line of dialogue, please
                 elif ev.key == pygame.K_F5:
                     # (v0.12.1) save now. Only the host has the world to write down.
                     if self.server is not None and self.server.save_now():
@@ -566,7 +574,8 @@ class App:
         info = {"lines": self._info_lines(), "help_until": self.hud.help_until, "paused": self.paused,
                 "menu": self.modshop.open,
                 "fp": self.fp_mode, "yaw": self.yaw, "garage": self.client.map.garage_center,
-                "in_garage": self.client.map.in_garage(me[4], me[5]), "weapon": self._held_weapon()}
+                "in_garage": self.client.map.in_garage(me[4], me[5]), "weapon": self._held_weapon(),
+                "story_target": self._story_target(view.snap)}
         if not self.modshop.open:
             self.ms_backdrop = None
         if self.ms_backdrop is not None:
@@ -605,6 +614,11 @@ class App:
                 if self.horn_heard is not None:
                     self.audio.play_horn(self.horn_heard)       # try before you buy
         if self.paused:
+            info["help"] = self.show_help
+            try:
+                info["mouse"] = self._to_canvas(pygame.mouse.get_pos())
+            except pygame.error:
+                info["mouse"] = None
             self.hud.draw_pause(low, info)
         self._audio_loops(view)
 
@@ -713,6 +727,42 @@ class App:
         a.set_loop("jingle", jingle * 0.5)
         mine = view.my_car
         a.set_loop("nos", 0.6 if (mine is not None and me[2] == S.DRIVER and mine[17] & 8) else 0.0)
+
+    def _story_target(self, snap):
+        """(v0.13) where the story's gold arrow points: whoever you need to talk to next."""
+        ch = STORY.chapter(getattr(snap, "story_ch", 255))
+        if ch is None:
+            return None
+        st = getattr(snap, "story_st", STORY.ST_DONE)
+        if st == STORY.ST_TALK:
+            key = ch.giver
+        elif st == STORY.ST_ACTIVE and ch.kind == STORY.OBJ_TALK:
+            key = ch.arg
+        elif st == STORY.ST_ACTIVE and ch.kind == STORY.OBJ_BUY:
+            key = "tommy"                                   # (his lot's sale sign is right by him)
+        else:
+            return None
+        for npc in self.client.map.story_npcs:
+            if npc[0] == key:
+                return npc[2], npc[3], STORY.GIVERS[key]
+        return None
+
+    def _pause_action(self, what):
+        """(v0.13) the pause menu's buttons, by click or by key."""
+        if what == "pause":
+            self.paused, self.show_help = True, False
+        elif what == "resume":
+            self.paused, self.show_help = False, False
+        elif what == "help":
+            self.show_help = True
+        elif what == "back":
+            self.show_help = False
+        elif what == "leave":
+            self.leave("YOU LEFT THE CREW")
+            return
+        else:
+            return
+        self._grab_mouse(not self.paused)
 
     def _to_canvas(self, pos):
         """Window pixels -> canvas pixels (undoes _present's scale and letterbox)."""
