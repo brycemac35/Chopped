@@ -62,7 +62,7 @@ Command-line shortcuts:
 | `python main.py --join 203.0.113.7` | Join immediately (`IP[:PORT]`, default port 27015) |
 | `python main.py --name VINNIE` | Set your crook name |
 | `python main.py --server` | Headless dedicated host (no window; everyone joins as a client) |
-| `python main.py --host --save crew.json` | Host with persistence: loads `crew.json` if it exists, saves to it every 30 s and on a clean exit |
+| `python main.py --host --save crew.json` | Host with persistence: loads `crew.json` if it exists, saves to it every 30 s and on a clean exit (normally you'd just pick a **SAVE SLOT** on the main menu instead, v0.12.1) |
 | `python main.py --selftest` | Starts headless, a bot plays for about 5 s, then exits 0 if everything worked |
 | `--port N`, `--mute`, `--no-upnp` | Use a different port, turn off audio, skip UPnP |
 | `--join 127.0.0.1 --fake-lag 150` | Pretend your ping is 150 ms higher. Try prediction on one PC |
@@ -95,6 +95,7 @@ Command-line shortcuts:
 | **Tab** | Automap: the top-down view of the city | |
 | **M** | Music on/off | |
 | **F9** | Big head mode (just for you) | |
+| **F5** | Save now (host only; see [Save files](#save-files)) (v0.12.1) | |
 | **F8** | Fisheye lens: a wider, wobblier FOV, like a cheap dashcam (v0.12) | |
 | **F10** | Disco floor: a hue-cycling tint on the street under your feet (v0.12) | |
 | **Esc** | Pause overlay: players, host IP, ping, all the controls. Releases the mouse. **Q** leaves | |
@@ -292,6 +293,7 @@ The cars run on a tyre model now, not a rail:
 - If nobody sees you for 4 s, heat cools at 3/s. Parks and buildings block line of sight.
 - **Two patrol cars are always out there**, cruising the grid like traffic. They don't chase anyone until they see a wanted target, and then they do.
 - Heat is a **wanted level**: 1 cop car on the way at 25 heat, 2 at 50, 3 at 75 and **5** at 100, from the edge of the map -- but only up to a cap of new units per day, so a long enough chase eventually runs the precinct out of spare cars.
+- **(v0.12.1) Dispatch gives them a rough idea.** A freshly dispatched car is told roughly where you are (give or take 20 m), a witness's phone call does the same for any car without a lead, and a cop that's lost you gets a fresh vague tip a few seconds later. They still have to actually *see* you to lock on -- but they no longer sit idling round the corner forever because nobody told them where to look.
 - **A cop that loses sight of you drives to your last known spot, not straight at you.** Walls and buildings genuinely block a cop's view now; lose them around a corner for a few seconds and they're guessing, not psychic. Give them nothing to go on for long enough and they give up the chase.
 - **Cops miss.** Bullets from a cop or an officer land only some of the time, so standing your ground in a shootout isn't instant death -- it's still a very bad idea.
 - **Health, not one hit.** You (and now the law) have a health bar. A bullet takes a real bite out of it and you recover on your own a few seconds after the last hit, so a graze isn't the end of a run -- an empty bar is.
@@ -301,6 +303,7 @@ The cars run on a tyre model now, not a rail:
 - **Lethal force** only happens once *you* escalate: fire a gun anywhere a cop can hear it, or hit a cop or a cop car with a bullet, and the police shoot to kill (officers on foot and out of car windows; the status bar says **LETHAL**) for 45 s -- refreshed by every shot, and it also stands down early if no cop's had eyes on any of the crew for a while. A police bullet that empties your health bar is **WASTED**: you drop everything, and the crew loses **50% ÷ the number of players** of its cash (half solo, a quarter each for two, an eighth for four). You wake up at the shop 4 s later.
 - **Shooting an officer or a guard kills them, not just knocks them down**, and an ambulance is sent for the body -- but every other cop in the city is now shooting to kill.
 - **Busted = the precinct.** You drop what you're carrying (your partner can grab it), sit on the kerb for the mugshot, then wake up in a **cell** in the precinct lockup, a walled police station a few blocks from the shop. (Two cells, one in each back corner. With two of you busted, you get one each.)
+  - **(v0.12.1) The heat drops to 0 the moment you're in a cell** -- as far as the city's concerned, the case is closed -- and when you walk out of the precinct you get a **15-second head start**: cops can see the jumpsuit (and heat climbs), but nobody can cuff, tase or shoot you until it runs out. No more getting re-arrested on the front steps.
   - **Get out of the cell** (v0.9): walk up to the door and **hold E for 7 s to pick the lock** (quiet: the guards don't notice), or **punch the door six times** (loud: they come running). A crewmate in the hall can let you out in 1.5 s. Or press **X** to post bail.
   - **Then the hall.** Three guards; the big one has the **keys**. They're tough now: four knockdowns each, six for the big one, and they're back up in 3 s. But they fight fair. **Only one comes at you at a time**; the others wait their turn a few metres off. Whoever lands a punch steps back. And nobody can knock you down again for 1.5 s after you get up. If you picked your way out quietly, they don't notice you until you get within 7 m of one. If you brought a gun in, a bullet kills a guard same as an officer -- the ambulance comes for them too.
   - Knock the big one down, hold E on him to take the keys, and E at the gate opens it. Then run: you're in an **orange jumpsuit**, a jailbreak is +40 heat, and the whole city knows your face until you get back to the shop and change. Other ways out:
@@ -309,6 +312,8 @@ The cars run on a tyre model now, not a rail:
   - or you **post bail** ($250, and $100 more every time): X in your cell, or E at the front desk in the hall.
 - Ram a cop at more than 25 m/s relative speed and it catches fire, then explodes after 3 s. All its parts scatter as loot.
 - **The shop's doors:** shut, cops can't drive or walk through them, and they can't see in. They'll bang on it and shout, though.
+
+- **(v0.12.1) The shop's front** is a proper brick facade with a parapet: four sectional roller doors, one per bay, and a steel walking door with a push bar (1.4 m wide -- people only). E at any of them opens or shuts it.
 
 ### Crashes
 
@@ -327,6 +332,7 @@ Cars hitting people (v0.9): what counts is how fast the car's **bodywork** is mo
 Under the radar, top right, is today's board: **3 jobs**, your crew's **REP**, and the **act** you're in. There's no menu and no start button -- all 3 track in the background off whatever you're already doing. Steal a Kei and, if "HOT WIRE SPECIAL" is one of today's three, you're already working it. A finished job pays out cash and REP the moment its last condition is met, and shows **DONE** on the board until the next rotation (once a day, at midnight, alongside the rent).
 
 - **15 jobs total, in rough order of REP needed to unlock:** Hot Wire Special (steal and deliver a Kei under 40 heat), Heat Run (deliver anything without heat sitting over 60 for more than 20s), Part Collector (strip 3 one-handed parts), Night Job (steal, stay free 90s, deliver uncrashed), The Perfect Steal (zero damage, start to finish), The Repo (steal a car whose owner's watching and get away with it anyway), Clown Car Chaos (find one, deliver it, clowns included) -- then, once your crew's earned some REP: The Engine Pull (deliver with the engine in, winch it out, bolt it to your own ride -- a two-person job, but nothing stops you doing both halves yourself), Body Shop Wars (Tommy's after the same car -- steal and deliver one inside 5 minutes or he beats you to it), The Corporate Contract (deliver something with 5+ styled parts, heat under 30), Family Business (deliver with a passenger aboard, then have them strip 2 parts), Catch & Release (hold 70+ heat for 2 minutes without getting busted, then deliver) -- and at the top: Black Market Deal (two different 5+-styled-part cars, delivered within 5 minutes of each other), The Escape (steal loud on purpose, stay free 3 minutes or reach the shop), King of Downtown (3 deliveries back to back, each within 2 minutes of the last).
+- **(v0.12.1) People to talk to.** Walk up and press E. **Paige** stands at the back wall of the shop and reads out today's jobs (brief, pay, time limit, crew jobs). **The Fixer** leans on the shop's west wall and tells you where the next shop's for sale, how far, which way, and what it costs. **Tommy** runs the rival body shop across town and trash-talks accordingly, and **the Kingpin** holds court at the top lot. **Dave** (parts counter) and **Mo** (mod shop) work the counters. What they say pops up in a dialogue box low in the middle of the screen.
 - **Reputation moves you through 3 acts** -- Struggling, Growing, Dominance, at 6 and 16 REP -- with a toast when the city's mood shifts. 25 REP and the crew's basically running downtown; the game doesn't end there, it just means you've made it.
 - **Story points and which jobs you've ever finished persist in your save file** (see [Save files](#save-files)); today's specific 3 and whatever's mid-progress on them reset fresh each load, same as heat always does.
 - This is adapted from a bigger design doc that assumed a quest board, named NPCs and per-quest start/turn-in menus; a few jobs (the ones that leaned on mechanics Chopped doesn't have, like an AI racer or a second drop-off point) were rebuilt around what the game actually does instead. Nothing about it needed new controls -- it's all riding on top of stealing, driving and delivering, same as everything else.
@@ -353,7 +359,9 @@ Other details:
 
 ## Save files
 
-By default nothing persists: close the host and the next run starts fresh at $300, day 1, with a stock Kei. Host with `--save FILE` (works with `--host` or `--server`) and the crew's progress survives instead:
+**(v0.12.1) Save slots, right on the main menu.** Under HOST sits a **SAVE SLOT** row: A/D (or the arrow keys, or Enter) cycles through slots 1-3 and OFF, and it shows what's in each one (day, cash, act, and on the hint line your rep and crew). If the slot has a save, the top item reads **CONTINUE THE RUN**; if it's empty, **HOST NEW GAME** starts a fresh crew in it. Press **Del** (or X) twice on the slot row to wipe it. While hosting, **F5** saves right now, and the pause screen (Esc) says where it's saving. Slots live in `%APPDATA%\Chopped\saves` on Windows (`~/.local/share/chopped/saves` elsewhere). A save also remembers its **city**, so you continue in the same streets with the same shops. OFF means nothing is written.
+
+`--save FILE` on the command line (works with `--host` or `--server`) still picks an exact file instead, and a headless `--server --save FILE` reloads that save's city too:
 
 - **What's saved:** the shared cash, the day and rent clock, the parts locker, **which shops the crew owns (v0.12)**, and every player's own car -- model, every fitted part and its condition, paint, livery, horn, underglow and extras -- keyed by the name they joined with.
 - **What isn't:** heat, cops, traffic, pedestrians, and everyone's position. Loading a save always drops the crew back at the shop on a quiet morning, never mid-chase.
@@ -425,6 +433,7 @@ SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests
 
 - `tests/test_quests.py` covers the jobs and the story arc: the daily rotation only offering unlocked jobs, story points moving you through the acts (and campaign victory at 25 without a 4th act), Hot Wire Special (model, heat and damage gates), Heat Run (a blown attempt isn't a permanent lock -- a real bug this suite caught), Part Collector (one-handed parts only), a crash ending The Perfect Steal, an arrest failing Night Job, today's 3 jobs and REP/act surviving the wire in `SNAP_HDR`, and reputation/completed-ever persisting through a save while today's specific rotation resets fresh.
 
+- `tests/test_v0121.py` covers the v0.12.1 fixes: a switched car being drivable (and trading places with the old one instead of landing on it), heat clearing in a cell plus the jailbreak head start, dispatched cops being given somewhere to go, Paige's prompt and speech (and its cooldown), fence lots sorted by price, the walking door's brick jambs blocking sight, the shops-owned bitmask on the wire, save slots (peek, wipe, atomic writes, the city seed coming back), the whoopee cushion no longer crashing the host after SHOP SEIZED, and the mod shop's close handshake.
 - `tests/test_v12.py` covers the round: every new gun burning ammo and hitting lethal (a direct hit for the hitscan guns, everyone in the blast radius for the grenade launcher and RPG, a cop car catching fire), the arsenal's two-byte weapons bitmask and its 5 new ammo counts on the wire, the market selling every new gun and topping all of them up from one ammo crate, arrest confiscating every gun (not just the first three), buying a fence shop through the normal hold-E flow and it unlocking that shop's crates, shop ownership surviving a save/load round trip, and the 10 silly features (scratch tickets, jackpot wallets, loose change in stolen cars, the tip jar, high fives, speed camera fame, the ice cream van honking back, and the NOS backfire puff).
 
 253 tests in total.

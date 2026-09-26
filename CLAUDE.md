@@ -11,6 +11,67 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
 
 ## 1. Status and your tasks, in order
 
+### Where things stand (Sept 26, 2026, session 2, RELEASE 0.12.1: Bryce's bug list + a playtest)
+- **v0.12.1** (Bryce, one list: switched car won't start; daily quests off-screen under the
+  minimap; double the minimap; no quest NPCs; the shop's ceiling breaks the visuals from outside;
+  a real walking door and segmented garage doors; can't find how to save/load; heat to 0 in jail,
+  "im spawn locked in jail"; turn the counters 90 degrees with employees behind them; the mod shop
+  UI flickers on entry; then "play the game for a bit, find bugs and fix them"). All done:
+  - **Switched car:** `garage._ms_switch` now sets the new ride `RUNNING` (a `DELIVERED` car never
+    drives) AND swaps the two cars' positions -- it used to drop the new car on top of the old
+    one in the bay, and the old car's strip prompt then covered the new car's door. The second
+    half was found in the playtest and was most of the actual bug.
+  - **HUD:** radar scale 1.5 (`doomhud._minimap`), the quest panel right-aligned under it
+    (`_quest_panel`, sets `quest_bottom`), the inspect card below that, compass labels slide clear
+    of the radar (`_clear_of_radar`) and drop below however many toasts are live (`_compass_y` --
+    they used to print on top of the 2nd toast line).
+  - **NPCs** (`mapgen.staff`/`story_npcs`, `quests._talk_interaction`/`_talk`/`_say`, `TALK_*`):
+    Paige (back wall: today's jobs), the Fixer (west wall: next lot for sale), Tommy (tier-1
+    fence lot) and the Kingpin (tier-3), plus Dave and Mo behind the counters (cosmetic). Speech
+    is a new toast colour `T_SAY`, drawn by `doomhud._speech` as a dialogue box. Static map data,
+    so no wire cost beyond the toasts. `fence_shops` is now sorted by tier (it wasn't -- the RPG lot
+    could be the "next" one at $4k).
+  - **Fence shops are visible in first person now** (crates, FOR SALE boards, `fp._sale_sign`);
+    ownership rides a new byte in `SNAP_HDR` (`Snapshot.shops`, bit i = shop i owned).
+  - **The shop's front** (`fp.py`, `fpart.py`): an 8 m brick parapet (`SHOP_FACADE_H`) so the roof
+    doesn't float over sky; lintels above every opening (`_lintel_slice`, and `_roof` masks
+    behind them); a steel walking door (`fpart.walk_door`, `WALK_DOOR_W`/`WALK_DOOR_H`, brick
+    jambs that are solid in `mapgen` and block `garage.los`); sectional roller doors. Door traps
+    are no longer drawn as roadblock sprites across the front. Indoors (`FPRenderer.cam_inside`)
+    the parapet and bay lintels are skipped -- the ceiling hides them, and drawing them anyway
+    took the shop interior from ~12 to ~21 ms a frame.
+  - **Counters** turned 90 degrees (`COUNTER_GAP`), long side facing the room.
+  - **Jail:** `police._stand_down` (called from `_jail`) wipes heat/dispatch/lethal/pending
+    phone-ins like a delivery; walking out sets `Player.head_start_t` = `JAILBREAK_HEAD_START`
+    (15 s), during which `_law_targets` skips you (seen, still gains heat, can't be cuffed/tased/
+    shot).
+  - **Mod shop flicker:** the menu used to sit on a translucent shade over the LIVE world + HUD.
+    `game.App` now photographs the world once on entry (`ms_backdrop`), darkens it and holds it;
+    the host's replies get two lines of their own in the menu. Also `ModShop.closing`: a snapshot
+    that still had the menu open no longer re-opens it after you close it (and no longer drops
+    the queued `OP_CLOSE`).
+  - **Save slots** (`ui.Menu` SAVE SLOT row, `savefile.save_dir`/`slot_path`/`peek`/`wipe`,
+    `SAVE_SLOTS` 3): HOST reads CONTINUE THE RUN when the slot has a save; Del twice wipes; F5 saves
+    now (`net.Server.save_now`, posted to the server thread); the pause screen says where. Slots
+    live in `%APPDATA%\Chopped\saves` (`CHOPPED_SAVE_DIR` overrides; the tests use it). Saves now
+    store `map_seed` (fence ownership is a list of lot indices, meaningless in a different city)
+    and writes are atomic (temp file + `os.replace`). `--save FILE` still wins; `--selftest` never
+    touches the slots.
+  - **Found in the playtest and fixed:** dispatched cop cars that spawned out of sight had no
+    last-seen spot and **parked in the road forever** (`sim._radio_tip`, `COP_TIP_DELAY`,
+    `COP_TIP_SCATTER`: a rough tip on spawn, on a phone-in and after a lost lead); `reset_run` and
+    the selftest loadout built `Player.gear` one slot short, so **picking the whoopee cushion after
+    SHOP SEIZED crashed the host** (found by a 15-minute 3-player random-input soak); Night Job's
+    fail message now says "home before 90s" vs "crashed it" instead of "not clean enough" for both.
+  - **Protocol VERSION 13, RELEASE 0.12.1.** Tests: `tests/test_v0121.py` (13). 266 total, all OK.
+- **Decisions flagged for Bryce:**
+  - **Slot 1 is on by default**, so plain HOST now autosaves. OFF is one A/D press away.
+  - **Jail wipes the crew's heat for everyone**, not just the jailed player (heat is shared).
+  - **Dispatch tips are ±20 m and every ~11 s without a lead.** Cops still need line of sight to
+    lock on, so breaking LOS still works; it just no longer makes them forget you exist.
+  - Paige/the Fixer talk through the toast system (so it survives packet loss) with a 4 s
+    per-NPC cooldown; nothing they say changes game state.
+
 ### Where things stand (Sept 26, 2026, session 2, RELEASE 0.12.0: more guns, more garages, more silly)
 - **v0.12** (Bryce: "now make multiple garages, make them available for purcahse, with each sdhop
   have more available weapns and parts available in the shop. shop 1 has just bsic parts and the
@@ -386,11 +447,11 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
   ```
   set SDL_VIDEODRIVER=dummy & set SDL_AUDIODRIVER=dummy & python -m unittest discover -s tests -v
   ```
-  (On Linux/macOS: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests -v`.) At handoff (session 2, RELEASE 0.12.0): **253 tests, all OK**, and the game-loop selftest ran at about 43-50 fps.
+  (On Linux/macOS: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests -v`.) At handoff (session 2, RELEASE 0.12.1): **266 tests, all OK**, and the game-loop selftest ran at about 42-57 fps.
 
 ## 3. Architecture (details in README.md)
 - `main.py` is the command line: `--host`, `--join IP[:PORT]`, `--server` (headless), `--selftest`, `--port`, `--name`, `--mute`, `--no-upnp`, `--log FILE`, `--fake-lag MS`, `--no-predict`.
-- **Networking model (protocol VERSION 12):**
+- **Networking model (protocol VERSION 13):**
   - The host runs the simulation at 60 Hz in-process.
   - Clients send one input per 60 Hz tick. One-shot keys are sent as counters, so a lost packet can't eat a tap.
   - The server sends each client its own zlib snapshot at 20 Hz. Far-away peds, pickups and traffic are culled beyond 95 m.
