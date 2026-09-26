@@ -98,7 +98,8 @@ Command-line shortcuts:
 | **F5** | Save now (host only; see [Save files](#save-files)) (v0.12.1) | |
 | **F8** | Fisheye lens: a wider, wobblier FOV, like a cheap dashcam (v0.12) | |
 | **F10** | Disco floor: a hue-cycling tint on the street under your feet (v0.12) | |
-| **Esc** | Pause overlay: players, host IP, ping, all the controls. Releases the mouse. **Q** leaves | |
+| **Esc** | Pause menu: players, host IP, ping, and three buttons (click them, or use the keys): **RESUME** (Esc), **INSTRUCTIONS** (I: the full controls list, in its own window, v0.13) and **LEAVE TO MENU** (Q). Releases the mouse | |
+| **Enter** | Skip to the next line of dialogue (v0.13) | |
 | **F11** | Toggle fullscreen | |
 
 Being carried by a crewmate, or being cuffed by an officer? Mash **Space** to wriggle free.
@@ -154,7 +155,7 @@ Buying a shop is permanent (until SHOP SEIZED) and its crates work exactly like 
 
 ### Vehicles and styles
 
-Ten kinds of vehicle turn up, parked and in traffic, each with its own size, weight, grip, top speed and trunk:
+Twelve kinds of vehicle turn up, parked and in traffic, each with its own size, weight, grip, top speed and trunk (bikes and the mobility scooter are only ever parked):
 
 | Vehicle | Feel | Trunk |
 |---|---|---|
@@ -168,6 +169,8 @@ Ten kinds of vehicle turn up, parked and in traffic, each with its own size, wei
 | Mobility scooter | 12 m/s flat out. Steal it anyway | 1 |
 | Rice rocket | Slammed, stickered, a wing taller than the roof, a fart-can exhaust. Pops and bangs. Often genuinely quick | 2 |
 | 4x4 truck | Lifted, all-wheel drive, a diesel. Parks are just shortcuts to it. Can't do a brake stand | 8 |
+| **Sports bike** (v0.13) | 56 m/s flat out -- faster than the cops (48) -- and off the line like a startled cat. You fall off at 6 m/s of impact where a car would shrug it off | 1 |
+| **Dirt bike** (v0.13) | Slower, but grass is just more road | 1 |
 
 Every part rolls a **style**: gold mesh, spinner or sawblade wheels, scoop, flame, carbon, shark-mouth or blower hoods, bull bars, quad exhausts, race-number doors, rainbow spoilers. Styles show on the car, in the part's name, and in its price (gold mesh sells for 1.6x a steelie). About 30% of cars wear a livery, and 6% of parked cars have underglow. That's the point: find a car with a part you want, strip it, and fit it to yours.
 
@@ -303,6 +306,7 @@ The cars run on a tyre model now, not a rail:
 - **Lethal force** only happens once *you* escalate: fire a gun anywhere a cop can hear it, or hit a cop or a cop car with a bullet, and the police shoot to kill (officers on foot and out of car windows; the status bar says **LETHAL**) for 45 s -- refreshed by every shot, and it also stands down early if no cop's had eyes on any of the crew for a while. A police bullet that empties your health bar is **WASTED**: you drop everything, and the crew loses **50% ÷ the number of players** of its cash (half solo, a quarter each for two, an eighth for four). You wake up at the shop 4 s later.
 - **Shooting an officer or a guard kills them, not just knocks them down**, and an ambulance is sent for the body -- but every other cop in the city is now shooting to kill.
 - **Busted = the precinct.** You drop what you're carrying (your partner can grab it), sit on the kerb for the mugshot, then wake up in a **cell** in the precinct lockup, a walled police station a few blocks from the shop. (Two cells, one in each back corner. With two of you busted, you get one each.)
+  - **(v0.13) The impound:** five motorbikes are parked nose-out along the outside of the precinct walls with the keys in them (the desk sergeant is having a day). Walk out of the gate, hop on (E), gone. Taking one is a theft (+10 heat), and a new one is put out every 20 s or so when nobody's watching. Made for the solo escapee.
   - **(v0.12.1) The heat drops to 0 the moment you're in a cell** -- as far as the city's concerned, the case is closed -- and when you walk out of the precinct you get a **15-second head start**: cops can see the jumpsuit (and heat climbs), but nobody can cuff, tase or shoot you until it runs out. No more getting re-arrested on the front steps.
   - **Get out of the cell** (v0.9): walk up to the door and **hold E for 7 s to pick the lock** (quiet: the guards don't notice), or **punch the door six times** (loud: they come running). A crewmate in the hall can let you out in 1.5 s. Or press **X** to post bail.
   - **Then the hall.** Three guards; the big one has the **keys**. They're tough now: four knockdowns each, six for the big one, and they're back up in 3 s. But they fight fair. **Only one comes at you at a time**; the others wait their turn a few metres off. Whoever lands a punch steps back. And nobody can knock you down again for 1.5 s after you get up. If you picked your way out quietly, they don't notice you until you get within 7 m of one. If you brought a gun in, a bullet kills a guard same as an officer -- the ambulance comes for them too.
@@ -329,7 +333,34 @@ Cars hitting people (v0.9): what counts is how fast the car's **bodywork** is mo
 
 ## Jobs and the story
 
-Under the radar, top right, is today's board: **3 jobs**, your crew's **REP**, and the **act** you're in. There's no menu and no start button -- all 3 track in the background off whatever you're already doing. Steal a Kei and, if "HOT WIRE SPECIAL" is one of today's three, you're already working it. A finished job pays out cash and REP the moment its last condition is met, and shows **DONE** on the board until the next rotation (once a day, at midnight, alongside the rent).
+### The main story (v0.13)
+
+Bryce: "can you instate the story quests as a separate persistent quest that updates when you finish it. still have the REP guard rails to progress. but i need story quests and dialogue (written)."
+
+**Ten chapters, one at a time, always shown at the top of the panel under the radar** ("STORY 3/10: WORD ON THE STREET"), above the daily jobs. The line under it says what to do next:
+
+- **"NEEDS 6 REP (HAVE 3): DO THE DAILY JOBS"** -- the REP guard rail. A chapter won't open until the crew's REP (earned only from the daily jobs below) reaches its bar. The story itself pays cash, never REP.
+- **"> TALK TO THE FIXER AT THE SHOP"** -- the chapter's ready. A gold arrow on screen points to whoever you need; walk up and press **E** and their opening scene plays in the dialogue box, one speaker at a time (**Enter** skips ahead).
+- **"> CARJACK A CAR OUT OF TRAFFIC"** -- the objective itself, with a count where there is one. It tracks on its own; when it's done, the closing scene plays wherever you are, the crew gets paid, and the panel moves on to the next chapter.
+
+| # | Chapter | From | REP | Objective | Pays |
+|---|---|---|---|---|---|
+| 1 | Opening Hours | Paige | 0 | Steal a car and park it in the shop | $250 |
+| 2 | Tools of the Trade | Paige | 0 | Fit a part to your ride at the tune-up bench | $200 |
+| 3 | Word on the Street | The Fixer | 1 | Go and say hello to Tommy at his lot | $150 |
+| 4 | Moving Target | Paige | 3 | Carjack a car out of traffic, then deliver it | $400 |
+| 5 | Feel the Heat | The Fixer | 6 | Get the heat to 50, then lose them (heat back to 0) without getting cuffed | $500 |
+| 6 | Hostile Takeover | The Fixer | 8 | Buy Tommy's lot | $600 |
+| 7 | The Inside Job | Paige | 10 | Get arrested on purpose, then break out (bail doesn't count) | $750 |
+| 8 | Blue Lights | Tommy | 13 | Steal a cop car while its officer's out, and deliver it | $900 |
+| 9 | The Audition | The Kingpin | 16 | Deliver 3 cars before midnight | $1,200 |
+| 10 | The Big One | The Kingpin | 20 | Deliver a car with 75+ heat on you | $3,000 |
+
+The cast: **Paige** (runs the shop Uncle Rick left her), **Mo** (the mechanic, attached to one particular 10mm socket), **the Fixer** (talks to walls), **Tommy Castellano** (the rival body shop), **the Kingpin** (downtown), and **Captain Dorsey** (the new precinct captain, heard on the scanner). The story is crew-shared, like cash and heat: anyone in the crew can move it on, and every crewmate sees the scenes. Your chapter is kept in your save slot.
+
+### The daily jobs
+
+Under the story, top right, is today's board: **3 jobs**, your crew's **REP**, and the **act** you're in. There's no menu and no start button -- all 3 track in the background off whatever you're already doing. Steal a Kei and, if "HOT WIRE SPECIAL" is one of today's three, you're already working it. A finished job pays out cash and REP the moment its last condition is met, and shows **DONE** on the board until the next rotation (once a day, at midnight, alongside the rent).
 
 - **15 jobs total, in rough order of REP needed to unlock:** Hot Wire Special (steal and deliver a Kei under 40 heat), Heat Run (deliver anything without heat sitting over 60 for more than 20s), Part Collector (strip 3 one-handed parts), Night Job (steal, stay free 90s, deliver uncrashed), The Perfect Steal (zero damage, start to finish), The Repo (steal a car whose owner's watching and get away with it anyway), Clown Car Chaos (find one, deliver it, clowns included) -- then, once your crew's earned some REP: The Engine Pull (deliver with the engine in, winch it out, bolt it to your own ride -- a two-person job, but nothing stops you doing both halves yourself), Body Shop Wars (Tommy's after the same car -- steal and deliver one inside 5 minutes or he beats you to it), The Corporate Contract (deliver something with 5+ styled parts, heat under 30), Family Business (deliver with a passenger aboard, then have them strip 2 parts), Catch & Release (hold 70+ heat for 2 minutes without getting busted, then deliver) -- and at the top: Black Market Deal (two different 5+-styled-part cars, delivered within 5 minutes of each other), The Escape (steal loud on purpose, stay free 3 minutes or reach the shop), King of Downtown (3 deliveries back to back, each within 2 minutes of the last).
 - **(v0.12.1) People to talk to.** Walk up and press E. **Paige** stands at the back wall of the shop and reads out today's jobs (brief, pay, time limit, crew jobs). **The Fixer** leans on the shop's west wall and tells you where the next shop's for sale, how far, which way, and what it costs. **Tommy** runs the rival body shop across town and trash-talks accordingly, and **the Kingpin** holds court at the top lot. **Dave** (parts counter) and **Mo** (mod shop) work the counters. What they say pops up in a dialogue box low in the middle of the screen.
@@ -433,6 +464,7 @@ SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests
 
 - `tests/test_quests.py` covers the jobs and the story arc: the daily rotation only offering unlocked jobs, story points moving you through the acts (and campaign victory at 25 without a 4th act), Hot Wire Special (model, heat and damage gates), Heat Run (a blown attempt isn't a permanent lock -- a real bug this suite caught), Part Collector (one-handed parts only), a crash ending The Perfect Steal, an arrest failing Night Job, today's 3 jobs and REP/act surviving the wire in `SNAP_HDR`, and reputation/completed-ever persisting through a save while today's specific rotation resets fresh.
 
+- `tests/test_v013.py` covers v0.13: the story's opening and closing scenes, the REP guard rail (and that the story never hands out REP), every objective type (installing a part, talking to Tommy, carjack-then-deliver, heat up then lose it, buying the lot or already owning it, arrest-then-breakout with bail not counting, a real jailbreak, the cop car, three before midnight, the hot finale and the end), every scene line having glyphs in the pixel font, the story on the wire and in save files; bikes (two wheels, quick off the line, easier to fall off, no doors); the impound (outside the walls, keys in, a theft to take, never restocked in view, culled from far snapshots); and the pause menu's INSTRUCTIONS button.
 - `tests/test_v0121.py` covers the v0.12.1 fixes: a switched car being drivable (and trading places with the old one instead of landing on it), heat clearing in a cell plus the jailbreak head start, dispatched cops being given somewhere to go, Paige's prompt and speech (and its cooldown), fence lots sorted by price, the walking door's brick jambs blocking sight, the shops-owned bitmask on the wire, save slots (peek, wipe, atomic writes, the city seed coming back), the whoopee cushion no longer crashing the host after SHOP SEIZED, and the mod shop's close handshake.
 - `tests/test_v12.py` covers the round: every new gun burning ammo and hitting lethal (a direct hit for the hitscan guns, everyone in the blast radius for the grenade launcher and RPG, a cop car catching fire), the arsenal's two-byte weapons bitmask and its 5 new ammo counts on the wire, the market selling every new gun and topping all of them up from one ammo crate, arrest confiscating every gun (not just the first three), buying a fence shop through the normal hold-E flow and it unlocking that shop's crates, shop ownership surviving a save/load round trip, and the 10 silly features (scratch tickets, jackpot wallets, loose change in stolen cars, the tip jar, high fives, speed camera fame, the ice cream van honking back, and the NOS backfire puff).
 
@@ -463,6 +495,8 @@ chopped/police.py    officers, tasers, lethal force, health and dying, ambulance
 chopped/sillies.py   v0.9's chickens, mimes, stunt ramps and money trucks, plus (v0.12) the ice cream
                      van honk-along and the crew high-five (World mixin)
 chopped/quests.py    the 15 daily jobs, rotation and the 3-act story arc (World mixin, no pygame)
+chopped/story.py     (v0.13) the main story: 10 REP-gated chapters, their written scenes, and the
+                     World mixin that tracks them (no pygame)
 chopped/drivetrain.py  revs, gears and boost for the tachometer and the engine notes (client, no pygame)
 chopped/enginesynth.py the engine voices, turbo whistle, blow-off, pops, screech (pure Python synthesis)
 chopped/sim.py       authoritative world: crashes, heat, cops, traffic, pedestrians, the dolly,

@@ -11,6 +11,63 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
 
 ## 1. Status and your tasks, in order
 
+### Where things stand (Sept 26, 2026, session 2, RELEASE 0.13.0: the main story, bikes, pause menu)
+- **v0.13** (Bryce: "can you instate the story quests as a separate persistent quest that updates
+  when you finish it. still have the REP guard rails to progress. but i need story quests and
+  dialogue (written). also please put the instructions in a hidden window unless you press on the
+  instructions button in the paused screen. add motor bikes, and place more of them around the
+  precinct to help escape when youre solo"). All done:
+  - **`chopped/story.py`** (new, no pygame, `Story` mixin on `World`): 10 `CHAPTERS`, each with a
+    giver (paige/fixer/tommy/kingpin), a REP bar (0,0,1,3,6,8,10,13,16,20), cash, an objective kind
+    (`OBJ_*`) and HUD goal text; `BEATS` holds the written scenes (`<key>.start`/`.end`, lists of
+    (speaker, line)). One chapter at a time: `story_status()` is LOCKED (REP short) / TALK (go see
+    the giver) / ACTIVE / DONE. `_story_talk` (called first thing in `quests._talk`) starts it;
+    `_story_event(kind, car, value)` is called from the existing hooks (`_quest_on_steal`,
+    `_quest_on_deliver`, `_quest_on_install`, `_quest_on_arrest`, `_carjack`, `_buy_shop`,
+    `police._jail_tick`'s breakout, `_post_bail`); `_story_tick` does the heat chapter and the
+    "NEW STORY CHAPTER: TALK TO X" toast; `_story_new_day` (from `_rotate_quests`) resets The
+    Audition's before-midnight count. **The story pays cash only, never REP** -- REP comes from the
+    daily jobs, so the gate stays a gate.
+  - **Wire:** 3 bytes in `SNAP_HDR` (chapter, status, progress). Scenes are ONE toast of colour
+    `T_STORY` carrying `"B:<key>"`; the client expands it from `story.BEATS`. Small talk (T_SAY) and
+    scenes both feed `doomhud`'s dialogue queue (`dialogue`/`dlg`, `_dlg_add`, `skip_speech`): one
+    speaker's block at a time, paced by length, **Enter** skips.
+  - **HUD:** `doomhud._story_rows` (top of the quest panel), `_story_compass` (gold arrow to the
+    giver; `game._story_target` picks who). Save files keep `story_ch`/`story_active` (progress
+    within a chapter resets on load); `savefile.peek` reports the chapter for the menu's slot hint.
+  - **Pause menu** (`doomhud.PAUSE_BUTTONS`/`HELP_SECTIONS`, `draw_pause`/`_draw_instructions`/
+    `pause_hit`, `game._pause_action`): RESUME / INSTRUCTIONS / LEAVE, by mouse or Esc/I/Q. The
+    controls list only shows in the INSTRUCTIONS window. The 20 s help card at session start is
+    now a 10 s one-liner, "ESC: PAUSE / INSTRUCTIONS".
+  - **Bikes** (`V.SPORTBIKE` 56 m/s, `V.DIRTBIKE` offroad; `Model.wheels`/`open_seat`/`no_slots`,
+    `V.is_bike`, `parts.wheel_slots`): only WheelFL/WheelRL exist (`missing_wheels`, `Car.anchor`,
+    the physics' per-wheel grip loop and tyre shots all respect that); new parts `eng_bike_600`/
+    `eng_bike_450` (liftable engines, bulk 2), `whl_bike`, `seat_saddle` (NOT_FOR_SALE); art
+    `fpart._bike_boxes`, a seated rider (`fpart.seated`, person frame 2 in `fp._person_sprite`),
+    `doomhud._handlebars` instead of a dashboard, `C.FP_EYE_BIKE`. You come off at
+    `C.BIKE_EJECT_DV` (6) instead of 11. The mod shop refuses to fit a bike's `no_slots`. **Bikes
+    are parked-only** (`traffic_weight` 0): the traffic AI rode them into kerbs.
+  - **The impound** (`mapgen.bike_spots`, `World._impound_bikes`/`_spawn_impound_bike`,
+    `C.IMPOUND_RESTOCK`/`IMPOUND_HIDE_DIST`): 5 bikes nose-out along the precinct's outer walls,
+    `special == "impound"`, RUNNING with the keys in (entering is the existing "engine running"
+    theft path, +10 heat, `lines.IMPOUND_LINES`). Their own `impound_rng`, excluded from the parked
+    civ count, and culled from snapshots beyond `NET_CULL_RADIUS` like traffic.
+  - **Traffic fix found on the way** (the latent seed-99 bug v0.12 flagged, re-exposed when bikes
+    shifted the RNG stream): `_traffic_blocker` now predicts closest approach with crossing/oncoming
+    traffic (`TRAFFIC_CROSS_*`, `TRAFFIC_ONCOMING_GAP`), sizes the oncoming lane check to the real
+    cars, and right of way no longer lets a car drive through one that's already stopped for it.
+    0 self-inflicted traffic crashes across 8 seeds in a 30 s run each.
+  - **Protocol VERSION 14, RELEASE 0.13.0.** Tests: `tests/test_v013.py` (27). **293 total, all OK.**
+- **Decisions flagged for Bryce:**
+  - **The story never gives REP**, only cash; REP is from the daily jobs. Easy to change
+    (`_story_complete`) if the gates feel like too much grinding.
+  - **A chapter starts by talking to its giver** (the in-fiction "accept"), and the gold arrow
+    points at them. Objectives then track by themselves, like the daily jobs.
+  - **Bikes are parked-only**, never in moving traffic. The impound bikes are free for anyone, not
+    just escapees -- they're only useful near the precinct anyway.
+  - **Chapter 7 asks you to get arrested on purpose.** It's the joke (and it shows off the impound
+    bikes), but it's also the one chapter that can't be done without the jail loop.
+
 ### Where things stand (Sept 26, 2026, session 2, RELEASE 0.12.1: Bryce's bug list + a playtest)
 - **v0.12.1** (Bryce, one list: switched car won't start; daily quests off-screen under the
   minimap; double the minimap; no quest NPCs; the shop's ceiling breaks the visuals from outside;
@@ -438,7 +495,7 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
 ## 2. Hard rules
 - **Networking stays stdlib UDP.** No networking libraries; this keeps PyInstaller packaging trivial. `miniupnpc` is optional and must stay an optional import.
 - **No asset files.** All sprites, textures, the pixel font, sounds and the music are generated in code (`art.py`, `fpart.py`, `audio.py`, `music.py`). Keep it that way unless Bryce says otherwise.
-- **The sim modules must not import pygame:** `sim.py`, `physics.py`, `brawl.py`, `garage.py`, `police.py`, `sillies.py`, `quests.py`, `entities.py`, `enums.py`, `vehicles.py`, `parts.py`, `lines.py` (and the client-side pure modules `drivetrain.py`, `enginesynth.py`). They're the authoritative, testable simulation. (`tests/test_v09.py` checks this.)
+- **The sim modules must not import pygame:** `sim.py`, `physics.py`, `brawl.py`, `garage.py`, `police.py`, `sillies.py`, `quests.py`, `story.py`, `entities.py`, `enums.py`, `vehicles.py`, `parts.py`, `lines.py` (and the client-side pure modules `drivetrain.py`, `enginesynth.py`). They're the authoritative, testable simulation. (`tests/test_v09.py` checks this.)
 - **All tuning numbers live in `chopped/config.py`**, each with a comment explaining why.
 - **Bump `config.VERSION`** whenever the wire protocol changes. Clients with a different version get rejected politely.
 - **Keep packets under `MAX_PACKET` (1200 bytes).** `tests/test_misc.py` checks a worst-case snapshot, rush-hour traffic included.
@@ -447,11 +504,11 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
   ```
   set SDL_VIDEODRIVER=dummy & set SDL_AUDIODRIVER=dummy & python -m unittest discover -s tests -v
   ```
-  (On Linux/macOS: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests -v`.) At handoff (session 2, RELEASE 0.12.1): **266 tests, all OK**, and the game-loop selftest ran at about 42-57 fps.
+  (On Linux/macOS: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests -v`.) At handoff (session 2, RELEASE 0.13.0): **293 tests, all OK**, and the game-loop selftest ran at about 48-49 fps.
 
 ## 3. Architecture (details in README.md)
 - `main.py` is the command line: `--host`, `--join IP[:PORT]`, `--server` (headless), `--selftest`, `--port`, `--name`, `--mute`, `--no-upnp`, `--log FILE`, `--fake-lag MS`, `--no-predict`.
-- **Networking model (protocol VERSION 13):**
+- **Networking model (protocol VERSION 14):**
   - The host runs the simulation at 60 Hz in-process.
   - Clients send one input per 60 Hz tick. One-shot keys are sent as counters, so a lost packet can't eat a tap.
   - The server sends each client its own zlib snapshot at 20 Hz. Far-away peds, pickups and traffic are culled beyond 95 m.
