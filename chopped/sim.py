@@ -883,8 +883,8 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         # cars: the one whose bodywork is closest to where you're looking
         best, bd = None, 99.0
         for car in self.cars.values():
-            if car.kind == COP and not self._copcar_stealable(car):
-                continue
+            if car.kind == COP and car.fire_t > 0:
+                continue                             # (on fire. Leave it.)
             if abs(car.x - ax) > 6 or abs(car.y - ay) > 6:
                 continue
             d = box_distance(car, ax, ay)
@@ -902,7 +902,14 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             if tr is not None:
                 return tr
         if car.kind == COP:
-            return (("copcar", car.id), "HOLD E: STEAL THE COP CAR WHILE HE'S BUSY (+%d HEAT)" % C.COPCAR_STEAL_HEAT,
+            # (v0.13.1, Bryce: "i cant seem to steal cop cars, can you make them a regular vehicle
+            # i can carjack?") any cop car you can get to stop -- not just the one whose officer
+            # happens to have jumped out to chase you -- same deal as carjacking traffic
+            if car.speed() > C.COP_CARJACK_MAX_SPEED:
+                return (None, "A COP CAR, MOVING. STOP IT FIRST: SPIKES, A ROADBLOCK, DONUTS, STAND IN THE ROAD...",
+                        0, None)
+            what = "STEAL THE COP CAR WHILE HE'S BUSY" if car.officer is not None else "DRAG THE COP OUT"
+            return (("copcar", car.id), "HOLD E: %s (+%d HEAT)" % (what, C.COPCAR_STEAL_HEAT),
                     C.COPCAR_STEAL_TIME, lambda: self._steal_cop_car(p, car))
         if car.kind == TRAFFIC:
             if car.speed() > C.CARJACK_MAX_SPEED:
@@ -1753,7 +1760,10 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         self.toast(self.rng.choice(BOX_LINES), T_INFO)
 
     def _copcar_stealable(self, car):
-        return car.kind == COP and car.officer is not None and car.fire_t <= 0 and car.speed() < 1.5
+        """(v0.13.1) any cop car that's (nearly) stopped and not on fire. It used to need its
+        officer out on foot as well, which in practice meant "while he's chasing you", which in
+        practice meant never."""
+        return car.kind == COP and car.fire_t <= 0 and car.speed() <= C.COP_CARJACK_MAX_SPEED
 
     def _steal_cop_car(self, p, car):
         """(v0.9) The officer got out to chase somebody and left it running. Rude not to."""
@@ -1763,6 +1773,21 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         if n is not None:
             n.car_id = None
             self.toast(self.rng.choice(COPCAR_LINES) % p.name, T_COP)
+        else:
+            # (v0.13.1) he's still in it: out he comes, onto the tarmac, same as any carjacking.
+            # He's on foot with no car from here on -- he gets up, looks for someone to cuff,
+            # and eventually wanders off to explain himself to the sergeant.
+            x, y = car.to_world(0.0, -car.hw - 1.0)
+            if self.map.solid_at(x, y):
+                x, y = car.to_world(0.0, car.hw + 1.0)
+            n = NPC(self.new_id(), OFFICER, x, y)
+            n.wallet = self.rng.randint(3, 20)
+            n.tumble_t = 1.4
+            n.vx, n.vy = (x - car.x) * 2, (y - car.y) * 2
+            n.foe = p.id
+            self.npcs[n.id] = n
+            self.sfx(S_PUNCH, x, y)
+            self.toast(self.rng.choice(COPJACK_LINES) % p.name, T_COP)
         car.kind = CIV
         car.copcar = True
         car.officer = None
@@ -1992,6 +2017,10 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         cop.gun_cd -= dt
         if cop.fire_t > 0:
             cop.throttle, cop.steer, cop.handbrake = 0.0, 0.0, False
+            return
+        if self._held_up(cop):                  # (v0.13.1) somebody's got hold of his door handle
+            vf = cop.vx * math.cos(cop.ang) + cop.vy * math.sin(cop.ang)
+            cop.throttle, cop.steer, cop.handbrake = (-1.0 if vf > 0.5 else 0.0), 0.0, vf <= 0.5
             return
         if cop.confused_t > 0:
             # donuts. Professional, taxpayer-funded donuts.
@@ -3078,6 +3107,24 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         cop.last_target = (t[0] + self.rng.uniform(-r, r), t[1] + self.rng.uniform(-r, r))
         cop.search_t = 0.0
 
+    def _held_up(self, car):
+        """(v0.13.1) a nearly-stopped car with a crook on foot at its door, or anyone mid-carjack
+        on it. Traffic, patrols and dispatched cop cars all respect this."""
+        for p in self.players.values():
+            k = p.hold_key
+            if k is not None and len(k) > 1 and k[1] == car.id and k[0] in ("carjack", "copcar") and p.hold > 0:
+                return True
+        if car.speed() > C.CARJACK_HOLD_SPEED:
+            return False
+        c, s = math.cos(car.ang), math.sin(car.ang)
+        for p in self.players.values():
+            if p.state != FOOT:
+                continue
+            dx, dy = p.x - car.x, p.y - car.y
+            if abs(dx * c + dy * s) <= car.hl + 0.5 and abs(-dx * s + dy * c) <= car.hw + C.CARJACK_DOOR_REACH:
+                return True
+        return False
+
     def _traffic_ai(self, car, dt):
         fx, fy = math.cos(car.ang), math.sin(car.ang)
         vf = car.vx * fx + car.vy * fy
@@ -3091,6 +3138,13 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
                 self._traffic_bail(car)         # riding on rims: the driver's done
             else:
                 car.throttle, car.steer = 0.0, 0.0   # a patrol car on rims: radioing for a tow
+            return
+        if self._held_up(car):
+            # (v0.13.1) somebody's at the door of a car that's already stopped -- or already has
+            # hold of the handle. The driver freezes. (Without this, "stand in the road, then walk
+            # round to the door" never worked: the car pulled away the moment you stepped aside.)
+            car.throttle, car.steer = (-1.0 if vf > 0.5 else 0.0), 0.0
+            car.handbrake = vf <= 0.5
             return
         if car.shaken_t > 0:
             # somebody hit them. They sit there. They honk. It's what we'd all do.

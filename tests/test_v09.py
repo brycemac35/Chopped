@@ -458,6 +458,58 @@ class TestSillyDepartment(unittest.TestCase):
         s = snap(w, p)
         self.assertTrue(s.cars[cop.id][18] & P.CX_COPCAR)
 
+    def test_carjack_a_cop_car_with_the_officer_still_in_it(self):
+        """(v0.13.1, Bryce: "i cant seem to steal cop cars, can you make them a regular vehicle i
+        can carjack?") a stopped cop car is fair game, officer out or not: he gets dragged out."""
+        w = world()
+        p = w.add_player("BRYCE")
+        x, y = street(w)
+        cop = S.Car(w.new_id(), S.COP, x + 3, y, 0.0, S.cop_loadout(w.rng))
+        w.cars[cop.id] = cop
+        p.x, p.y = x + 3, y - cop.hw - 1.0
+        face(p, cop.x, cop.y)
+        w.step(DT)
+        self.assertIn("DRAG THE COP OUT", p.prompt)
+        heat = w.heat
+        officers = sum(1 for n in w.npcs.values() if n.kind == S.OFFICER)
+        inp(p, buttons=S.B_USE)
+        step(w, C.COPCAR_STEAL_TIME + 0.2)
+        self.assertEqual(p.state, S.DRIVER)
+        self.assertEqual(cop.kind, S.CIV)
+        self.assertTrue(cop.copcar and cop.stolen)
+        self.assertGreaterEqual(w.heat, heat + C.COPCAR_STEAL_HEAT - 1)
+        self.assertEqual(sum(1 for n in w.npcs.values() if n.kind == S.OFFICER), officers + 1,
+                         "the officer's on the pavement now")
+
+    def test_a_moving_cop_car_says_stop_it_first(self):
+        w = world()
+        p = w.add_player("BRYCE")
+        x, y = street(w)
+        cop = S.Car(w.new_id(), S.COP, x + 3, y, 0.0, S.cop_loadout(w.rng))
+        cop.vx = C.COP_CARJACK_MAX_SPEED + 5.0
+        w.cars[cop.id] = cop
+        p.x, p.y = x + 3, y - cop.hw - 1.0
+        face(p, cop.x, cop.y)
+        w._update_player_input(p, DT)
+        self.assertIn("STOP IT FIRST", p.prompt)
+        self.assertEqual(cop.kind, S.COP)
+
+    def test_a_stopped_car_waits_while_youre_at_its_door(self):
+        """(v0.13.1) stand in the road, stop a car, walk round to the door: it used to pull
+        away the moment you stepped out of its lane, so the carjack could never finish."""
+        w = world()
+        p = w.add_player("BRYCE")
+        car = None
+        while car is None:
+            car = w._spawn_traffic(kind=S.TRAFFIC, dist=(30, 200))
+        car.vx = car.vy = 0.0
+        p.x, p.y = car.to_world(0.0, -(car.hw + 1.0))
+        self.assertTrue(w._held_up(car))
+        step(w, 2.0)
+        self.assertLess(car.speed(), 0.5, "the driver doesn't floor it with somebody at the door")
+        p.x, p.y = car.x + 60, car.y + 60                    # walk off, and off they go
+        self.assertFalse(w._held_up(car))
+
     def test_why_did_the_chicken_cross_the_road(self):
         w = world()
         p = w.add_player("BRYCE")

@@ -10,7 +10,7 @@ import math
 
 GAME_TITLE = "Chopped"
 VERSION = 14  # bump when the wire protocol changes so old clients get a polite "no"
-RELEASE = (0, 13, 0)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
+RELEASE = (0, 13, 1)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
 
 # --------------------------------------------------------------------------
 # Rendering scale
@@ -567,6 +567,14 @@ BOX_SPEED_MULT = 0.35            # shuffling along inside a cardboard box
 BOX_STILL_TIME = 0.6             # s stood still before you're convincingly just a box. Move and you're not
 COPCAR_STEAL_TIME = 2.0          # s of E at a cop car whose officer's out chasing somebody
 COPCAR_STEAL_HEAT = 30.0         # it's a police car. They notice that
+CARJACK_HOLD_SPEED = 1.5         # (v0.13.1) m/s: a car going slower than this with a crook stood at
+                                 # its door stays put. (A traffic driver doesn't floor it with somebody's
+                                 # hand on the handle -- and before this, you couldn't finish a
+                                 # carjack: the car drove off as soon as you stepped out of its lane)
+CARJACK_DOOR_REACH = 1.6         # m out from the bodywork that counts as "at the door"
+COP_CARJACK_MAX_SPEED = 3.0      # (v0.13.1) m/s: a cop car this slow can be carjacked like traffic. A
+                                 # touch more forgiving than traffic's 2.0: cops never quite sit still
+                                 # (creeping round a corner, or chewing a donut on the handbrake)
 CHICKEN_EVERY = (20.0, 45.0)     # s between chickens crossing the road near the crew
 CHICKEN_SPEED = 2.4              # a determined waddle
 CHICKEN_MAX = 3

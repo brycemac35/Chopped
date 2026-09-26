@@ -223,7 +223,7 @@ The cars run on a tyre model now, not a rail:
   - **Banana peel:** dropped 2 m ahead. A car that finds it spins out; a person who steps on it goes flat on their back.
   - **Box of donuts:** thrown up to 12 m. The two nearest cops within 35 m pull over and eat for 8 s, seeing nothing. NOM NOM.
   - Traps get towed after 2.5 minutes. They blink just before.
-- **Carjacking:** once traffic has stopped (roadblock, spikes, you standing in the road, a jam), walk up to it and hold E for 1.5 s. The driver gets dragged out and runs, and the car's yours (+12 heat). A driver who bails after a big crash leaves the engine running too: just get in (+10 heat, same as a break-in).
+- **Carjacking:** once traffic has stopped (roadblock, spikes, you standing in the road, a jam), walk up to it and hold E for 1.5 s. The driver gets dragged out and runs, and the car's yours (+12 heat). **(v0.13.1)** a stopped car now waits while you're at its door, so "stand in the road, then walk round to the driver's side" actually works (it used to pull away the moment you stepped out of its lane). A driver who bails after a big crash leaves the engine running too: just get in (+10 heat, same as a break-in).
 
 ### Ridiculous stuff
 
@@ -260,7 +260,7 @@ The cars run on a tyre model now, not a rail:
   - **The rubber chicken** (8). Squeak. Knocks people over harder than a punch, and it's no heat at all: assault with a rubber chicken isn't on the statute books. Cell doors are unimpressed.
   - **The whoopee cushion** (9). Lay it down. Whoever treads on it goes PFFFFT, and everyone within 14 m (officers and guards included) is helpless with laughter for 3.5 s. Three parps a cushion.
   - **The cardboard box.** C to get in. You shuffle at a third of your speed, and you can't punch, but stand still for a moment and **nobody can see you**: not the cops, not the witnesses, not the officer who was about to cuff you. Move, and you're a box with little legs.
-  - **Steal the cop car.** When an officer gets out to chase somebody, his car's sitting there with the engine running. Hold E on it for 2 s. +30 heat, the siren's your horn now, and the officer is left standing in the road.
+  - **Steal the cop car.** **(v0.13.1, Bryce: "i cant seem to steal cop cars, can you make them a regular vehicle i can carjack?")** Any cop car, patrol or dispatched, can be carjacked like traffic once it's (nearly) stopped: stand in front of a patrol car, drop a spike strip or a roadblock, or bribe it with a box of donuts, then hold E at the door for 2 s and drag the officer out. Or wait for an officer to jump out to chase somebody and take the car he left running. Either way: +30 heat, the siren's your horn now, and the officer is left standing in the road. A cop car that's still moving tells you to stop it first.
   - **Chickens cross the road** near you every so often. Why? Nobody knows. Hit one and it's feathers.
   - **Mimes.** Trapped in invisible boxes on the pavement. Not witnesses (what would they say?). Rob one and you get $0: it was an invisible wallet. Punch one and he mimes it, beautifully.
   - **Stunt ramps** in every car park. Hit one at more than 14 m/s (about 31 mph) for **BIG AIR!** and $40 from the crowd for every second you're up there.
@@ -352,7 +352,7 @@ Bryce: "can you instate the story quests as a separate persistent quest that upd
 | 5 | Feel the Heat | The Fixer | 6 | Get the heat to 50, then lose them (heat back to 0) without getting cuffed | $500 |
 | 6 | Hostile Takeover | The Fixer | 8 | Buy Tommy's lot | $600 |
 | 7 | The Inside Job | Paige | 10 | Get arrested on purpose, then break out (bail doesn't count) | $750 |
-| 8 | Blue Lights | Tommy | 13 | Steal a cop car while its officer's out, and deliver it | $900 |
+| 8 | Blue Lights | Tommy | 13 | Stop a cop car, carjack it and deliver it | $900 |
 | 9 | The Audition | The Kingpin | 16 | Deliver 3 cars before midnight | $1,200 |
 | 10 | The Big One | The Kingpin | 20 | Deliver a car with 75+ heat on you | $3,000 |
 

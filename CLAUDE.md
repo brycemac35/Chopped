@@ -11,6 +11,26 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
 
 ## 1. Status and your tasks, in order
 
+### Where things stand (Sept 26, 2026, session 2, RELEASE 0.13.1: carjackable cop cars)
+- **v0.13.1** (Bryce: "i cant seem to steal cop cars, can you make them a regular vehicle i can
+  carjack?"). Why it didn't work: `_copcar_stealable` needed the officer OUT of the car (he'd jumped
+  out to chase someone on foot -- i.e. usually you) AND the car under 1.5 m/s; every other cop car was
+  skipped by `_find_interaction`'s aim loop entirely, so there wasn't even a prompt or a hint. Now:
+  - **Any cop car that's (nearly) stopped** (`C.COP_CARJACK_MAX_SPEED` 3.0) and not burning can be
+    taken with the same hold-E (`COPCAR_STEAL_TIME`): with the officer out it's the old steal; with
+    him in, `_steal_cop_car` drags him out onto the tarmac (a carless `OFFICER` NPC, knocked down,
+    `lines.COPJACK_LINES`). +30 heat as before. A moving cop car shows "STOP IT FIRST: SPIKES, A
+    ROADBLOCK, DONUTS, STAND IN THE ROAD...".
+  - **Found on the way, and fixed for traffic too:** `World._held_up(car)` -- a car under
+    `C.CARJACK_HOLD_SPEED` with a crook on foot at its door (`CARJACK_DOOR_REACH`), or anyone mid-hold
+    on it, won't pull away. Without it, "stand in the road, then walk round to the door" couldn't ever
+    finish: the car drove off the moment you left its lane. Respected by `_traffic_ai` (traffic and
+    patrols) and `_cop_ai`.
+  - Story chapter 8 (Blue Lights) text and the INSTRUCTIONS window updated to match.
+  - No wire change: **protocol VERSION stays 14, RELEASE 0.13.1.** Tests: 3 more in `test_v09.py`
+    (carjacking a cop car with the officer inside, the stop-it-first hint, a stopped car waiting for
+    you at its door). **296 total, all OK.**
+
 ### Where things stand (Sept 26, 2026, session 2, RELEASE 0.13.0: the main story, bikes, pause menu)
 - **v0.13** (Bryce: "can you instate the story quests as a separate persistent quest that updates
   when you finish it. still have the REP guard rails to progress. but i need story quests and
@@ -504,7 +524,7 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
   ```
   set SDL_VIDEODRIVER=dummy & set SDL_AUDIODRIVER=dummy & python -m unittest discover -s tests -v
   ```
-  (On Linux/macOS: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests -v`.) At handoff (session 2, RELEASE 0.13.0): **293 tests, all OK**, and the game-loop selftest ran at about 48-49 fps.
+  (On Linux/macOS: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests -v`.) At handoff (session 2, RELEASE 0.13.1): **296 tests, all OK**, and the game-loop selftest ran at about 42-50 fps.
 
 ## 3. Architecture (details in README.md)
 - `main.py` is the command line: `--host`, `--join IP[:PORT]`, `--server` (headless), `--selftest`, `--port`, `--name`, `--mute`, `--no-upnp`, `--log FILE`, `--fake-lag MS`, `--no-predict`.

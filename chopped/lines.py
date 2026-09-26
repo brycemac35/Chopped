@@ -166,3 +166,10 @@ IMPOUND_LINES = (
     "%s STOLE A BIKE FROM A POLICE STATION. BOLD",
     "%s: 'IT'S NOT STEALING IF IT WAS ALREADY STOLEN'",
 )
+
+# (v0.13.1) somebody carjacked a police car with the officer still sat in it
+COPJACK_LINES = (
+    "%s DRAGGED A POLICE OFFICER OUT OF HIS OWN CAR",
+    "%s CARJACKED A COP. HE'S FILING A REPORT. ON FOOT",
+    "%s: 'LICENCE AND REGISTRATION, OFFICER'",
+)
