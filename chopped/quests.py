@@ -353,7 +353,11 @@ class Quests:
                 if q.get("evaded") and car.damage == 0:
                     self._complete_quest(qid)
                 else:
-                    self._fail_quest(qid, "not clean enough")
+                    # (v0.12.1) it used to say "not clean enough" for both, and the playtest
+                    # read "too quick" as "too dirty". Say which. (Progress resets; the next
+                    # car you steal gets a fresh go.)
+                    self._fail_quest(qid, "CRASHED IT. NEXT CAR" if car.damage > 0 else
+                                     "HOME BEFORE 90S. NEXT CAR")
             elif qid == "engine_pull":
                 if car.parts.get("Engine") is not None:
                     q["delivered_with_engine"] = car.id

@@ -71,6 +71,7 @@ def darkness(tod):
 class FPRenderer:
     def __init__(self, cmap, map_surf, vw, vh):
         self.map = cmap
+        self.cam_inside = False       # (v0.12.1) camera under the shop roof: skip what the ceiling hides
         self.vw, self.vh = vw, vh
         self.hor0 = vh // 2
         self.hor = self.hor0          # moves with pitch (looking up/down: Build-engine y-shearing)
@@ -544,6 +545,10 @@ class FPRenderer:
                 i = t[0] - C.DOOR_ID
                 if 0 <= i < len(C.DOOR_COLS):
                     self.door_open[C.DOOR_COLS[i]] = t[5]
+        # (v0.12.1) under the roof, nothing above ROOF_H can be seen -- the ceiling's in the
+        # way -- so the parapet and the bay lintels needn't be drawn at all (they were ~40% of
+        # the frame in there, all of it painted over a moment later by _roof)
+        self.cam_inside = self.map.in_garage(cx, cy)
         self._walls(surf, cx, cy, yaw, eye, dark, night)
         self._roof(surf, cx, cy, yaw, eye)
         self._sprites(surf, view, cx, cy, yaw, eye, me_pid, now, dt, dark, night, bank, hide_car)
@@ -722,6 +727,12 @@ class FPRenderer:
             level = base_level + int(dist / 11.0) + side
             col = wt.cols[level if level < FA.SHADES else FA.SHADES - 1][u]
             th = wt.h
+            if H > C.ROOF_H and self.cam_inside and self.wall_def[did][0] in ("brick", "pier", "walkdoor") \
+                    and self._in_shop_box(cx + dist * dx, cy + dist * dy):
+                cut = int(th * (1.0 - C.ROOF_H / H))       # (the parapet's above the ceiling)
+                col = col.subsurface((0, cut, 1, th - cut))
+                th -= cut
+                H = C.ROOF_H
             top = hor - (H - eye) * D / dist
             bot = hor + eye * D / dist
             h = bot - top
@@ -750,15 +761,24 @@ class FPRenderer:
                     lintel = (dist, C.ROOF_H, None)      # a shut bay door: brick above it too
                 self._lintel_slice(surf, x, dx, lintel, cx, eye, base_level, night)
 
+    def _in_shop_box(self, x, y):
+        """The home shop's footprint, walls included (a fence shop across the road is still
+        8 m of brick when you look at it through an open bay door)."""
+        gx, gy, gw, gh = self.map.garage_rect
+        return gx - T <= x <= gx + gw + T and gy - T <= y <= gy + gh + T
+
     def _lintel_slice(self, surf, x, dx, lintel, cx, eye, base_level, night):
         """(v0.12.1) the brick over a doorway, from the top of the opening up to the parapet --
         without it a raycaster column through an open door has nothing above the opening, and
         the shop looked like a roofless box from the street. From inside it's under the ceiling
         (the roof layer is drawn after the walls), so only the street ever sees it."""
         dist, h0, fc = lintel
+        top_h = C.ROOF_H if self.cam_inside else C.SHOP_FACADE_H
+        if h0 >= top_h:
+            return                           # (indoors, a bay's lintel is all above the ceiling)
         dist = max(0.05, dist)
         hor, vh, D = self.hor, self.vh, self.D
-        top = hor - (C.SHOP_FACADE_H - eye) * D / dist
+        top = hor - (top_h - eye) * D / dist
         bot = hor - (h0 - eye) * D / dist
         y0, y1 = max(0, int(top)), min(vh, int(bot))
         if y1 - y0 < 1:
@@ -770,10 +790,11 @@ class FPRenderer:
         level = min(FA.SHADES - 1, base_level + int(dist / 11.0) + 1)
         col = wt.cols[level][u]
         th = wt.h
-        t1 = max(1, min(th, int(round((1.0 - h0 / C.SHOP_FACADE_H) * th))))
+        t0 = int((1.0 - top_h / C.SHOP_FACADE_H) * th)          # texture row at the top edge
+        t1 = max(t0 + 1, min(th, int(round((1.0 - h0 / C.SHOP_FACADE_H) * th))))
         h = bot - top
-        ta = max(0, int((y0 - top) / h * t1))
-        tb = max(ta + 1, min(t1, int(math.ceil((y1 - top) / h * t1))))
+        ta = t0 + max(0, int((y0 - top) / h * (t1 - t0)))
+        tb = max(ta + 1, min(t1, t0 + int(math.ceil((y1 - top) / h * (t1 - t0)))))
         surf.blit(pygame.transform.scale(col.subsurface((0, ta, 1, tb - ta)), (1, y1 - y0)), (x, y0))
 
     def _door_slice(self, surf, x, dx, dy, door_at, cx, cy, eye, base_level, night):

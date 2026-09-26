@@ -970,9 +970,10 @@ class DoomHud:
         arrow = "<" if bearing < -half else ">" if bearing > half else "V"
         text = "%s SHOP %dM %s" % (arrow if arrow == "<" else "", dist, arrow if arrow == ">" else "")
         x = self._clear_of_radar(x, text)
-        self.font.draw(low, text, int(x), 14, col, align="center")
+        y = self._compass_y(now)
+        self.font.draw(low, text, int(x), y, col, align="center")
         if arrow == "V":
-            pygame.draw.polygon(low, col, [(x - 4, 22), (x + 4, 22), (x, 27)])
+            pygame.draw.polygon(low, col, [(x - 4, y + 8), (x + 4, y + 8), (x, y + 13)])
 
     def _arms_panel(self, low, snap, me, info, by):
         """Left of the bar, Doom's ARMS box: 1-9, lit if you own it, gold in hand.
@@ -1027,6 +1028,13 @@ class DoomHud:
             f.draw(low, "-", cx, by + 8, (70, 68, 76), align="center")
         f.draw(low, "GEAR", cx, by + 23, P["white"], align="center")
 
+    def _compass_y(self, now):
+        """(v0.12.1) the compass line sat at y=14 -- which is exactly where the SECOND toast
+        goes, so any busy moment ("HOTWIRED IT" + "JOB DONE" + ...) printed two lines on top
+        of each other. It now ducks under however many toasts are showing."""
+        live = sum(1 for t in self.toasts if now - t[2] <= C.TOAST_TIME)
+        return 14 if live <= 1 else 3 + 8 * live + 3
+
     def _clear_of_radar(self, x, text):
         """(v0.12.1) the radar doubled in size and now owns the top-right corner: a centred
         compass label that would run under it slides left until it doesn't."""
@@ -1058,9 +1066,10 @@ class DoomHud:
         else:
             text = "CAR TO STEAL %dM" % bd
         x = self._clear_of_radar(x, text)
+        y = self._compass_y(now)
         if -half <= bearing <= half:
-            pygame.draw.polygon(low, col, [(x - 4, 22), (x + 4, 22), (x, 27)])
-        self.font.draw(low, text, int(x), 14, col, align="center")
+            pygame.draw.polygon(low, col, [(x - 4, y + 8), (x + 4, y + 8), (x, y + 13)])
+        self.font.draw(low, text, int(x), y, col, align="center")
 
     def _crew_compass(self, low, view, info, now):
         """(v0.10, Bryce: "better visibility for multiplayer", clarified as "can't spot
@@ -1083,7 +1092,7 @@ class DoomHud:
             if dist < 60 and -half < bearing < half:
                 continue                          # already in frame and near
             col = PLAYER_COLORS[p[1] % 4]
-            y = 34 + row * 8
+            y = self._compass_y(now) + 20 + row * 8
             row += 1
             if row > 3:
                 break
