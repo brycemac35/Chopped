@@ -495,7 +495,7 @@ class App:
         self.snapshots_seen = c.latest.tick if c.latest else 0
         if c.latest is not None:
             was = self.modshop.open
-            self.modshop.sync(getattr(c.latest, "menu", None))
+            self.modshop.sync(getattr(c.latest, "menu", None), getattr(c.latest, "cars", None))
             if self.modshop.open != was:
                 self._grab_mouse(not self.modshop.open)
         if c.latest:
@@ -775,10 +775,18 @@ class App:
 
     def _present(self):
         sw, sh = self.screen.get_size()
-        k = min(sw // W, sh // H)
-        if k >= 1:
-            size = (W * k, H * k)
+        if self.fp_mode:
+            k = min(sw // W, sh // H)
+            if k >= 1:
+                size = (W * k, H * k)
+            else:
+                s = min(sw / W, sh / H)
+                size = (max(1, int(W * s)), max(1, int(H * s)))
         else:
+            # (v0.10, Bryce: "make the main map scale to window size") the automap is a
+            # schematic overview, not pixel-critical art viewed up close, so it scales
+            # smoothly to fill the window instead of snapping to whatever integer
+            # multiple fits -- which on most window sizes left most of it black.
             s = min(sw / W, sh / H)
             size = (max(1, int(W * s)), max(1, int(H * s)))
         if self.scaled is None or self.scaled.get_size() != size:

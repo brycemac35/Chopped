@@ -63,8 +63,6 @@ class Body:
 def trap_rect(row):
     """Same rect the server uses, from a snapshot TRAP row (id, kind, x, y, ang, life)."""
     t = Trap(row[0], row[1], row[2], row[3], row[4])
-    if row[1] == TRAP_DOOR:
-        t.uses = C.DOOR_W           # (the shop door's width isn't on the wire: there's only one)
     return t.rect()
 
 

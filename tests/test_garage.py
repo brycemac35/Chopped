@@ -252,7 +252,7 @@ class TestTrunks(unittest.TestCase):
         car.trunk = [Part("cash_bag")]
         w.cars[car.id] = car
         self._behind(w, p, car)
-        key, label, _, _ = w._find_interaction(p)
+        key, label = w._find_interaction(p)[:2]
         self.assertNotIn("TRUNK", label, "locked car: break in first")
         car.state = S.BROKEN_IN
         key, label, _, action = w._find_interaction(p)

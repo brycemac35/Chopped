@@ -62,9 +62,11 @@ def civ_cars(w):
 
 
 def road_point(w):
-    """Middle of the road just south of the shop entrance."""
+    """On the road, lined up with bay 0's own door (v0.10: the doors are per-bay now,
+    not one wide one spanning the whole front -- gx + gw / 2 is a solid pillar these days)."""
+    bx, by, _ = w.map.bays[0]
     gx, gy, gw, gh = w.map.garage_rect
-    return gx + gw / 2, gy + gh + 10.0
+    return bx, gy + gh + 10.0
 
 
 class TestCoreLoop(unittest.TestCase):
@@ -234,8 +236,8 @@ class TestCoreLoop(unittest.TestCase):
         p.x, p.y = road_point(w)
         press(p, S.B_RIGHT | S.B_SPRINT)
         step(w, 1.0)
-        self.assertAlmostEqual(p.stamina, 100 - 38, delta=1.5)
-        step(w, 2.0)
+        self.assertAlmostEqual(p.stamina, C.STAMINA_MAX - 38, delta=1.5)
+        step(w, C.STAMINA_MAX / 38.0)      # however long the (bigger, v0.10) tank takes to empty
         self.assertTrue(p.exhausted)
         self.assertFalse(p.sprinting)
         press(p, 0)
@@ -243,6 +245,88 @@ class TestCoreLoop(unittest.TestCase):
         self.assertEqual(p.stamina, 0.0, "no regen for 0.9 s")
         step(w, 0.9 + 25 / 18.0)
         self.assertFalse(p.exhausted)
+
+
+class AlwaysRight:
+    """A stand-in for World.rng that always finds the one right wire."""
+    def randrange(self, n):
+        return 0
+
+
+class AlwaysWrong:
+    """A stand-in for World.rng that always grabs a wrong wire (n > 1 is assumed)."""
+    def randrange(self, n):
+        return 1 % n
+
+
+class TestWireCut(unittest.TestCase):
+    """(v0.10, Bryce: "sneaking / turning off the alarm on a stolen car by cutting
+    wire minigame") X at a locked car toggles the slower, quieter way in."""
+
+    def _at_locked_car(self, w, p):
+        car = civ_cars(w)[0]
+        car.special = None
+        p.x, p.y = car.to_world(0.0, -2.0)
+        face(p, car.x, car.y)
+        return car
+
+    def test_x_toggles_to_the_wire_cut_prompt(self):
+        w = quiet_world()
+        p = w.add_player("ALICE")
+        car = self._at_locked_car(w, p)
+        key, label = w._find_interaction(p)[:2]
+        self.assertEqual(key, ("breakin", car.id))
+        self.assertIn("CUT THE WIRES", label)
+        press(p, S.B_HOP)
+        step(w, DT)
+        self.assertTrue(p.sneak)
+        key, label = w._find_interaction(p)[:2]
+        self.assertEqual(key, ("cutwires", car.id))
+        self.assertIn("SMASH IT", label)
+        press(p, 0)
+        step(w, DT)
+        press(p, S.B_HOP)                 # tap it again: back to smashing
+        step(w, DT)
+        self.assertFalse(p.sneak)
+
+    def test_cutting_the_right_wire_is_silent(self):
+        w = quiet_world()
+        p = w.add_player("ALICE")
+        car = self._at_locked_car(w, p)
+        p.sneak = True
+        w.rng = AlwaysRight()
+        w.heat = 0.0
+        w._cut_wires(p, car)
+        self.assertEqual(car.state, S.BROKEN_IN)
+        self.assertTrue(car.stolen)
+        self.assertFalse(car.alarm, "the right wire: no alarm")
+        self.assertEqual(w.heat, 0.0, "the right wire: no heat either")
+        self.assertFalse(p.sneak)
+
+    def test_cutting_the_wrong_wire_is_worse_than_smashing_it(self):
+        w = quiet_world()
+        p = w.add_player("ALICE")
+        car = self._at_locked_car(w, p)
+        p.sneak = True
+
+        w.rng = AlwaysWrong()
+        w.heat = 0.0
+        w._cut_wires(p, car)
+        self.assertEqual(car.state, S.BROKEN_IN)
+        self.assertTrue(car.alarm, "the wrong wire: alarm goes off")
+        self.assertAlmostEqual(w.heat, C.ALARM_CUT_FAIL_HEAT)
+        self.assertGreater(C.ALARM_CUT_FAIL_HEAT, C.HEAT_BREAKIN, "guessing wrong should cost more than just smashing it")
+
+    def test_a_clean_wire_cut_spares_you_the_angry_owner(self):
+        w = quiet_world()
+        p = w.add_player("ALICE")
+        car = self._at_locked_car(w, p)
+        car.special = "owner"
+        p.sneak = True
+        w.rng = AlwaysRight()
+        n_before = len(w.npcs)
+        w._cut_wires(p, car)
+        self.assertEqual(len(w.npcs), n_before, "nobody heard a thing -- no owner comes running")
 
 
 class TestHeat(unittest.TestCase):
@@ -260,18 +344,41 @@ class TestHeat(unittest.TestCase):
         ped.turn_t = 1e9
         return w, car, ped
 
-    def test_witness_raises_heat_then_cools(self):
+    def test_witness_calls_it_in_after_a_delay(self):
+        """(v0.10) a ped doesn't radio it in like a cop -- they clock you, then phone
+        it in after PHONE_IN_DELAY seconds. Kill them first (see test below) and the
+        call never lands."""
         w, car, ped = self._stolen_car_with_ped()
         w.heat = 20.0
         step(w, 1.0)
         self.assertEqual(w.witness, S.W_PED)
-        self.assertAlmostEqual(w.heat, 23.0, delta=0.4)
-        del w.npcs[ped.id]
-        step(w, 3.5)                      # unseen, but not yet 4 s
-        self.assertAlmostEqual(w.heat, 23.0, delta=0.4)
+        self.assertAlmostEqual(w.heat, 20.0, delta=0.05, msg="no live heat from a ped any more")
+        self.assertGreater(ped.call_t, 0.0)
+        step(w, C.PHONE_IN_DELAY[1] + 0.5)      # long enough that even the slow roll landed
+        self.assertAlmostEqual(w.heat, 20.0 + C.PHONE_IN_HEAT, delta=0.5)
+
+    def test_killing_the_witness_cancels_the_call(self):
+        w, car, ped = self._stolen_car_with_ped()
+        w.heat = 20.0
+        step(w, 1.0)
+        self.assertGreater(ped.call_t, 0.0)
+        ped.call_t = 0.2              # force the call to be about to land...
+        del w.npcs[ped.id]            # ...then silence them first
+        # a short window, well inside HEAT_COOL_DELAY, so the ordinary "nobody's seen
+        # you" cooldown can't muddy the result -- this is purely "did the call land"
+        step(w, 0.5)
+        self.assertAlmostEqual(w.heat, 20.0, delta=0.05, msg="no witness left to make the call")
+
+    def test_witness_pauses_the_cooldown_but_doesnt_cool(self):
+        w, car, ped = self._stolen_car_with_ped()
+        w.heat = 20.0
+        step(w, 1.0)
+        self.assertEqual(w.witness, S.W_PED)
+        del w.npcs[ped.id]                # they made the call already (see phoned); this just
+        step(w, 3.5)                      # tests the ordinary unseen-cooldown path afterward
         self.assertEqual(w.witness, S.W_NONE)
-        step(w, 2.5)                      # now ~2 s of cooling at 3/s
-        self.assertAlmostEqual(w.heat, 23.0 - 2.0 * C.HEAT_COOL_RATE, delta=0.8)
+        step(w, 2.5)                      # ~2 s of cooling at 3/s once nobody's watching
+        self.assertAlmostEqual(w.heat, 20.0 - 2.0 * C.HEAT_COOL_RATE, delta=0.8)
 
     def test_cop_outranks_ped_no_stacking(self):
         w, car, ped = self._stolen_car_with_ped()
@@ -281,7 +388,7 @@ class TestHeat(unittest.TestCase):
         w.heat = 10.0
         step(w, 1.0)
         self.assertEqual(w.witness, S.W_COP)
-        self.assertAlmostEqual(w.heat, 15.0, delta=0.6)   # +5/s, not 5+3
+        self.assertAlmostEqual(w.heat, 10.0 + C.WITNESS_RATE_COP, delta=0.6)   # cop's rate, not cop+ped
 
     def test_camera_sees_only_cars(self):
         w = quiet_world()

@@ -238,7 +238,7 @@ class Renderer:
                     low.fill(P["gold"], (x0 + w - 3, y0 - 1, 2, 3))          # the padlock
                 continue
             if t[1] == S.TRAP_DOOR:
-                # the shop's roller door: a shutter line across the front, gone when it's up
+                # one of the shop's five doors: a shutter line across its bay, gone when it's up
                 if t[5] < 0.98:
                     x0, y0 = self.to_screen(t[2] - C.DOOR_W / 2, t[3] - C.DOOR_T / 2)
                     w = max(1, int(C.DOOR_W * PPM))

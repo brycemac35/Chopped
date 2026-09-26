@@ -528,8 +528,11 @@ class TestSillyPolice(unittest.TestCase):
     def test_streakers_turn_up(self):
         w = world()
         w.add_player("BRYCE")
-        w.streaker_t = 0.01
-        w.step(DT)
+        for _ in range(200):        # each roll only samples 30 candidate tiles; keep rolling
+            if any(n.kind == S.STREAKER for n in w.npcs.values()):
+                break
+            w.streaker_t = 0.01
+            w.step(DT)
         self.assertTrue(any(n.kind == S.STREAKER for n in w.npcs.values()))
 
     def test_speed_cameras_post_you_a_ticket(self):

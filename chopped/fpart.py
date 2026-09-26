@@ -1175,6 +1175,14 @@ def dolly_boxes():
             (-0.5, -0.4, -0.3, 0.3, 0.95, 1.05, P["red"])]
 
 
+def trunk_lid_boxes(stage):
+    """(v0.10, Bryce: "popping trunk animation") the boot lid easing open -- stage 0
+    shut, 3 fully up. It doesn't hinge so much as grow a vertical panel, same as
+    everything else in this low-poly city."""
+    top = 0.68 + 0.42 * (stage / 3.0)
+    return [(-0.5, 0.5, -0.05, 0.05, 0.64, top, {"*": P["metal"], "+z": shade(P["metal"], 1.25)})]
+
+
 def bench_boxes(is_sell, length, depth):
     hl, hd = length / 2, depth / 2
     if is_sell:

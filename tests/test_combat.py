@@ -166,13 +166,15 @@ class TestGuns(unittest.TestCase):
         armed(p)
         p.x, p.y = street(w)
         n = ped(w, p.x + 20, p.y)
+        nid = n.id
         face(p, n.x, n.y)
         wield(p, S.ARM_PISTOL)
         click(p)
         w.step(DT)
-        self.assertGreater(n.tumble_t, C.PUNCH_KNOCKDOWN)
+        # (v0.10) a bullet is lethal to a civilian now -- no witness left, not a knockdown
+        self.assertNotIn(nid, w.npcs, "a shot civilian doesn't get back up")
         self.assertEqual(p.ammo[S.ARM_PISTOL], 23)
-        self.assertGreaterEqual(w.heat, C.GUNSHOT_HEAT - 0.1)
+        self.assertGreaterEqual(w.heat, C.MURDER_HEAT - 0.1)  # (the victim was the only ped in earshot)
         self.assertTrue(any(e[2] == 2 for e in w.events), "a tracer event goes out to clients")
         p.ammo[S.ARM_PISTOL] = 0
         step(w, C.PISTOL_COOLDOWN)

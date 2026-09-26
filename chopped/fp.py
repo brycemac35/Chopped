@@ -98,7 +98,9 @@ class FPRenderer:
         self.roof_layer = pygame.Surface((vw, vh)).convert()
         self.roof_layer.set_colorkey(ROOF_KEY)
         self.roof_clip = None         # per column: (depth where the roof ends, screen row it ends on)
-        self.door_open = 1.0          # the shop's roller door: 0 down .. 1 up (from its TRAP row)
+        # (v0.10) one fraction per front tile-column (7: a walking door, 4 bays, 2 solid
+        # piers) instead of one shared value -- each of the shop's 5 doors moves on its own.
+        self.door_open = [1.0] * (C.BLOCK_TILES - 2)
         self.sky_h = int(vh * 0.95)   # tall enough to look up into
         self.skies = {k: FA.make_sky(k, 4 * vw, self.sky_h) for k in FA.SKY_KEYS}
         self.hires = None             # the car the chase camera is following: drawn in more detail
@@ -125,6 +127,7 @@ class FPRenderer:
         self.hat_off = set()          # npc ids whose hat is in the road now
         self.flying_hats = []         # [x, y, z, vx, vy, vz, spin, style, life]
         self.air_t0 = {}              # car id -> (time it left the ramp, hang time)
+        self.trunk_pop = {}           # (v0.10) car id -> how open its boot is (0..1), local eye candy only
         self._init_pigeons()
 
     # ------------------------------------------------------------------ setup
@@ -172,10 +175,13 @@ class FPRenderer:
         # apron. The ray march checks for it when it steps across that line (see _walls)
         self.door_rows = (oy + b - 2, oy + b - 1)
         self.door_cols = (ox + 1, ox + b - 2)
-        first = (b - 2 - 3) // 2                       # HONK TO OPEN, across the middle three bays...
+        # (v0.10) HONK TO OPEN, across bay 0 and bay 1 (config.DOOR_COLS[1], [2] -- the first
+        # two bay doors, sitting side by side). It's the remote for every bay door, but a
+        # sign across all four would run into the solid pier between the two pairs.
+        first, span = C.DOOR_COLS[1], 2
         self.door_defs = []
         for k in range(b - 2):
-            sign = 1 if first <= k < first + 3 else 0
+            sign = 1 if first <= k < first + span else 0
             self.door_defs.append(def_id(("door", k, sign, first)))
             if sign:                                   # ...on the street side only
                 self.inner_plain[def_id(("door", k, 1, first))] = def_id(("door", k, 0, first))
@@ -198,8 +204,8 @@ class FPRenderer:
                 surf = FA.roller_door(d[1], night)
                 first = d[3]
                 if d[2]:
-                    sign = pygame.Surface((FA.TEX * 3, 9), pygame.SRCALPHA)
-                    self.font.draw(sign, "HONK TO OPEN", FA.TEX * 3 // 2, 1, (250, 232, 80), (0, 0, 0),
+                    sign = pygame.Surface((FA.TEX * 2, 9), pygame.SRCALPHA)
+                    self.font.draw(sign, "HONK", FA.TEX * 2 // 2, 1, (250, 232, 80), (0, 0, 0),
                                    align="center")
                     surf.blit(sign, (-(d[1] - first) * FA.TEX, 18))
             elif d[0] == "brick":
@@ -464,7 +470,9 @@ class FPRenderer:
         self._floor(surf, cx, cy, yaw, eye, dark)
         for t in getattr(view, "traps", {}).values():
             if t[1] == S.TRAP_DOOR:
-                self.door_open = t[5]
+                i = t[0] - C.DOOR_ID
+                if 0 <= i < len(C.DOOR_COLS):
+                    self.door_open[C.DOOR_COLS[i]] = t[5]
         self._walls(surf, cx, cy, yaw, eye, dark, night)
         self._roof(surf, cx, cy, yaw, eye)
         self._sprites(surf, view, cx, cy, yaw, eye, me_pid, now, dt, dark, night, bank, hide_car)
@@ -550,8 +558,7 @@ class FPRenderer:
         base_level = int(dark * 5)
         mx0, my0 = int(cx // T), int(cy // T)
         fx0, fy0 = cx / T - mx0, cy / T - my0
-        up = self.door_open
-        door_on = up < 0.98                                  # (all the way up: nothing to hit)
+        door_open = self.door_open           # (v0.10) one fraction per front column, not one shared value
         dra, drb = self.door_rows
         dc0, dc1 = self.door_cols
         door_defs = self.door_defs
@@ -580,14 +587,15 @@ class FPRenderer:
                     sdy += ddy
                     my += sy
                     side = 1
-                    if door_on and dc0 <= mx <= dc1 and ((sy > 0 and my == drb) or (sy < 0 and my == dra)):
-                        # the shop's roller door, across the front
-                        if up <= 0.01:
-                            did = door_defs[mx - dc0]      # (all the way down: it's a wall)
-                            break
-                        # half up: remember it, keep marching to whatever's behind it, and draw
-                        # the door over that afterwards (so the gap under it isn't sky)
-                        door_at = (door_defs[mx - dc0], (sdy - ddy) * T)
+                    if dc0 <= mx <= dc1 and ((sy > 0 and my == drb) or (sy < 0 and my == dra)):
+                        up = door_open[mx - dc0]             # (v0.10) THIS column's own door
+                        if up < 0.98:
+                            if up <= 0.01:
+                                did = door_defs[mx - dc0]      # (all the way down: it's a wall)
+                                break
+                            # half up: remember it, keep marching to whatever's behind it, and
+                            # draw the door over that afterwards (so the gap isn't sky)
+                            door_at = (door_defs[mx - dc0], (sdy - ddy) * T, up)
                 if 0 <= mx < n and 0 <= my < n:
                     did = wall_of[my * n + mx]
                     if did:
@@ -642,7 +650,7 @@ class FPRenderer:
 
     def _door_slice(self, surf, x, dx, dy, door_at, cx, cy, eye, base_level, night):
         """A half-open roller door, drawn over whatever the ray found behind it."""
-        did, dist = door_at
+        did, dist, up = door_at
         dist = max(0.05, dist)
         self.zbuf[x] = min(self.zbuf[x], dist)
         u = int(((cx + dist * dx) % T) / T * FA.TEX)
@@ -655,11 +663,11 @@ class FPRenderer:
         level = min(FA.SHADES - 1, base_level + int(dist / 11.0) + 1)
         col = wt.cols[level][u]
         th = wt.h
-        cut = min(th - 1, int(self.door_open * th))
+        cut = min(th - 1, int(up * th))
         col = col.subsurface((0, cut, 1, th - cut))
         hor, vh, D = self.hor, self.vh, self.D
         top = hor - (H - eye) * D / dist
-        bot = hor - (self.door_open * H - eye) * D / dist
+        bot = hor - (up * H - eye) * D / dist
         y0, y1 = max(0, int(top)), min(vh, int(bot))
         if y1 - y0 < 1:
             return
@@ -681,7 +689,7 @@ class FPRenderer:
         gx, gy, gw, gh = self.map.garage_rect
         inside = gx <= cx <= gx + gw and gy <= cy <= gy + gh
         if not inside:
-            if cy < gy + gh or self.door_open < 0.3 or abs(cx - (gx + gw / 2)) > 60 or cy > gy + gh + 45:
+            if cy < gy + gh or max(self.door_open) < 0.3 or abs(cx - (gx + gw / 2)) > 60 or cy > gy + gh + 45:
                 return
         rh = C.ROOF_H - eye
         if rh <= 0.2:
@@ -876,6 +884,7 @@ class FPRenderer:
                     z=hop, tag=("smoke", row))
             else:
                 add(row[7], row[8], lambda r=row, a=az: self._car_sprite(r, a), z=hop, tag=self._car_marker(row))
+        self._trunk_pop(view, dt, cx, cy, add)
         frame = int(now * 7) % 2
         for n in view.npcs.values():
             az = math.atan2(n[4] - cy, n[3] - cx) - n[5]
@@ -1067,6 +1076,35 @@ class FPRenderer:
         if not 0.0 <= t <= 1.0:
             return 0.0
         return 9.8 * t0[1] * t0[1] / 2.0 * t * (1.0 - t)
+
+    def _trunk_pop(self, view, dt, cx, cy, add):
+        """(v0.10, Bryce: "popping trunk animaiton") purely cosmetic: whichever car's
+        trunk the SELF block says you're currently looking into eases its lid open
+        over TRUNK_POP_TIME, and eases it shut again once you walk off. Rides the
+        trunk data every trunk prompt already sends -- no new bytes on the wire."""
+        tr = getattr(view.snap, "trunk", None)
+        target_id = tr[0] if tr is not None else None
+        if target_id is not None and target_id not in self.trunk_pop:
+            self.trunk_pop[target_id] = 0.0
+        rate = dt / max(0.05, C.TRUNK_POP_TIME)
+        dead = []
+        for cid, t in self.trunk_pop.items():
+            goal = 1.0 if cid == target_id else 0.0
+            t = clamp(t + rate if goal > t else t - rate, 0.0, 1.0)
+            self.trunk_pop[cid] = t
+            row = view.cars.get(cid)
+            if row is None or (t <= 0.0 and goal <= 0.0):
+                dead.append(cid)
+                continue
+            mdl = V.model(row[15])
+            bx = row[7] - math.cos(row[11]) * mdl.length / 2
+            by = row[8] - math.sin(row[11]) * mdl.length / 2
+            az = math.atan2(by - cy, bx - cx) - row[11]
+            stage = min(3, int(t * 4))
+            add(bx, by, lambda a=az, s=stage: self._model_sprite(("trunklid", s), lambda: FA.trunk_lid_boxes(s),
+                                                                  a, None, 20), z=0.6)
+        for cid in dead:
+            del self.trunk_pop[cid]
 
     def _hat_flies(self, nid, x, y, style):
         if len(self.hat_off) > 400:

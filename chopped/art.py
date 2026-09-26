@@ -589,11 +589,11 @@ def _render_garage(surf, cmap):
     for k in range(0, h, 3):
         surf.fill(P["line_y"], (x0, y0 + k, 1, 2))
         surf.fill(P["line_y"], (x0 + w - 1, y0 + k, 1, 2))
-    # personal bay box
-    bx, by, _ = cmap.bay
-    pygame.draw.rect(surf, P["white"], (int((bx - 1.8) * S), int((by - 3.2) * S), int(3.6 * S), int(6.4 * S)), 1)
+    # one bay box per player slot (v0.10: was a single shared "YOUR RIDE" box)
     font = PixelFont()
-    font.draw(surf, "YOUR RIDE", int(bx * S), int((by + 3.6) * S), P["white"], None, align="center")
+    for k, (bx, by, _) in enumerate(cmap.bays):
+        pygame.draw.rect(surf, P["white"], (int((bx - 1.8) * S), int((by - 3.2) * S), int(3.6 * S), int(6.4 * S)), 1)
+        font.draw(surf, "BAY %d" % (k + 1), int(bx * S), int((by + 3.6) * S), P["white"], None, align="center")
     font.draw(surf, "DOLLY", int(dx * S), int((dy + 1.7) * S), P["line_y"], None, align="center")
     font.draw(surf, "CHOP SHOP", int((gx + gw / 2) * S), int((gy + gh / 2) * S) - 4,
               shade(P["concrete"], 0.8), None, scale=2, align="center")

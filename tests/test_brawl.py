@@ -271,7 +271,7 @@ class TestPolice(unittest.TestCase):
         w.patrol_target = 2
         p = w.add_player("BRYCE")
         p.x, p.y = street(w)
-        step(w, 8.0)
+        step(w, 15.0)      # (v0.10: the city's bigger now, so a valid spawn spot takes longer to roll)
         patrols = [c for c in w.cars.values() if c.kind == S.COP and c.beat]
         self.assertEqual(len(patrols), 2)
         self.assertTrue(all(c.patrol for c in patrols), "just cruising while you behave")
@@ -328,8 +328,14 @@ class TestPolice(unittest.TestCase):
             self.assertEqual(cop.mode, 0)
             w.lethal_t = C.LETHAL_TIME
             w.cash = 1000
-            for _ in range(int(2.0 / DT)):
+            # (v0.10) a bullet is a chunk of a health bar now, not instant death: it takes a
+            # few hits, and a health bar means the officer (only 10 m off) could otherwise
+            # close in and cuff you between shots instead of finishing the job. Keep him at
+            # shooting range so this stays a test of the lethal mechanic, not the foot chase.
+            for _ in range(int(12.0 / DT)):
                 w.heat = 40
+                if math.hypot(cop.x - p.x, cop.y - p.y) < C.OFFICER_GUN_RANGE - 4:
+                    cop.x = p.x - (C.OFFICER_GUN_RANGE - 4)
                 w.step(DT)
                 if p.state == S.DEAD:
                     break

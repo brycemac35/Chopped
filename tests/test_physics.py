@@ -39,9 +39,12 @@ def kei(w, x, y, ang, kind=S.CIV):
 
 
 def south_face(w):
-    """(x_left, x_right, y) of a building's south wall with open sidewalk below it."""
+    """(x_left, x_right, y) of a building's south wall, facing a real street -- not one
+    side of a (v0.10) mid-block service alley, which is also SIDEWALK-typed but only
+    ALLEY_W tiles wide, with another building's wall right on the other side of it."""
     for rx, ry, rw, rh in w.map.solid_rects:
-        if rw >= 20 and w.map.tile_at(rx + rw / 2, ry + rh + 1) == 1:   # SIDEWALK below
+        cx = rx + rw / 2
+        if rw >= 20 and w.map.tile_at(cx, ry + rh + 1) == 1 and not w.map.solid_at(cx, ry + rh + 7):
             return rx, rx + rw, ry + rh
     raise AssertionError("no building face found")
 

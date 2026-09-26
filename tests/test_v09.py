@@ -210,40 +210,58 @@ class TestParkedCarsAndCarHits(unittest.TestCase):
 
 class TestShopDoor(unittest.TestCase):
     """Bryce: "add a roof to the chop shop and a closable door that blocks cops. but it
-    needs to be opened for you to get in." """
+    needs to be opened for you to get in." Then (v0.10): "make the garage door smaller,
+    make a walking entrance and a bay for each player that joins" -- one door became five:
+    a walking door (shop_doors[0]) and four bay doors (shop_doors[1:], one per player)."""
 
-    def shut(self, w):
-        w.toggle_door()
+    def shut(self, w, d):
+        w.toggle_door(d)
         step(w, C.DOOR_TIME + 0.1)
-        self.assertTrue(w.door_shut())
+        self.assertTrue(d.solid())
 
     def test_open_by_default_shut_on_request(self):
         w = world()
-        d = w.shop_door
+        self.assertEqual(len(w.shop_doors), 1 + C.N_BAYS)
+        d = w.shop_doors[1]
         self.assertFalse(w.door_shut())
         self.assertNotIn(d.rect(), w.extra_rects)
-        self.shut(w)
+        self.shut(w, d)
         self.assertIn(d.rect(), w.tall_rects)
-        w.toggle_door()
+        w.toggle_door(d)
         step(w, C.DOOR_TIME + 0.1)
-        self.assertFalse(w.door_shut())
+        self.assertFalse(d.solid())
 
-    def test_e_at_the_door(self):
+    def test_e_at_a_bay_door(self):
         w = world()
         p = w.add_player("BRYCE")
-        d = w.shop_door
+        d = w.shop_doors[1]
         p.x, p.y = d.x, d.y - 1.5
         face(p, d.x, d.y + 3)
         w.step(DT)
-        self.assertIn("SHOP DOOR DOWN", p.prompt)
+        self.assertIn("BAY DOOR", p.prompt)
         inp(p, use_count=p.input.use_count + 1)
         w.step(DT)
-        self.assertEqual(w.door_goal, 0.0)
+        self.assertEqual(d.goal, 0.0)
+
+    def test_each_bay_door_is_independent(self):
+        w = world()
+        d0, d1 = w.shop_doors[1], w.shop_doors[2]
+        self.shut(w, d0)
+        self.assertTrue(d0.solid())
+        self.assertFalse(d1.solid(), "shutting one bay doesn't shut the others")
+
+    def test_the_walking_door_is_its_own_door(self):
+        w = world()
+        walk = w.shop_doors[0]
+        self.assertNotEqual(walk.id, w.shop_doors[1].id)
+        self.shut(w, walk)
+        for d in w.shop_doors[1:]:
+            self.assertFalse(d.solid(), "shutting the walking door leaves every bay open")
 
     def test_it_stops_cops(self):
         w = world()
-        self.shut(w)
-        d = w.shop_door
+        d = w.shop_doors[1]
+        self.shut(w, d)
         cop = S.Car(w.new_id(), S.COP, d.x, d.y + 8, -math.pi / 2, S.cop_loadout(w.rng))
         w.cars[cop.id] = cop
         cop.vy = -15.0
@@ -258,18 +276,24 @@ class TestShopDoor(unittest.TestCase):
 
     def test_they_cant_see_through_it(self):
         w = world()
-        d = w.shop_door
+        d = w.shop_doors[1]
         inside, outside = (d.x, d.y - 6), (d.x, d.y + 10)
         self.assertTrue(w.los(*inside, *outside))
-        self.shut(w)
+        self.shut(w, d)
         self.assertFalse(w.los(*inside, *outside))
         self.assertTrue(w.los(outside[0] - 3, outside[1], outside[0] + 3, outside[1]), "only through it")
+
+    def test_they_cant_see_through_the_pillars_between_doors_either(self):
+        w = world()
+        d1, d2 = w.shop_doors[2], w.shop_doors[3]      # bay 1 and bay 2: the pier is between them
+        cx, cy = (d1.x + d2.x) / 2, d1.y
+        self.assertFalse(w.los(cx, cy - 6, cx, cy + 10))
 
     def test_you_cant_walk_through_it_either(self):
         w = world()
         p = w.add_player("BRYCE")
-        self.shut(w)
-        d = w.shop_door
+        d = w.shop_doors[1]
+        self.shut(w, d)
         p.x, p.y = d.x, d.y + 3
         face(p, d.x, d.y - 5)
         inp(p, buttons=S.B_UP)
@@ -278,38 +302,40 @@ class TestShopDoor(unittest.TestCase):
 
     def test_safety_sensor(self):
         w = world()
-        d = w.shop_door
+        d = w.shop_doors[1]
         car = w.cars[w.personal_id]
-        car.x, car.y, car.ang = d.x, d.y, math.pi / 2          # parked right in the doorway
+        car.x, car.y, car.ang = d.x, d.y, math.pi / 2          # parked right in its own doorway
         car.vx = car.vy = 0.0
-        w.toggle_door()
+        w.toggle_door(d)
         step(w, C.DOOR_TIME + 0.5)
-        self.assertEqual(w.door_goal, 1.0, "BEEP BEEP BEEP")
-        self.assertFalse(w.door_shut())
+        self.assertEqual(d.goal, 1.0, "BEEP BEEP BEEP")
+        self.assertFalse(d.solid())
 
     def test_honk_to_open(self):
         w = world()
-        self.shut(w)
-        d = w.shop_door
+        for d in w.shop_doors[1:]:
+            self.shut(w, d)
         p = w.add_player("BRYCE")
         car = w.cars[w.personal_id]
+        d = w.shop_doors[1]
         car.x, car.y, car.ang = d.x, d.y + 14, -math.pi / 2
         w._enter_car(p, car, S.DRIVER)
         inp(p, buttons=S.B_HORN)
         w.step(DT)
         inp(p, buttons=0)
         step(w, C.DOOR_TIME + 0.1)
-        self.assertFalse(w.door_shut(), "the remote on the sun visor")
+        self.assertFalse(any(d.solid() for d in w.shop_doors[1:]), "the remote on the sun visor")
+        self.assertFalse(w.shop_doors[0].solid(), "the walking door was never shut in the first place")
 
     def test_the_predictor_knows_the_door(self):
         w = world()
         p = w.add_player("BRYCE")
-        d = w.shop_door
+        d = w.shop_doors[1]
         p.x, p.y = d.x, d.y + 5
         pr = Predictor(CityMap(w.map_seed))
         pr.reconcile(snap(w, p))
         self.assertNotIn(d.rect(), pr.extra_rects)
-        self.shut(w)
+        self.shut(w, d)
         pr.reconcile(P.decode_snapshot(P.encode_snapshot(w, p.id, 0, 0)[P.HDR.size:]))
         self.assertIn(d.rect(), pr.extra_rects)
         self.assertIn(d.rect(), pr.tall_rects)
@@ -436,9 +462,13 @@ class TestSillyDepartment(unittest.TestCase):
         w = world()
         p = w.add_player("BRYCE")
         p.x, p.y = street(w)
-        w.chicken_t = 0.0
-        w.step(DT)
-        chickens = [n for n in w.npcs.values() if n.kind == S.CHICKEN]
+        chickens = []
+        for _ in range(200):        # each roll only samples 40 candidate tiles; keep rolling
+            chickens = [n for n in w.npcs.values() if n.kind == S.CHICKEN]
+            if chickens:
+                break
+            w.chicken_t = 0.0
+            w.step(DT)
         self.assertEqual(len(chickens), 1)
         ch = chickens[0]
         car = w.cars[w.personal_id]

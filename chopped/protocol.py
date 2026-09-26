@@ -35,6 +35,7 @@ SNAP_HDR = struct.Struct("<IIBiHHBBBBHBBIHIB")
 # cops, gameover_ds, run, hold_byte, nplayers_total, ack_input (last input seq applied for you),
 # day, rent_due, (v0.8) alert bits (AL_*)
 AL_LETHAL = 1                   # the police are shooting to kill
+AL_HELI = 2                     # (v0.10) a helicopter is up (heat >= config.HELI_HEAT)
 
 # Your own physics state at full precision, for client-side prediction. The
 # regular entity rows are 1/16 m fixed point; rewinding to a rounded position
@@ -61,7 +62,8 @@ CAR = struct.Struct("<HBBBBHIHHhhHBBBBBBBBB")
 # id, kind, colour, state, flags, part mask, style word, x, y, vx, vy, ang, driver, passenger, damage,
 # model, livery, extras (horn 0-2, NOS flame 3, glow 4-7), extras2 (see CX_*),
 # (v0.8) engine byte (drivetrain.engine_byte: voice, turbo/supercharger, gearbox), drive byte (DR_*)
-PLAYER = struct.Struct("<BBBBHHhhHBBBHBBBB")   # ... + weapon, z (0.1 m), banner, (v0.8) flags2 (PF2_*)
+PLAYER = struct.Struct("<BBBBHHhhHBBBHBBBBB")  # ... + weapon, z (0.1 m), banner, (v0.8) flags2 (PF2_*),
+                                               # (v0.10) health (0-100, see config.PLAYER_HEALTH_MAX)
 NPC = struct.Struct("<HBBHHBB")           # id, kind, state, x, y, ang8, z (0.1 m)
 PICKUP = struct.Struct("<HBHHBBB")        # id, part, x, y, scale, z (0.1 m), style
 DOLLY = struct.Struct("<HHHBBB")        # id, x, y, ang8, part_idx (255 empty), holder pid (0 none)
@@ -226,7 +228,7 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
         int(round(world.heat)), wit, cops, min(255, max(0, int(world.gameover_t * 10))),
         world.run & 0xFFFF, int((me.hold_frac if me else 0) * 255), len(world.players),
         max(0, ack_input) & 0xFFFFFFFF, min(65535, world.day), min(0xFFFFFFFF, world.rent_due()),
-        AL_LETHAL if world.lethal_t > 0 else 0)
+        (AL_LETHAL if world.lethal_t > 0 else 0) | (AL_HELI if world.heat >= C.HELI_HEAT else 0))
     prompt = encode_text(me.prompt if me else "") + encode_self(world, me)
 
     r2 = C.NET_CULL_RADIUS ** 2
@@ -275,7 +277,9 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
             (PF2_BOX if p.boxed else 0) | (PF2_HIDDEN if p.hidden() else 0)
         players.append(PLAYER.pack(p.id, p.color, p.state, flags, _pos(p.x), _pos(p.y),
                                    _vel(p.vx), _vel(p.vy), _ang(ang), h0, h1,
-                                   int(p.stamina * 2.55), p.car_id or 0, p.weapon, _z(p.z), p.banner, flags2)
+                                   min(255, int(p.stamina * 255.0 / C.STAMINA_MAX)), p.car_id or 0, p.weapon,
+                                   _z(p.z), p.banner, flags2,
+                                   min(255, int(p.health)))
                        + encode_text(p.name, 12))
     npcs = []
     for n in world.npcs.values():
@@ -421,10 +425,10 @@ def decode_snapshot(payload):
         off += PLAYER.size
         name, off = _text(data, off)
         # (id, color, state, flags, x, y, vx, vy, ang, h0, h1, stamina, car_id, name, weapon, z, banner,
-        #  flags2)
+        #  flags2, (v0.10) health
         s.players[f[0]] = [f[0], f[1], f[2], f[3], f[4] / 16.0, f[5] / 16.0, f[6] / 64.0, f[7] / 64.0,
-                           f[8] / 65536.0 * 2 * math.pi, f[9], f[10], f[11] / 2.55, f[12], name, f[13],
-                           f[14] / 10.0, f[15], f[16]]
+                           f[8] / 65536.0 * 2 * math.pi, f[9], f[10], f[11] * C.STAMINA_MAX / 255.0, f[12], name,
+                           f[13], f[14] / 10.0, f[15], f[16], f[17]]
     s.dollies = {}
     for _ in range(ndl):
         f = DOLLY.unpack_from(data, off)

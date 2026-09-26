@@ -76,6 +76,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
         self.wanted_level = 0
         self.scare_accum = 0.0
         self.personal_id = None
+        self.player_car = {}        # (v0.10) player id -> their own personal car's id
         self._spawn_personal(personal_loadout())
         for k in range(C.DOLLY_COUNT):
             dx, dy = self.map.dolly_spot
@@ -122,12 +123,21 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
             self.events = [e for e in self.events if e[1] >= cutoff]
 
     # ------------------------------------------------------------------ spawning
-    def _spawn_personal(self, parts):
-        bx, by, ba = self.map.bay
-        car = Car(self.new_id(), PERSONAL, bx, by, ba, parts, color=0)
+    def _spawn_personal(self, parts, bay=0):
+        """(v0.10, Bryce: "a bay for each player that joins") one of the shop's N_BAYS bays,
+        with nobody's name on it until a player claims it in add_player()."""
+        bx, by, ba = self.map.bays[bay]
+        car = Car(self.new_id(), PERSONAL, bx, by, ba, parts, color=bay % 4)
+        car.bay = bay
         self.cars[car.id] = car
-        self.personal_id = car.id
+        if bay == 0:
+            self.personal_id = car.id     # kept for the many single-player tests that use it
         return car
+
+    def _my_car(self, p):
+        """(v0.10) Whichever bay this player claimed when they joined -- their own ride for
+        the mod shop, "E: drive your ride", and keeping its mods across a reset."""
+        return self.cars.get(self.player_car.get(p.id, self.personal_id))
 
     def _spawn_civilian(self, ignore_players=False):
         spots = list(self.map.parking)
@@ -235,6 +245,17 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
             p.ammo = [0, C.MAX_AMMO, C.MAX_AMMO]
             p.gear = [C.MAX_TRAPS_EACH] * 4
         self.players[pid] = p
+        # (v0.10, Bryce: "a bay for each player that joins") the first player to ever join
+        # inherits the car that was already sitting in bay 0 at world creation; everyone
+        # after that gets a fresh one in the next free bay, up to N_BAYS.
+        if pid not in self.player_car:
+            if not self.player_car and self.personal_id in self.cars:
+                self.player_car[pid] = self.personal_id
+                self.cars[self.personal_id].owner = pid
+            elif len(self.player_car) < C.N_BAYS:
+                car = self._spawn_personal(personal_loadout(), bay=len(self.player_car))
+                car.owner = pid
+                self.player_car[pid] = car.id
         self.toast("%s JOINED THE CREW" % p.name, T_INFO)
         return p
 
@@ -424,6 +445,8 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
             self.day += 1
             self.day_t += C.DAY_LENGTH
             self.day_stats = [0, 0, 0]
+            self.cops_today = 0         # (v0.10) dispatch gets a fresh COPS_PER_DAY budget
+            self.cops_exhausted_told = False
             self.toast("DAY %d. RENT AT MIDNIGHT: $%d" % (self.day, self.rent_due()), T_INFO)
         if self.cash < 0:
             self.debt_t += dt
@@ -450,18 +473,20 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
         self.witness = W_NONE
         self.witness_rate = 0.0
         self.targets = []
-        personal = self.cars.get(self.personal_id)
+        # (v0.10) every player's own personal car keeps its mods, back in its own bay --
+        # not just bay 0's any more. A car nobody's claimed (kind == PERSONAL but no owner
+        # yet, or the shared bay-0 one at first launch) survives the reset too.
         for p in self.players.values():
             p.car_id = None
         for cid in list(self.cars):
-            if cid != self.personal_id:
+            if self.cars[cid].kind != PERSONAL:
                 del self.cars[cid]
-        if personal:
-            personal.driver = personal.passenger = None
-            personal.x, personal.y, personal.ang = self.map.bay
-            personal.vx = personal.vy = personal.w = 0.0
-            personal.fire_t = 0.0
-        else:
+        for car in self.cars.values():
+            car.driver = car.passenger = None
+            car.x, car.y, car.ang = self.map.bays[car.bay]
+            car.vx = car.vy = car.w = 0.0
+            car.fire_t = 0.0
+        if self.personal_id not in self.cars:
             self._spawn_personal(personal_loadout())
         self.pickups.clear()
         self.traps.clear()
@@ -664,11 +689,39 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
     # ------------------------------------------------------------------ interactions
     def _find_interaction(self, p):
         """Returns (key, prompt, hold_seconds, action). key None = info only.
-        Priority: benches > loose parts > cars. Exactly one prompt at a time."""
+        Priority (v0.10, Bryce: "items take precedent over shops / actions"): whatever's
+        already in your hands or right in front of you (a dolly, someone down, a loose part)
+        beats a bench or a market crate you merely happen to be standing near; benches and
+        the market still beat the gate/door and everything after. Exactly one prompt at a time."""
         m = self.map
         # first person: you use what you're looking at, measured from a point
         # just in front of your face rather than from your feet
         ax, ay = self._aim(p)
+        # someone on the floor, or with their hands up: help yourself
+        mark = self._robbable_near(ax, ay)
+        if mark is not None and mark.kind == CHICKEN:
+            return (None, "IT'S A CHICKEN. IT HAS NO POCKETS." + ("   G: PICK UP" if not p.hands else ""), 0, None)
+        if mark is not None and mark.kind == KEYGUARD:
+            return (("keys", mark.id), "HOLD E: TAKE HIS KEYS", C.ROB_TIME, lambda: self._take_keys(p, mark))
+        if mark is not None:
+            grab = "   G: PICK UP" if not p.hands else ""
+            if mark.wallet <= 0:
+                return (None, "THEY'RE BROKE. A BUS PASS AND HALF A SANDWICH." + grab, 0, None)
+            return (("rob", mark.id), "HOLD E: ROB THEM" + grab, C.ROB_TIME, lambda: self._rob(p, mark))
+        # pickups
+        best, bd = None, C.INTERACT_RANGE_PICKUP
+        for pk in self.pickups.values():
+            d = math.hypot(pk.x - ax, pk.y - ay)
+            if d < bd:
+                best, bd = pk, d
+        if best is not None and not (best.part.bulk == DOLLY and p.dolly is not None):
+            part = best.part
+            if part.bulk == DOLLY:
+                return (None, "%s: TOO HEAVY TO LIFT - FETCH THE DOLLY" % part.name.upper(), 0, None)
+            if not p.can_hold(part):
+                return (None, "HANDS FULL - SELL IT OR DROP (G)", 0, None)
+            return (("pick", best.id), "E: PICK UP %s ($%d)" % (part.name.upper(), part.value),
+                    C.PICKUP_TIME, lambda: self._pickup(p, best))
         # benches
         for bench, is_sell in ((m.sell_bench, True), (m.tune_bench, False)):
             bx, by, bw, bh = bench
@@ -692,20 +745,9 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
             return market
         if p.dolly is not None:
             return self._dolly_interaction(p, p.dolly)
-        # someone on the floor, or with their hands up: help yourself
         gate = self._gate_interaction(p, ax, ay) or self._door_interaction(p, ax, ay)
         if gate is not None:
             return gate
-        mark = self._robbable_near(ax, ay)
-        if mark is not None and mark.kind == CHICKEN:
-            return (None, "IT'S A CHICKEN. IT HAS NO POCKETS." + ("   G: PICK UP" if not p.hands else ""), 0, None)
-        if mark is not None and mark.kind == KEYGUARD:
-            return (("keys", mark.id), "HOLD E: TAKE HIS KEYS", C.ROB_TIME, lambda: self._take_keys(p, mark))
-        if mark is not None:
-            grab = "   G: PICK UP" if not p.hands else ""
-            if mark.wallet <= 0:
-                return (None, "THEY'RE BROKE. A BUS PASS AND HALF A SANDWICH." + grab, 0, None)
-            return (("rob", mark.id), "HOLD E: ROB THEM" + grab, C.ROB_TIME, lambda: self._rob(p, mark))
         # a dolly to grab
         dl = self._nearest_dolly(ax, ay, C.INTERACT_RANGE_DOLLY)
         if dl is not None:
@@ -713,20 +755,6 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
                 return (None, "DOLLY: EMPTY YOUR HANDS FIRST (SELL OR DROP)", 0, None)
             load = " (%s ON IT)" % dl.part.name.upper() if dl.part is not None else ""
             return (("dolly", dl.id), "E: PUSH THE DOLLY" + load, 0, lambda: self._grab_dolly(p, dl))
-        # pickups
-        best, bd = None, C.INTERACT_RANGE_PICKUP
-        for pk in self.pickups.values():
-            d = math.hypot(pk.x - ax, pk.y - ay)
-            if d < bd:
-                best, bd = pk, d
-        if best is not None:
-            part = best.part
-            if part.bulk == DOLLY:
-                return (None, "%s: TOO HEAVY TO LIFT - FETCH THE DOLLY" % part.name.upper(), 0, None)
-            if not p.can_hold(part):
-                return (None, "HANDS FULL - SELL IT OR DROP (G)", 0, None)
-            return (("pick", best.id), "E: PICK UP %s ($%d)" % (part.name.upper(), part.value),
-                    C.PICKUP_TIME, lambda: self._pickup(p, best))
         # a crewmate within reach: you COULD pick them up. Should you? Yes.
         if not p.hands:
             for q in self.players.values():
@@ -768,8 +796,16 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
                 return (("shot", car.id), "E: RIDE SHOTGUN", 0, lambda: self._enter_car(p, car, PASSENGER))
             return (None, "YOUR RIDE IS FULL", 0, None)
         if car.state == LOCKED:
-            return (("breakin", car.id), "HOLD E: BREAK IN (SETS OFF ALARM)", C.BREAKIN_TIME,
-                    lambda: self._break_in(p, car))
+            # (v0.10, Bryce: "sneaking / turning off the alarm on a stolen car by cutting
+            # wire minigame") X toggles which method E commits to -- smashing the window is
+            # fast but always screams; cutting wires is slower and blind (ALARM_CUT_WIRES to
+            # one), quiet if you luck into the right one and worse than smashing if you don't.
+            if p.sneak:
+                return (("cutwires", car.id),
+                        "HOLD E: CUT THE WIRES (1 IN %d QUIET)   X: FORGET IT, SMASH IT" % C.ALARM_CUT_WIRES,
+                        C.ALARM_CUT_TIME, lambda: self._cut_wires(p, car), lambda: setattr(p, "sneak", False))
+            return (("breakin", car.id), "HOLD E: BREAK IN (SETS OFF ALARM)   X: CUT THE WIRES INSTEAD (SLOWER)",
+                    C.BREAKIN_TIME, lambda: self._break_in(p, car), lambda: setattr(p, "sneak", True))
         if car.state == BROKEN_IN:
             return (("hotwire", car.id), "HOLD E: HOTWIRE", C.HOTWIRE_TIME, lambda: self._hotwire(p, car))
         if car.state == RUNNING:
@@ -824,10 +860,36 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
         car.state = BROKEN_IN
         car.alarm = True
         car.stolen = True
+        p.sneak = False
         self.heat = min(C.HEAT_MAX, self.heat + C.HEAT_BREAKIN)
         self._charge(p, "gta")
         self.sfx(S_BREAKIN, car.x, car.y)
         self.toast("%s SMASHED A WINDOW. ALARM! +%d HEAT" % (p.name, C.HEAT_BREAKIN), T_BAD)
+        self._breakin_specials(p, car, loud=True)
+
+    def _cut_wires(self, p, car):
+        """(v0.10) the slow, quiet way in: one wire in ALARM_CUT_WIRES is the right one.
+        Guess it and nobody hears a thing; guess wrong and it's louder than just smashing
+        the window would have been -- you had your chance to do this the easy way."""
+        car.state = BROKEN_IN
+        car.stolen = True
+        p.sneak = False
+        self._charge(p, "gta")
+        quiet = self.rng.randrange(C.ALARM_CUT_WIRES) == 0
+        if quiet:
+            self.sfx(S_STRIP, car.x, car.y)
+            self.toast("%s CUT THE RIGHT WIRE. NOT A PEEP." % p.name, T_INFO)
+        else:
+            car.alarm = True
+            self.heat = min(C.HEAT_MAX, self.heat + C.ALARM_CUT_FAIL_HEAT)
+            self.sfx(S_BREAKIN, car.x, car.y)
+            self.toast("%s CUT THE WRONG WIRE. ALARM! +%d HEAT" % (p.name, C.ALARM_CUT_FAIL_HEAT), T_BAD)
+        self._breakin_specials(p, car, loud=not quiet)
+
+    def _breakin_specials(self, p, car, loud):
+        """Clown cars burst open no matter how quietly you got the door open -- that's the
+        joke. An angry owner is a different story: they only come running if they actually
+        heard or saw you get in, so a clean wire-cut lets you have their car and their day."""
         if car.special == "clown" and not car.special_fired:
             car.special_fired = True
             for i in range(C.CLOWN_COUNT):
@@ -838,7 +900,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
                 self.npcs[n.id] = n
             self.toast("OH NO. IT'S A CLOWN CAR.", T_INFO)
             self.sfx(S_HONK, car.x, car.y)
-        elif car.special == "owner" and not car.special_fired:
+        elif car.special == "owner" and not car.special_fired and loud:
             car.special_fired = True
             for _ in range(12):
                 a = self.rng.uniform(0, 2 * math.pi)
@@ -1220,13 +1282,40 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
             return
         if n.kind == OFFICER:
             self.lethal_t = C.LETHAL_TIME       # you shot a police officer. Of course they're shooting back.
-            self._crime(C.SHOOT_COP_HEAT)
-            self.toast("OFFICER DOWN! EVERY COP IN THE CITY IS SHOOTING TO KILL.", T_COP)
+        # (v0.10, Bryce: "when cops die ambulance comes to pick them up... make them die") a
+        # bullet is lethal to the law too, not just a knockdown -- and civilians, so a witness
+        # can be silenced for good instead of just having a nap. Dogs and the streaker are
+        # exempt: taking the K9 unit down is a running joke, not a body count.
+        if n.kind in (OFFICER, GUARD, KEYGUARD, PED, OWNER, CLOWN):
+            self._kill_npc(p, n)
+            return
         self._knock_down_npc(n, fx * 6, fy * 6, C.SHOT_KNOCKDOWN, p)
         self.sfx(S_YELP, n.x, n.y)
         if n.complain_cd <= 0 and n.kind not in LAW:
             n.complain_cd = 3.0
             self.toast(self.rng.choice(SHOT_LINES), T_WHITE)
+
+    def _kill_npc(self, p, n):
+        """(v0.10) A bullet is the end of the story for a civilian or a cop, not a nap. No
+        witness left to phone it in -- but murder (or "assaulting an officer" the hard way)
+        is on the rap sheet either way, and an officer or guard gets the ambulance."""
+        self.sfx(S_YELP, n.x, n.y)
+        law = n.kind in LAW
+        if law:
+            self.sfx(S_AMBULANCE, n.x, n.y)
+            if not p.jailed:
+                self._crime(C.SHOOT_COP_HEAT)
+                self._charge(p, "cop")
+            if n.kind in (GUARD, KEYGUARD):
+                self.jail_alert = True
+                self.toast(self.rng.choice(COP_DOWN_LINES) % p.name, T_COP)
+            else:
+                self.toast("OFFICER DOWN! EVERY COP IN THE CITY IS SHOOTING TO KILL.", T_COP)
+        elif not p.jailed:
+            self._crime(C.MURDER_HEAT)
+            self._charge(p, "murder")
+            self.toast(self.rng.choice(MURDER_LINES) % p.name, T_BAD)
+        del self.npcs[n.id]
 
     # ------------------------------------------------------------------ robbing people
     def _robbable_near(self, x, y):
@@ -1457,16 +1546,15 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
             self.toast("A BOX OF DONUTS LANDS IN THE STREET. SOMEWHERE, A SIREN SLOWS DOWN.", T_INFO)
 
     def fixtures(self):
-        """The trap-shaped bits of the map (the precinct gate, the cell doors, the
-        shop's roller door): solid when shut, sent as TRAP rows, never towed."""
+        """The trap-shaped bits of the map (the precinct gate, the cell doors, the shop's
+        five doors): solid when shut, sent as TRAP rows, never towed. The wall between the
+        doors is ordinary map geometry (mapgen._make_shop), not a fixture."""
         out = []
         g = getattr(self, "gate_trap", None)
         if g is not None:
             out.append(g)
         out.extend(getattr(self, "cell_traps", ()))
-        d = getattr(self, "shop_door", None)
-        if d is not None:
-            out.append(d)
+        out.extend(getattr(self, "shop_doors", ()))
         return out
 
     def _rebuild_trap_rects(self):
@@ -1676,14 +1764,23 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
                     and self.lethal_t > 0 and cop.gun_cd <= 0 and self.los(cop.x, cop.y, target[0], target[1]):
                 cop.gun_cd = C.COP_GUN_COOLDOWN
                 self._cop_shoot(cop, target[5], bd)
-        if target is None:
+        # (v0.10, Bryce: "walls need to block cops views better - ray finding from cops view
+        # when in pursuit mode") only trust a target's CURRENT position while this cop can
+        # actually see it; lose sight and it drives to where it last saw you, then -- after
+        # COP_TRACK_LOSE_TIME with nothing found -- gives up on that lead altogether, instead
+        # of homing in on your exact live position through every wall in town forever.
+        if target is not None and self.los(cop.x, cop.y, target[0], target[1]):
+            cop.search_t = 0.0
+            tx, ty, tvx, tvy, is_car = target[0], target[1], target[2], target[3], target[4]
+            cop.last_target = (tx, ty)
+        else:
+            cop.search_t += dt
+            if cop.search_t >= C.COP_TRACK_LOSE_TIME:
+                cop.last_target = None
             if cop.last_target is None:
                 cop.throttle, cop.steer, cop.handbrake = 0.0, 0.0, False
                 return
             tx, ty, tvx, tvy, is_car = cop.last_target[0], cop.last_target[1], 0.0, 0.0, True
-        else:
-            tx, ty, tvx, tvy, is_car = target[0], target[1], target[2], target[3], target[4]
-            cop.last_target = (tx, ty)
         # stuck? back up with opposite lock, like a confused shopping trolley
         if cop.rev_t > 0:
             cop.rev_t -= dt
@@ -2251,11 +2348,52 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
                             (not isc and r.id in self.players and r.state in (FOOT, TUMBLE) and not r.jailed)]
         if self.witness_rate > 0:
             self.heat = min(C.HEAT_MAX, self.heat + self.witness_rate * dt)
-            self.unseen_t = 0.0
-        else:
+        if self.witness_rate > 0 or self.witness != W_NONE:
+            self.unseen_t = 0.0        # (v0.10) a ped clocking you pauses the cooldown even
+        else:                          # before their call lands -- you're still rattled, not safe
             self.unseen_t += dt
             if self.unseen_t >= C.HEAT_COOL_DELAY:
                 self.heat = max(0.0, self.heat - C.HEAT_COOL_RATE * dt)
+        self._phone_ins(dt)
+        self._garage_safehouse()
+
+    def _phone_ins(self, dt):
+        """(v0.10, Bryce: "kill civilians to make sure no witness remains, only tells
+        cops after 10-15 seconds by phoning them") a ped or owner who clocks you doesn't
+        key up a radio like a cop -- they bolt and call it in later. _witness_scan starts
+        the clock the moment one gets a look at you; this ticks it down and drops the
+        heat in one lump when the call goes through. The countdown lives on the NPC, so
+        killing them (they leave self.npcs) silences the call for good."""
+        for n in self.npcs.values():
+            if n.call_t > 0:
+                n.call_t -= dt
+                if n.call_t <= 0:
+                    n.call_t = 0.0
+                    self.heat = min(C.HEAT_MAX, self.heat + C.PHONE_IN_HEAT)
+                    self.unseen_t = 0.0
+
+    def _garage_safehouse(self):
+        """(v0.10, Bryce: "in the garage, cops still see us with the doors close") the LOS
+        through a shut door was already solid -- but heat only ever COOLS at HEAT_COOL_RATE,
+        so units already dispatched keep loitering outside for a while even once nobody can
+        actually see or reach you. If the WHOLE crew (and anything any of you are driving) is
+        sealed inside with the door down, that's a hideout, not just "unseen for now": heat
+        clears the same way it does on delivery. One player still out there wanted (even a
+        teammate elsewhere in the city) means no free pass -- heat is shared."""
+        if self.heat <= 0 or not self.door_shut() or not self.players:
+            return
+        for p in self.players.values():
+            if p.state in (FOOT, TUMBLE):
+                if not self.map.in_garage(p.x, p.y):
+                    return
+            elif p.state in (DRIVER, PASSENGER):
+                car = self.cars.get(p.car_id)
+                if car is None or not self.map.in_garage(car.x, car.y):
+                    return
+        self.heat = 0.0
+        self.dispatched = False
+        self.unseen_t = 0.0
+        self.witness, self.witness_rate = W_NONE, 0.0
 
     def _witness_scan(self):
         """Highest single witness rate wins -- no stacking, so a crowd isn't
@@ -2274,6 +2412,24 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
                 dx, dy = t[0] - cop.x, t[1] - cop.y
                 if dx * dx + dy * dy < C.WITNESS_RANGE_COP ** 2 and los(cop.x, cop.y, t[0], t[1]):
                     return W_COP, C.WITNESS_RATE_COP
+        # (v0.10) an officer on foot, well clear of his car chasing you down, still counts as
+        # a cop's eyes on you -- otherwise "lethal ends once no cop's watching" (LETHAL_UNSEEN_TIME)
+        # would time out mid-chase just because his car was left behind.
+        for n in self.npcs.values():
+            if n.kind != OFFICER or n.mode == 4:
+                continue
+            for t in self.targets:
+                dx, dy = t[0] - n.x, t[1] - n.y
+                if dx * dx + dy * dy < C.WITNESS_RANGE_COP ** 2 and los(n.x, n.y, t[0], t[1]):
+                    return W_COP, C.WITNESS_RATE_COP
+        if self.heat >= C.HELI_HEAT and self.players:
+            # (v0.10) the chopper: no wall occlusion (it's overhead), roughly over the crew
+            hx = sum(p.x for p in self.players.values()) / len(self.players)
+            hy = sum(p.y for p in self.players.values()) / len(self.players)
+            r2h = C.HELI_RANGE ** 2
+            for t in self.targets:
+                if (t[0] - hx) ** 2 + (t[1] - hy) ** 2 < r2h:
+                    return W_HELI, C.WITNESS_RATE_HELI
         r2o = C.WITNESS_RANGE_OWNER ** 2
         r2p = C.WITNESS_RANGE_PED ** 2
         for n in self.npcs.values():
@@ -2284,7 +2440,13 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
             for t in self.targets:
                 dx, dy = t[0] - n.x, t[1] - n.y
                 if dx * dx + dy * dy < r2 and los(n.x, n.y, t[0], t[1]):
-                    return (W_OWNER if n.kind == OWNER else W_PED), C.WITNESS_RATE_PED
+                    # (v0.10) they don't add heat live -- see _phone_ins. Once they've made
+                    # up their mind to call they won't re-arm even if they lose you and
+                    # spot you again; phoned just means "this witness is spent", not "safe".
+                    if not n.phoned:
+                        n.call_t = self.rng.uniform(*C.PHONE_IN_DELAY)
+                        n.phoned = True
+                    return (W_OWNER if n.kind == OWNER else W_PED), 0.0
         r2c = C.WITNESS_RANGE_CAMERA ** 2
         for (cx, cy) in self.map.cameras:
             for t in self.targets:
@@ -2314,10 +2476,20 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
                                                 "A CAR IS ON ITS WAY"), T_COP)
         self.wanted_level = want
         self.dispatched = want > 0
-        # units come 2 s apart until there are enough for this heat
-        if want and len(units) < min(want, C.MAX_COPS) and self.cop_spawn_t <= 0:
+        # units come 2 s apart until there are enough for this heat -- unless dispatch has
+        # already sent COPS_PER_DAY of them today (v0.10, Bryce: "limited number of cops
+        # spawn / day"): units already out there keep chasing, there just aren't any more
+        if want and len(units) < min(want, C.MAX_COPS) and self.cop_spawn_t <= 0 and \
+                self.cops_today < C.COPS_PER_DAY:
             if self.spawn_cop():
                 self.cop_spawn_t = C.COP_SPAWN_GAP
+                self.cops_today += 1
+        elif want and len(units) < min(want, C.MAX_COPS) and self.cops_today >= C.COPS_PER_DAY and \
+                self.cop_spawn_t <= 0:
+            self.cop_spawn_t = C.COP_SPAWN_GAP
+            if not self.cops_exhausted_told:
+                self.cops_exhausted_told = True
+                self.toast("DISPATCH IS OUT OF CARS FOR TODAY. YOU'RE ON YOUR OWN, OFFICERS.", T_COP)
         if self.heat <= 0:
             self.heat_zero_t += dt
             calm = [c for c in cops if c.fire_t <= 0 and not c.patrol]

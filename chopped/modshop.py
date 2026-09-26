@@ -32,7 +32,8 @@ CATS = [("ENGINE", "slot", "Engine"), ("GEARBOX", "slot", "Transmission"), ("ECU
         ("RIGHT DOOR", "slot", "DoorR"), ("WHEEL FRONT-L", "slot", "WheelFL"), ("WHEEL FRONT-R", "slot", "WheelFR"),
         ("WHEEL REAR-L", "slot", "WheelRL"), ("WHEEL REAR-R", "slot", "WheelRR"), ("SEATS", "slot", "Seats"),
         ("PAINT", "paint", None), ("LIVERY", "livery", None), ("HORN", "horn", None),
-        ("UNDERGLOW", "glow", None), ("EXTRAS", "extra", None), ("LOCKER", "locker", None)]
+        ("UNDERGLOW", "glow", None), ("EXTRAS", "extra", None), ("SWITCH CAR", "switch", None),
+        ("LOCKER", "locker", None)]
 ROWS = 17                         # visible item rows
 CAT_X, CAT_Y = 12, 46             # where the category list and the item list start (clicks use these too)
 ITEM_X, ITEM_Y = 124, 46
@@ -62,10 +63,13 @@ class ModShop:
         self.cache = {}
         self.menu = None
         self.hover_horn = None        # the client plays a horn preview when this changes
+        self.all_cars = {}            # (v0.10) every car in view, for the SWITCH CAR tab
 
     # ------------------------------------------------------------------ state
-    def sync(self, menu):
+    def sync(self, menu, all_cars=None):
         """A snapshot arrived. menu is the host's menu dict (or None: closed)."""
+        if all_cars is not None:
+            self.all_cars = all_cars
         if menu is None:
             if self.open:
                 self.open = False
@@ -141,6 +145,16 @@ class ModShop:
             for k, name in enumerate(G.EXTRA_NAMES):
                 out.append(Item(name, "FITTED" if owned[k] else "$%d" % G.extra_price(k), G.OP_EXTRA, k,
                                 preview=("gnome", True) if k == G.EXTRA_GNOME else None))
+        elif kind == "switch":
+            # (v0.10) any delivered car sitting in the shop becomes your new personal ride
+            mine = m.get("car_id")
+            cands = [c for c in self.all_cars.values()
+                    if c[1] == G.CIV and c[3] == G.DELIVERED and c[0] != mine]
+            if not cands:
+                out.append(Item("NOTHING DELIVERED TO SWITCH TO. GO STEAL SOMETHING.", ""))
+            for c in sorted(cands, key=lambda c: c[0]):
+                out.append(Item(V.model(c[15]).name if len(c) > 15 else ("CAR #%d" % c[0]), "E: MAKE THIS MY RIDE",
+                                G.OP_SWITCH, c[0] & 0xFF, (c[0] >> 8) & 0xFF))
         else:
             for i, (tid, style, cond) in enumerate(m["stash"]):
                 part = Part(tid, cond, style)

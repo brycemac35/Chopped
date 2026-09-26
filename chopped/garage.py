@@ -28,7 +28,7 @@ from .physics import obb_rect_contact, circle_rect_contact
 
 # ---- menu commands (InputState.menu_op) ----------------------------------------------
 (OP_NONE, OP_CLOSE, OP_INSTALL, OP_BUY, OP_REMOVE, OP_SELL, OP_TAKE, OP_PAINT, OP_LIVERY, OP_HORN,
- OP_GLOW, OP_EXTRA) = range(12)
+ OP_GLOW, OP_EXTRA, OP_SWITCH) = range(13)
 EXTRA_NOS, EXTRA_EJECTOR, EXTRA_GNOME, EXTRA_HYDRO = range(4)
 EXTRA_NAMES = ("NITROUS (SHIFT)", "EJECTOR SEAT (F AT SPEED)", "GNOME HOOD ORNAMENT", "HYDRAULICS (X: HOP)")
 
@@ -158,7 +158,7 @@ class Garage:
 
     # ------------------------------------------------------------------ the mod shop
     def _open_modshop(self, p):
-        car = self.cars.get(self.personal_id)
+        car = self._my_car(p)
         if car is None:
             return
         stored = 0
@@ -182,7 +182,7 @@ class Garage:
             return
         p.menu_ack = inp.menu_seq
         op, a, b = inp.menu_op, inp.menu_arg, inp.menu_arg2
-        car = self.cars.get(self.personal_id)
+        car = self._my_car(p)
         if op == OP_CLOSE or car is None:
             p.menu = False
             return
@@ -229,6 +229,31 @@ class Garage:
                 self.sfx(S_MOD, p.x, p.y)
         elif op == OP_EXTRA:
             self._ms_extra(p, car, a)
+        elif op == OP_SWITCH:
+            self._ms_switch(p, car, a | (b << 8))
+
+    def _ms_switch(self, p, old, target_id):
+        """(v0.10, Bryce: "add option to switch primary cars once in garage") make a
+        delivered car sitting in the shop this player's new personal ride. The old one
+        becomes an ordinary car again -- strip it, sell it whole, whatever -- and this one
+        takes over its bay and keeps its owner's mods from here on."""
+        new = self.cars.get(target_id)
+        if new is None or new is old or new.kind != CIV or new.state != DELIVERED:
+            return
+        if not all(self.map.in_garage(x, y) for x, y in new.corners()):
+            return
+        old.kind, old.owner, old.state = CIV, None, DELIVERED
+        old.stolen = old.alarm = False
+        old.driver = old.passenger = None
+        new.kind, new.owner, new.bay = PERSONAL, p.id, old.bay
+        new.x, new.y, new.ang = self.map.bays[old.bay]
+        new.vx = new.vy = new.w = 0.0
+        self.player_car[p.id] = new.id
+        if old.bay == 0:
+            self.personal_id = new.id
+        self.sfx(S_MOD, new.x, new.y)
+        self.toast("%s: THE %s IS THE NEW RIDE. THE OLD ONE'S UP FOR GRABS." % (
+            p.name, V.model(new.model).name), T_MONEY)
 
     def _pay(self, price):
         if self.cash < price:
@@ -295,9 +320,10 @@ class Garage:
 def encode_menu(world, me):
     """The mod shop's view of the world, for the SELF block (only while you're
     in the menu): your ride's parts, its paint and extras, and the locker."""
-    car = world.cars.get(world.personal_id)
+    car = world._my_car(me)                    # (v0.10) your OWN car, not always bay 0's
     out = bytearray()
     out.append(me.menu_ack & 255)
+    out += bytes(((car.id if car else 0) & 0xFF, ((car.id if car else 0) >> 8) & 0xFF))
     if car is None:
         out += bytes(6)
     else:
@@ -321,6 +347,8 @@ def decode_menu(data, off):
     """-> (menu dict, new offset)"""
     menu = {"ack": data[off]}
     off += 1
+    menu["car_id"] = data[off] | (data[off + 1] << 8)
+    off += 2
     (menu["color"], menu["livery"], menu["horn"], menu["glow"], ex, menu["model"]) = data[off:off + 6]
     off += 6
     menu["nos"], menu["ejector"], menu["gnome"], menu["hydro"] = bool(ex & 1), bool(ex & 2), bool(ex & 4), \
@@ -441,43 +469,65 @@ class Appraisal:
 
 
 class ShopDoor:
-    """(v0.9) The chop shop gets a roof and a roller door across its whole front.
-    Bryce: "a closable door that blocks cops. but it needs to be opened for you to
-    get in." So: shut, it's a wall -- to cop cars, officers, bullets of sight (they
-    can't see you through it), and to you. E at the door (either side) rolls it up
-    or down; honk within DOOR_REMOTE_R and the remote on your sun visor does it for
-    you. It won't come down on anything: there's a safety sensor, and it beeps."""
+    """(v0.9) The chop shop gets a roof and a roller door across its front. Bryce: "a
+    closable door that blocks cops. but it needs to be opened for you to get in." So: shut,
+    it's a wall -- to cop cars, officers, bullets of sight (they can't see you through it),
+    and to you. E at a door (either side) rolls it up or down; honk within DOOR_REMOTE_R and
+    the remote on your sun visor does it for you. It won't come down on anything: there's a
+    safety sensor, and it beeps.
+
+    (v0.10, Bryce: "make the garage door smaller, make a walking entrance and a bay for each
+    player that joins") one door for the whole 28 m front became FIVE, independently opened
+    and closed: a walking door (index 0, DOOR_ID+0) sized for a person, and four bay doors
+    (index 1-4, DOOR_ID+1..4) each sized for one car (config.DOOR_COLS says which of the
+    shop's 7 front tile-columns each sits in). The two tile-columns left over are ordinary
+    WALL tiles (mapgen._make_shop), permanently solid: shutting every door really does seal
+    the shop, not just narrow the gaps a witness could see through."""
 
     def _init_door(self):
-        self.shop_door = None
-        self.door_goal = 1.0
-        self.door_bang_t = 0.0
-        self.door_beep_t = 0.0
-        gx, gy, gw, gh = self.map.garage_rect
-        t = Trap(C.DOOR_ID, TRAP_DOOR, gx + gw / 2, gy + gh, math.pi / 2)
-        t.uses = C.DOOR_W                  # (Trap.rect reads a door's width from uses)
-        t.open_t = 1.0                     # starts up: open for business
-        self.shop_door = t
+        self.shop_doors = []
+        self.door_bang_t = {}           # door id -> cooldown, so each one nags independently
+        self.door_beep_t = {}
+        for (i, x, y) in C.door_specs(self.map.garage_rect):
+            t = Trap(C.DOOR_ID + i, TRAP_DOOR, x, y, math.pi / 2)
+            t.open_t = t.goal = 1.0     # starts up: open for business
+            self.shop_doors.append(t)
 
     def door_shut(self):
-        d = self.shop_door
-        return d is not None and d.solid()
+        """Every door down: the shop's fully sealed."""
+        return all(d.solid() for d in self.shop_doors)
+
+    def _door_at(self, x, y, reach=0.0):
+        """Whichever door (if any) a point at (x, y) is lined up with. The bay doors sit
+        edge to edge, so x stays tight to DOOR_W/2 -- widening it would make aiming at bay 1
+        able to trigger bay 0's door. reach only forgives distance along y, out from the
+        doorway line."""
+        for d in self.shop_doors:
+            if abs(x - d.x) <= C.DOOR_W / 2 and abs(y - d.y) <= reach:
+                return d
+        return None
 
     def los(self, x0, y0, x1, y1):
-        """map.los, plus the shop door: shut, nobody sees through it."""
+        """map.los (which already blocks the permanently-solid columns between doors), plus:
+        a ray crossing one of the shop's door columns is blocked if that door is shut, and
+        passes freely if it's open."""
         if not self.map.los(x0, y0, x1, y1):
             return False
-        d = self.shop_door
-        if d is not None and d.solid() and (y0 - d.y) * (y1 - d.y) < 0:
-            t = (d.y - y0) / (y1 - y0)
-            x = x0 + (x1 - x0) * t
-            if abs(x - d.x) <= C.DOOR_W / 2 + 0.5:
-                return False
-        return True
+        doors = self.shop_doors
+        if not doors:
+            return True
+        dy = doors[0].y
+        if (y0 - dy) * (y1 - dy) >= 0:
+            return True                 # both ends on the same side: doesn't cross the front
+        t = (dy - y0) / (y1 - y0)
+        x = x0 + (x1 - x0) * t
+        for d in doors:
+            if abs(x - d.x) <= C.DOOR_W / 2:
+                return not d.solid()
+        return True                     # not a door column: map.los already ruled on it above
 
-    def _door_blocked(self):
-        """Anything under the door? Cars (their boxes), people, the dolly."""
-        d = self.shop_door
+    def _door_blocked(self, d):
+        """Anything under this particular door? Cars (their boxes), people, the dolly."""
         rx, ry, rw, rh = d.rect()
         rect = (rx, ry - 0.3, rw, rh + 0.6)
         for car in self.cars.values():
@@ -492,70 +542,73 @@ class ShopDoor:
                 return True
         return False
 
-    def toggle_door(self, who=None, remote=False):
-        d = self.shop_door
-        if d is None:
-            return
-        self.door_goal = 0.0 if self.door_goal > 0.5 else 1.0
+    def toggle_door(self, d, who=None, remote=False):
+        d.goal = 0.0 if d.goal > 0.5 else 1.0
         self.sfx(S_DOOR, d.x, d.y)
-        if who is not None and self.door_goal < 0.5:
-            self.toast("%s IS CLOSING THE SHOP DOOR%s" % (who.name, " (BEEP)" if remote else ""), T_INFO)
+        if who is not None and d.goal < 0.5:
+            label = "THE WALKING DOOR" if d.id == C.DOOR_ID else "THEIR BAY DOOR"
+            self.toast("%s IS CLOSING %s%s" % (who.name, label, " (BEEP)" if remote else ""), T_INFO)
 
     def _update_door(self, dt):
-        d = self.shop_door
-        if d is None:
-            return
-        self.door_bang_t -= dt
-        self.door_beep_t -= dt
-        was = d.solid()
-        if d.open_t != self.door_goal:
-            if self.door_goal < d.open_t and self._door_blocked():
-                self.door_goal = 1.0                     # the sensor: back up it goes
-                if self.door_beep_t <= 0:
-                    self.door_beep_t = 3.0
-                    self.sfx(S_DOOR, d.x, d.y)
-                    self.toast("BEEP BEEP BEEP. SOMETHING'S UNDER THE DOOR.", T_WHITE)
-            step = dt / C.DOOR_TIME
-            if self.door_goal > d.open_t:
-                d.open_t = min(self.door_goal, d.open_t + step)
-            else:
-                d.open_t = max(self.door_goal, d.open_t - step)
-        if d.solid() != was:
-            self._rebuild_trap_rects()
-        if d.solid() and self.door_bang_t <= 0:
-            # cops at the door: they bang on it. They don't have a warrant. (They don't need one.
-            # They just can't open a roller door. Nobody can find the button.)
-            rx, ry, rw, rh = d.rect()
-            for car in self.cars.values():
-                if car.kind == COP and abs(car.y - d.y) < car.hl + 1.5 and rx - 2 < car.x < rx + rw + 2:
-                    self.door_bang_t = C.DOOR_BANG_EVERY
-                    self.sfx(S_BANG, car.x, car.y)
-                    self.toast(self.rng.choice(DOOR_BANG_LINES), T_COP)
-                    break
-            else:
-                for n in self.npcs.values():
-                    if n.kind == OFFICER and abs(n.y - d.y) < 2.0 and rx < n.x < rx + rw:
-                        self.door_bang_t = C.DOOR_BANG_EVERY
-                        self.sfx(S_BANG, n.x, n.y)
+        for d in self.shop_doors:
+            self.door_bang_t[d.id] = self.door_bang_t.get(d.id, 0.0) - dt
+            self.door_beep_t[d.id] = self.door_beep_t.get(d.id, 0.0) - dt
+            was = d.solid()
+            if d.open_t != d.goal:
+                if d.goal < d.open_t and self._door_blocked(d):
+                    d.goal = 1.0                     # the sensor: back up it goes
+                    if self.door_beep_t[d.id] <= 0:
+                        self.door_beep_t[d.id] = 3.0
+                        self.sfx(S_DOOR, d.x, d.y)
+                        self.toast("BEEP BEEP BEEP. SOMETHING'S UNDER THE DOOR.", T_WHITE)
+                step = dt / C.DOOR_TIME
+                if d.goal > d.open_t:
+                    d.open_t = min(d.goal, d.open_t + step)
+                else:
+                    d.open_t = max(d.goal, d.open_t - step)
+            if d.solid() != was:
+                self._rebuild_trap_rects()
+            if d.solid() and self.door_bang_t[d.id] <= 0:
+                # cops at the door: they bang on it. They don't have a warrant. (They don't need
+                # one. They just can't open a roller door. Nobody can find the button.)
+                rx, ry, rw, rh = d.rect()
+                for car in self.cars.values():
+                    if car.kind == COP and abs(car.y - d.y) < car.hl + 1.5 and rx - 2 < car.x < rx + rw + 2:
+                        self.door_bang_t[d.id] = C.DOOR_BANG_EVERY
+                        self.sfx(S_BANG, car.x, car.y)
                         self.toast(self.rng.choice(DOOR_BANG_LINES), T_COP)
                         break
+                else:
+                    for n in self.npcs.values():
+                        if n.kind == OFFICER and abs(n.y - d.y) < 2.0 and rx < n.x < rx + rw:
+                            self.door_bang_t[d.id] = C.DOOR_BANG_EVERY
+                            self.sfx(S_BANG, n.x, n.y)
+                            self.toast(self.rng.choice(DOOR_BANG_LINES), T_COP)
+                            break
 
     def _door_interaction(self, p, ax, ay):
-        d = self.shop_door
-        if d is None or abs(ax - d.x) > C.DOOR_W / 2 or abs(ay - d.y) > C.DOOR_REACH or \
-                abs(p.y - d.y) > C.DOOR_REACH + 1.5:
+        d = self._door_at(ax, ay, C.DOOR_REACH)
+        if d is None or abs(p.y - d.y) > C.DOOR_REACH + 1.5:
             return None
-        if d.open_t != self.door_goal:
-            return (None, "THE DOOR'S ROLLING...", 0, None)
-        if self.door_goal > 0.5:
-            return (("door",), "E: ROLL THE SHOP DOOR DOWN (COPS CAN'T GET IN, OR SEE IN)", 0,
-                    lambda: self.toggle_door(p))
-        return (("door",), "E: ROLL THE SHOP DOOR UP", 0, lambda: self.toggle_door(p))
+        label = "WALKING DOOR" if d.id == C.DOOR_ID else "BAY DOOR"
+        if d.open_t != d.goal:
+            return (None, "THE %s'S ROLLING..." % label, 0, None)
+        if d.goal > 0.5:
+            return (("door", d.id), "E: SHUT THE %s (COPS CAN'T GET IN, OR SEE IN)" % label, 0,
+                    lambda: self.toggle_door(d, p))
+        return (("door", d.id), "E: OPEN THE %s" % label, 0, lambda: self.toggle_door(d, p))
 
     def _door_remote(self, p, car):
-        """Honk near the shop: the garage remote on your sun visor does its thing."""
-        d = self.shop_door
-        if d is None or car.kind == COP:
+        """Honk near the shop: the garage remote on your sun visor does every bay door at
+        once (not the walking door -- that one's not on the same fob)."""
+        if car.kind == COP or not self.shop_doors:
             return
-        if math.hypot(car.x - d.x, car.y - d.y) < C.DOOR_REMOTE_R and d.open_t == self.door_goal:
-            self.toggle_door(p, remote=True)
+        near = [d for d in self.shop_doors[1:] if math.hypot(car.x - d.x, car.y - d.y) < C.DOOR_REMOTE_R]
+        if not near:
+            return
+        opening = any(d.goal <= 0.5 for d in near)
+        for d in near:
+            if d.open_t == d.goal:
+                d.goal = 1.0 if opening else 0.0
+                self.sfx(S_DOOR, d.x, d.y)
+        self.toast("%s: THE GARAGE REMOTE (BEEP)" % p.name, T_INFO)

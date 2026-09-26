@@ -60,12 +60,12 @@ class Car:
                  "alarm", "driver", "passenger", "special", "stolen", "fire_t", "horn",
                  "handbrake", "throttle", "steer", "crash_cd", "impact_dv", "impact_nx",
                  "impact_ny", "damage", "pull", "mass", "inertia", "confused_t", "confuse_cd",
-                 "stuck_t", "rev_t", "abandon_t", "flow_key", "flow_t", "last_target",
+                 "stuck_t", "rev_t", "abandon_t", "flow_key", "flow_t", "last_target", "search_t",
                  "special_fired", "route", "route_prev", "tdir", "node", "blocked_t", "shaken_t",
                  "overtake_t", "hits", "model", "hl", "hw", "bound", "delta", "trunk", "livery", "horn_type",
                  "glow", "nos", "nos_fuel", "boosting", "ejector", "gnome", "grip", "top_mult", "spin_t",
                  "donut_t", "patrol", "beat", "gun_cd", "burnout", "wheelspin", "hydraulics", "hop_t",
-                 "smoke_t", "officer", "copcar", "cash_hits", "burst", "air_t")
+                 "smoke_t", "officer", "copcar", "cash_hits", "burst", "air_t", "bay", "owner")
 
     def __init__(self, cid, kind, x, y, ang, parts, color=0, model=None):
         self.id = cid
@@ -130,6 +130,7 @@ class Car:
         self.flow_key = None
         self.flow_t = 0.0
         self.last_target = None
+        self.search_t = 0.0           # (v0.10) s this cop has gone without seeing anyone
         # traffic brain: waypoints, current direction, the intersection it's heading for
         self.route = []
         self.route_prev = None        # last waypoint passed: the lane runs from there to route[0]
@@ -143,6 +144,8 @@ class Car:
         self.cash_hits = 0            # (v0.9) money trucks: knocks on the back doors
         self.burst = False            # (v0.9) ...and whether they've given way
         self.air_t = 0.0              # (v0.9) off a stunt ramp: seconds of BIG AIR left (cosmetic)
+        self.bay = 0                  # (v0.10) PERSONAL only: which of the shop's bays is home
+        self.owner = None              # (v0.10) PERSONAL only: whose car this is (a player id)
         self.refresh()
 
     def refresh(self):
@@ -206,7 +209,7 @@ class Player:
                  "charge_t", "dancing", "chute", "banner", "banner_t", "robbed_from", "menu", "menu_ack",
                  "trunk_view", "jailed", "keys", "jumpsuit", "pants_t", "tased_t", "dead_t", "cuffer",
                  "cuff_prog", "arrests", "rap", "prev_hop", "slide_t", "prev_alt", "prev_horn", "boxed", "has_box",
-                 "grace_t", "inspect", "prev_box", "still_t")
+                 "grace_t", "inspect", "prev_box", "still_t", "health", "hurt_t", "sneak")
 
     def __init__(self, pid, name, color):
         self.id = pid
@@ -279,7 +282,10 @@ class Player:
         self.prev_box = False         # (C: a tap)
         self.still_t = 0.0            # how long you've stood still (in a box, long enough = invisible)
         self.grace_t = 0.0            # just got up: the jail guards give you a moment
+        self.health = C.PLAYER_HEALTH_MAX   # (v0.10) a police bullet takes a bite, not your life
+        self.hurt_t = 0.0              # > 0: regen is on hold, you were shot too recently
         self.inspect = None           # the car you're sizing up (id), for the inspection card
+        self.sneak = False            # (v0.10) X at a locked car: cut the wires instead of smashing in
 
     def hands_used(self):
         if self.dolly is not None or self.carrying is not None:
@@ -320,7 +326,7 @@ class NPC:
                  "turn_t", "target", "yell_t", "complain_cd", "spin", "flee_t", "fx", "fy", "ttl", "wallet",
                  "wallet_t", "surrender_t", "z", "vz", "brave", "armed", "hostile_t", "foe", "grit", "attack_cd",
                  "carried_by", "struggle_t", "thrown_by", "bowled", "laugh_t", "lure", "car_id", "mode",
-                 "home", "slide_t", "hat")
+                 "home", "slide_t", "hat", "call_t", "phoned")
 
     def __init__(self, nid, kind, x, y):
         self.id = nid
@@ -360,6 +366,8 @@ class NPC:
         self.home = None              # guards: the spot they stand on; dogs: where to run off to
         self.slide_t = 0.0            # (v0.9) skidding after a car hit
         self.hat = 0                  # (v0.9) 0 none, else a hat style (it flies off when you hit them)
+        self.call_t = 0.0             # (v0.10) > 0: this witness is dialling it in, counting down to PHONE_IN_HEAT
+        self.phoned = False           # (v0.10) already made their one call this life -- kill them first next time
 
 
 class Dolly:
@@ -380,7 +388,7 @@ class Trap:
     """A spike strip or a roadblock, lying across the road. ang is the way the
     traffic it's meant for is travelling (0 or pi/2 or ...), so the long side
     is across the lane."""
-    __slots__ = ("id", "kind", "x", "y", "ang", "age", "uses", "hit", "open_t")
+    __slots__ = ("id", "kind", "x", "y", "ang", "age", "uses", "hit", "open_t", "goal")
 
     def __init__(self, tid, kind, x, y, ang):
         self.id = tid
@@ -390,6 +398,7 @@ class Trap:
         self.uses = C.SPIKE_USES
         self.hit = set()
         self.open_t = 0.0             # (v0.8) the precinct gate: > 0 = open for this long
+        self.goal = 1.0                # (v0.10) TRAP_DOOR only: which way this one door is rolling
 
     def solid(self):
         if self.kind == TRAP_CELL:
@@ -411,7 +420,7 @@ class Trap:
             return (self.x - r, self.y - r, 2 * r, 2 * r)
         long_, short = ((C.SPIKE_LEN, C.SPIKE_WID) if self.kind == TRAP_SPIKES
                         else (C.CELL_DOOR_W, C.CELL_BAR_T) if self.kind == TRAP_CELL
-                        else (self.uses, C.DOOR_T) if self.kind == TRAP_DOOR    # (the door's width rides in uses)
+                        else (C.DOOR_W, C.DOOR_T) if self.kind == TRAP_DOOR
                         else (C.GATE_LEN, C.GATE_WID) if self.kind == TRAP_GATE
                         else (C.ROADBLOCK_LEN, C.ROADBLOCK_WID))
         if abs(math.cos(self.ang)) > 0.5:          # traffic runs along x: the trap spans y

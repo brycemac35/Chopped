@@ -9,8 +9,8 @@ engine and exactly no maths textbooks).
 import math
 
 GAME_TITLE = "Chopped"
-VERSION = 9  # bump when the wire protocol changes so old clients get a polite "no"
-RELEASE = (0, 9, 0)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
+VERSION = 10  # bump when the wire protocol changes so old clients get a polite "no"
+RELEASE = (0, 10, 0)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
 
 # --------------------------------------------------------------------------
 # Rendering scale
@@ -30,16 +30,20 @@ FPS = 60
 TILE_M = 4.0                     # one tile = 4 m = 20 px. Roads are 3 tiles (12 m) wide:
                                  # wide enough to drift, narrow enough to regret it.
 TILE_PX = int(TILE_M * PPM)
-BLOCKS = 9                       # 9x9 city blocks; odd so the chop shop sits dead centre
+BLOCKS = 11                      # (v0.10, Bryce: "bigger city"; was 9) odd so the chop shop sits centre
 ROAD_TILES = 3
 BLOCK_TILES = 9                  # sidewalk + 7 building + sidewalk
 PITCH = ROAD_TILES + BLOCK_TILES
-MAP_TILES = BLOCKS * PITCH + ROAD_TILES   # 111 tiles = 444 m. Crossable in ~10 s at full tilt.
+MAP_TILES = BLOCKS * PITCH + ROAD_TILES   # (v0.10) 135 tiles = 540 m (was 111 = 444 m)
 MAP_M = MAP_TILES * TILE_M
-PARK_BLOCKS = 5                  # grass + trees: places to hide from cameras (trees block sight)
+PARK_BLOCKS = 6                  # grass + trees: places to hide from cameras (trees block sight)
 PRECINCT_MIN_BLOCKS = 3          # (v0.8) the police station is at least this many blocks from the shop
-LOT_BLOCKS = 4                   # open parking lots: extra spots for victims, er, vehicles
-CAMERA_COUNT = 12                # street cameras at intersections
+LOT_BLOCKS = 5                   # open parking lots: extra spots for victims, er, vehicles
+CAMERA_COUNT = 14                # street cameras at intersections
+# (v0.10, Bryce: "back alleys between big building sizes") every ordinary building block gets
+# a service alley cut through the middle of it: too narrow to drive down at any speed, but a
+# handy foot shortcut and a place to duck out of a witness's line of sight.
+ALLEY_W = 1                      # tiles wide (4 m: a tight squeeze, no car is getting down there)
 
 # --------------------------------------------------------------------------
 # Networking
@@ -60,7 +64,9 @@ PREDICT_SNAP_DIST = 4.0          # misses bigger than this (respawn, arrest) tel
 PREDICT_MAX_REPLAY = 90          # ticks of unacknowledged input we keep (1.5 s of ping. Please don't.)
 PREDICT_OBSTACLE_RANGE = 14.0    # other cars this close are simulated as things to bump into
 MAX_PLAYERS = 4
-MAX_PACKET = 1150                # stay under typical MTU minus VPN/PPPoE overhead
+MAX_PACKET = 1200                # (v0.10: was 1150) stay under typical MTU minus VPN/PPPoE
+                                 # overhead -- nudged up to make room for a personal car per
+                                 # player and five shop doors instead of one, worst case
 EVENTS_PER_SNAPSHOT = 6          # toasts/sounds per packet; the rest ride the next one (they're resent till acked)
 EVENT_KEEP_S = 4.0               # unacked events retried for this long, then we give up
 NET_CULL_RADIUS = 95.0           # peds/pickups farther than this aren't sent to you
@@ -75,7 +81,7 @@ WALK_SPEED = 6.0                 # brisk "I'm definitely not stealing anything" 
 SPRINT_SPEED = 10.0              # Usain Bolt with a car door
 TWO_HAND_SPEED_MULT = 0.82       # hoods are awkward, doors are worse
 EXHAUSTED_SPEED_MULT = 0.55
-STAMINA_MAX = 100.0
+STAMINA_MAX = 140.0              # (v0.10, Bryce: "increase stamina"; was 100 -- about 40% more legs)
 STAMINA_SPRINT_DRAIN = (12.0, 22.0, 38.0)   # per second: empty / one-handed / two-handed
 STAMINA_WALK_2H_DRAIN = 8.0      # just carrying a bumper is cardio
 STAMINA_REGEN = 18.0
@@ -215,7 +221,7 @@ CIV_GLOW_CHANCE = 0.06           # neon underglow on a parked car: someone's pri
 EJECT_MIN_SPEED = 12.0           # m/s: below this, F just opens the door like a normal person
 EJECT_SPEED = 15.0               # m/s straight up. About six metres. Then the parachute.
 YEET_SPEED = 15.0                # m/s: a car hitting you harder than this sends you airborne
-GNOME_COUNT = 12                 # garden gnomes about the city
+GNOME_COUNT = 14                 # (v0.10: was 12) garden gnomes about the city
 GNOME_RESPAWN = 30.0             # s between replacement gnomes (gardeners are resilient)
 GNOME_HEAT = 3.0                 # heat for pinching one. It's the principle of the thing.
 ICECREAM_LURE = 25.0             # m: peds this close to a slow ice cream van go and queue for it
@@ -330,23 +336,47 @@ EXPLOSION_PUSH = 14.0
 # --------------------------------------------------------------------------
 HEAT_MAX = 100.0
 HEAT_BREAKIN = 10.0
-WITNESS_RATE_COP = 5.0
-WITNESS_RATE_PED = 3.0
-WITNESS_RATE_OWNER = 3.0
-WITNESS_RATE_CAMERA = 2.0
+# (v0.10, Bryce: "make sure the heat takes longer to come up") witness rates cut by about
+# 40% across the board, so a getaway takes longer to go from "fine" to "5 units incoming".
+WITNESS_RATE_COP = 3.0
+WITNESS_RATE_CAMERA = 1.2
 WITNESS_RANGE_COP = 45.0
 WITNESS_RANGE_PED = 24.0
 WITNESS_RANGE_OWNER = 40.0
 WITNESS_RANGE_CAMERA = 22.0
 HEAT_COOL_DELAY = 4.0            # nobody saw you for this long...
 HEAT_COOL_RATE = 3.0             # ...then heat drains this fast
-WITNESS_CHECK_HZ = 10            # LOS raycasts are the expensive bit; 10 Hz is plenty
+WITNESS_CHECK_HZ = 15            # (v0.10: was 10) LOS raycasts are the expensive bit, but heat and
+                                 # lethal status both hinge on this now, so it's worth polling faster
+# (v0.10) a witness who breaks off instead of getting silenced doesn't add heat live any
+# more -- they remember your face and phone it in a while later. Kill them first and they
+# never make the call. "only tells cops after 10-15 seconds by phoning them."
+PHONE_IN_DELAY = (10.0, 15.0)    # s between spotting a wanted crook and the call going out
+PHONE_IN_HEAT = 15.0             # the jump when the call lands
+MURDER_HEAT = 18.0               # (v0.10) shooting a civilian: it's the quiet way to lose a
+                                 # witness, but it's still murder. Costs more than robbing them,
+                                 # less than shooting a cop -- and it never wears off on its own.
+# (v0.10) helicopters: from HELI_HEAT the chopper turns up. It's airborne, so walls and
+# buildings don't stop it seeing you (rooftops would, if we bothered to model them) --
+# duck indoors, not just out of an alley. Purely a witness source; nothing chases you from
+# the sky. Rendered client-side off the snapshot's AL_HELI bit (see protocol.AL_HELI).
+HELI_HEAT = 70.0
+HELI_RANGE = 90.0
+WITNESS_RATE_HELI = 2.5
 
 # --------------------------------------------------------------------------
 # Cops
 # --------------------------------------------------------------------------
 MAX_COPS = 5                     # dispatched units at 100% heat (v0.7, Bryce: "more plentiful"; was 2)
 COP_TIERS = ((25.0, 1), (50.0, 2), (75.0, 3), (99.9, 5))   # heat -> units on the way (a wanted level)
+COPS_PER_DAY = 18                # (v0.10, Bryce: "limited number of cops spawn / day") dispatch stops
+                                 # sending FRESH units once this many have turned out today, win or
+                                 # lose; units already out keep chasing, and patrols don't count
+                                 # (they're not "dispatched"). Resets at midnight with the rent.
+COP_TRACK_LOSE_TIME = 6.0        # (v0.10) a cop with no visual on anyone stops trusting its last-known
+                                 # position after this long of not re-spotting it, and gives up the
+                                 # chase instead of beelining forever (see Car.search_t, "walls need
+                                 # to block cops' views better")
 PATROL_COPS = 2                  # cruisers that are ALWAYS out there, doing laps, being witnesses
 PATROL_SPAWN_DIST = (60.0, 130.0)   # they turn up this far from the crew, never on top of you
 PATROL_RECYCLE_DIST = 170.0
@@ -355,7 +385,10 @@ PATROL_RECYCLE_DIST = 170.0
 # only once the crew has started shooting (see LETHAL_*).
 COP_GUN_RANGE = 26.0             # lethal mode: cop cars shoot from the window from this close...
 COP_GUN_COOLDOWN = 1.6           # ...this often...
-COP_GUN_ACCURACY = 0.28          # ...and hit about this often. A hit is WASTED.
+COP_GUN_ACCURACY = 0.22          # ...and hit about this often (v0.10: was 0.28 -- a health bar means
+                                 # a hit isn't instant death any more, but a small crowd of cops all
+                                 # rolling the dice at once still added up to "wasted" almost every
+                                 # time; missing more often spreads the damage out).
 OFFICER_DEPLOY_RANGE = 22.0      # m: a cop car this close to a crook on foot lets its officer out
 OFFICER_DEPLOY_SPEED = 6.0       # m/s: ...once it's slowed down enough to open the door
 OFFICER_SPEED = 7.6              # m/s: faster than your walk (6), slower than your sprint (10). Run!
@@ -373,15 +406,27 @@ TASER_COOLDOWN = 3.0
 TASER_ACCURACY = 0.55
 TASER_TIME = 2.2                 # s of twitching on the floor. Plenty for the cuffs.
 LETHAL_TIME = 45.0               # s the police are authorised to shoot to kill after the crew shoots
+LETHAL_UNSEEN_TIME = 8.0         # (v0.10, Bryce: "poll heat value more often for changing lethal to
+                                 # not noticed by cops") lethal mode also stands down this much sooner
+                                 # once no cop currently has eyes on anyone wanted, instead of always
+                                 # running the full LETHAL_TIME regardless of whether they've lost you
 COP_HEAR_RANGE = 55.0            # m: a gunshot this close to any cop starts the lethal clock
 OFFICER_GUN_RANGE = 20.0         # lethal mode: officers shoot from here...
 OFFICER_GUN_COOLDOWN = 1.2
-OFFICER_GUN_ACCURACY = 0.33
+OFFICER_GUN_ACCURACY = 0.26      # (v0.10: was 0.33, same reasoning as COP_GUN_ACCURACY)
 # dying (v0.8, Bryce: "if the cops do decide to lethally shoot you... you die, lose a/x % of your
 # money depending on how many people are playing"): the crew loses DEATH_LOSS / players of its
 # cash: 50% solo, 25% for two, 12.5% for four. Medical bills, split fairly.
 DEATH_LOSS = 0.5
 DEATH_TIME = 4.0                 # s of WASTED before you wake up at the shop
+# (v0.10, Bryce: "wasted too much have a health bar instead of 1 hit") a police bullet is a
+# wound, not an instant game-over: it takes BULLET_DAMAGE off a health bar, and only an empty
+# bar is WASTED. Health regens on its own once nobody's shot at you for a few seconds --
+# there's no first-aid kit to find, just don't get hit again for a bit.
+PLAYER_HEALTH_MAX = 100.0
+BULLET_DAMAGE = 34.0             # 3 clean hits and you're down; 2 is a serious scare
+HEALTH_REGEN_DELAY = 6.0         # s since the last hit before you start mending
+HEALTH_REGEN_RATE = 10.0         # HP/s once you do (full recovery from one hit in ~3.4 s)
 # the precinct (v0.8): busted = locked up. Punch your way out, or get broken out.
 CELL_SIZE = 6.0                  # m: the cells are 6 x 6 m, in the lockup's north corners
 CELL_DOOR_W = 2.0                # the cell door: 2 m of bars in the middle of the south side...
@@ -424,12 +469,12 @@ CUFFED_TIME = 3.0                # s cuffed on the kerb (the mugshot), then off 
 # --------------------------------------------------------------------------
 # Traffic & NPCs
 # --------------------------------------------------------------------------
-MAX_CIVILIAN_CARS = 6            # (v0.5: was 4) more marks on the street = less wandering around
+MAX_CIVILIAN_CARS = 8            # (v0.10: was 6, city's bigger now) more marks on the street
 CIV_RESPAWN_DELAY = 3.0
 CIV_SPAWN_MIN_DIST = 25.0
 ABANDON_TOW_TIME = 60.0          # (our call) stolen cars left far from everyone get towed so the city refills
 ABANDON_DIST = 110.0
-PED_COUNT = 26
+PED_COUNT = 32                   # (v0.10: was 26, city's bigger now)
 PED_SPEED = 1.4
 PED_TUMBLE = 2.6
 PED_FLEE_SPEED = 5.0             # panic jog: faster than walking, slower than you. They'll live.
@@ -442,7 +487,7 @@ PED_FLEE_CHASE_RADIUS = 22.0     # with cops rolling, anyone this near a wanted 
 # Moving traffic. Not witnesses (heat stays exactly as tuned) and not
 # stealable while someone's driving it -- they're rolling obstacles, crash
 # fodder and a reason to keep your eyes on the road.
-TRAFFIC_COUNT = 8                # enough to T-bone, not enough to gridlock a 444 m city
+TRAFFIC_COUNT = 9                # (v0.10: was 8) enough to T-bone, not enough to gridlock a 540 m city
 TRAFFIC_SPEED = 12.0             # m/s (~43 km/h). Commuting, not fleeing.
 TRAFFIC_TURN_SPEED = 6.0         # slow for corners so they don't end up in a cafe
 TRAFFIC_LANE_OFFSET = 1.6        # m right of the centre line. Parked cars sit at 4.2, so they fit past.
@@ -464,6 +509,14 @@ BREAKIN_TIME = 4.0               # (v0.5: halved from 8) smash, grab, go
 HOTWIRE_TIME = 3.0               # (v0.5: halved from 6)
 DELIVER_MAX_SPEED = 4.0
 CRUSH_TIME = 2.0
+# (v0.10, Bryce: "sneaking / turning off the alarm on a stolen car by cutting wire minigame")
+# X at a locked car instead of E: pop the hood and go for the wires. Slower than just smashing
+# the window, but no alarm at all if you cut the right one -- and a proper penalty if you don't.
+ALARM_CUT_TIME = 6.0             # s fiddling under the hood (BREAKIN_TIME is 4: this is the slow way)
+ALARM_CUT_WIRES = 4              # how many wires; one's the right one
+ALARM_CUT_FAIL_HEAT = 20.0       # guess wrong and it screams -- worse than just smashing the window
+TRUNK_POP_TIME = 0.35            # s the boot takes to swing up (cosmetic; see FPRenderer._trunk_pop --
+                                 # client-local off the trunk data every trunk prompt already sends)
 
 # --------------------------------------------------------------------------
 # Violence (v0.6: Bryce wants to punch people, rob them, and have guns).
@@ -589,14 +642,26 @@ INSPECT_EVERY = 6                # ticks between looks (10 Hz is plenty for "wha
 # (v0.9) the chop shop's roof and roller door (Bryce: "add a roof to the chop shop and a closable
 # door that blocks cops. but it needs to be opened for you to get in")
 ROOF_H = 6.0                     # m: the roof sits on the shop's 6 m walls
-DOOR_W = (BLOCK_TILES - 2) * TILE_M   # the whole front of the shop: seven bays' worth of roller door
+# (v0.10, Bryce: "make the garage door smaller, make a walking entrance and a bay for each
+# player that joins") one 28 m roller door for the whole crew became five small ones, each
+# exactly one tile (TILE_M) wide so they drop cleanly onto the raycaster's tile grid with no
+# fractional gaps to plaster over: a walking door and four bay doors, one per player slot.
+# Each is its own Trap (kind TRAP_DOOR, its own id, its own open_t and goal), independently
+# opened, closed and shut on cops. DOOR_COLS says which of the shop's 7 front tile-columns
+# they sit in (0-indexed from the garage's west wall); the two columns left over (3 and 4,
+# between the first pair of bays and the second) are ordinary WALL tiles -- see
+# mapgen._make_shop -- so shutting every door really does seal the place: there's no gap
+# between doors for a witness to see through, because there's no floor there to stand on.
 DOOR_T = 0.4                     # m thick (it's a door, not a wall: it doesn't need to be much)
 DOOR_TIME = 1.4                  # s to roll all the way up or down. Slow enough to be dramatic in a chase
 DOOR_PASSABLE = 0.96             # fraction up before it stops being solid (i.e. only when it's UP)
-DOOR_ID = 65510                  # its fixed entity id (new_id never goes above 65000)
-DOOR_REMOTE_R = 30.0             # m: honk within this of the door to open/close it (the remote on your visor)
-DOOR_REACH = 2.2                 # m: how close your aim has to be to the door to press its button
-DOOR_BANG_EVERY = 4.0            # s between "POLICE! OPEN UP!" toasts (they will bang on it all day)
+DOOR_ID = 65510                  # the first door's fixed entity id (walk=+0, bays=+1..+4)
+DOOR_REMOTE_R = 30.0             # m: honk within this of a door to open/close it (the remote on your visor)
+DOOR_REACH = 2.2                 # m: how close your aim has to be to a door to press its button
+DOOR_BANG_EVERY = 4.0            # s between "POLICE! OPEN UP!" toasts (they will bang on any shut one)
+DOOR_W = TILE_M                  # every door (walk or bay) is exactly one tile wide
+DOOR_COLS = (0, 1, 2, 5, 6)      # front tile-columns that are doors: 0 = walk, 1-4 = bays 0-3
+N_BAYS = 4                        # (v0.10) one personal car + bay per player slot (see config.MAX_PLAYERS)
 INSPECT_DELAY = 0.45             # s of looking before the card comes up (a glance at a car isn't a survey)
 SELL_TIME = 0.5                  # (v0.5: halved)
 INSTALL_TIME = 1.5               # (v0.5: halved)
@@ -658,3 +723,14 @@ def wrap_angle(a):
     """Map any angle into (-pi, pi]."""
     a = (a + math.pi) % (2.0 * math.pi) - math.pi
     return a
+
+
+def door_specs(garage_rect):
+    """(v0.10) The 5 doors across the shop's front -- (id_offset, x, y) -- id_offset 0 is the
+    walking door, 1-4 are the bays (west to east, so bay N-1 is player N's). Pure function of
+    the garage's rect, so the host, every client and the predictor all agree on exactly where
+    they are without a single byte on the wire. Every door is DOOR_W (one tile) wide; the two
+    front tile-columns not in DOOR_COLS are ordinary wall, placed by mapgen._make_shop."""
+    gx, gy, gw, gh = garage_rect
+    y = gy + gh
+    return [(i, gx + (col + 0.5) * TILE_M, y) for i, col in enumerate(DOOR_COLS)]

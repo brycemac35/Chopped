@@ -106,17 +106,27 @@ class CityMap:
         inner = C.BLOCK_TILES - 2
         x0, y0 = ox + 1, oy + 1
         self._fill(x0, y0, inner, inner, BUILDING)
-        # split the block into 1-3 buildings so roofs aren't one giant slab
-        parts = rng.choice((1, 2, 2, 3))
-        horiz = rng.random() < 0.5
-        cuts = sorted(rng.sample(range(2, inner - 1), parts - 1)) if parts > 1 else []
-        edges = [0] + cuts + [inner]
-        for a, b in zip(edges, edges[1:]):
+        # (v0.10, Bryce: "back alleys between big building sizes") a foot-only service alley
+        # straight through the middle, splitting the block into two building masses either
+        # side of it: a shortcut for peds, and somewhere to duck a witness's sightline. It's
+        # ALLEY_W tiles (4 m) wide -- too narrow for any car, so traffic never goes near it.
+        aw = C.ALLEY_W
+        a0 = (inner - aw) // 2
+        horiz = rng.random() < 0.5           # which way the alley (and the split) runs
+        if horiz:
+            self._fill(x0, y0 + a0, inner, aw, SIDEWALK)
+            halves = ((y0, a0), (y0 + a0 + aw, inner - a0 - aw))
+        else:
+            self._fill(x0 + a0, y0, aw, inner, SIDEWALK)
+            halves = ((x0, a0), (x0 + a0 + aw, inner - a0 - aw))
+        for pos, size in halves:
+            if size <= 0:
+                continue
             style = rng.randrange(6)
             if horiz:
-                self.buildings.append((x0 + a, y0, b - a, inner, style))
+                self.buildings.append((x0, pos, inner, size, style))
             else:
-                self.buildings.append((x0, y0 + a, inner, b - a, style))
+                self.buildings.append((pos, y0, size, inner, style))
 
     def _make_park(self, rng, ox, oy):
         self._ring(ox, oy)
@@ -165,13 +175,24 @@ class CityMap:
             self._set(ox + b - 1, oy + t, WALL)
         for t in range(b):
             self._set(ox + t, oy, WALL)
+        # (v0.10, Bryce: "make the garage door smaller, make a walking entrance and a bay for
+        # each player that joins") the front used to be one 28 m roller door; now it's five
+        # small ones (config.DOOR_COLS picks which of these 7 tile-columns are doors: 0 =
+        # walking door, 1-4 = each player's own bay). The two columns left over are ordinary
+        # wall -- a pier between the first pair of bays and the second -- so shutting every
+        # door really does seal the place, with no gap between doors for a witness to see
+        # through, because there's no floor there to stand on.
+        for k in range(b - 2):
+            if k not in C.DOOR_COLS:
+                self._set(ox + 1 + k, oy + b - 1, WALL)
         T = C.TILE_M
         # delivery zone = the covered floor (not the apron). 28 x 28 m of crime.
         self.garage_rect = ((ox + 1) * T, (oy + 1) * T, (b - 2) * T, (b - 2) * T)
         self.garage_tiles = (ox, oy, b, b)
         gx, gy, gw, gh = self.garage_rect
-        # personal car bay on the west side, nose pointing out the door
-        self.bay = (gx + 3.4, gy + gh - 6.0, math.pi / 2)
+        # one bay per player slot, nose pointing out that bay's own door (config.DOOR_COLS[1:])
+        self.bays = [(gx + (col + 0.5) * T, gy + gh - 6.0, math.pi / 2) for col in C.DOOR_COLS[1:]]
+        self.bay = self.bays[0]           # (kept as a single tuple: plenty of code still wants "the" bay)
         # the hand dolly's parking spot, tucked in the north-east corner
         self.dolly_spot = (gx + gw - 2.5, gy + 4.5)
         # the black market: a row of crates along the west wall. Don't ask where they came from.

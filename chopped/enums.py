@@ -13,7 +13,7 @@ LOCKED, BROKEN_IN, RUNNING, DELIVERED = range(4)
 PED, CLOWN, OWNER, OFFICER, GUARD, KEYGUARD, DOG, STREAKER = range(8)
 CHICKEN, MIME = 8, 9                        # (v0.9) why did it cross the road; the man in the invisible box
 LAW = (OFFICER, GUARD, KEYGUARD, DOG)       # (v0.8) on the city's payroll: not witnesses, not wallets
-W_NONE, W_COP, W_PED, W_OWNER, W_CAMERA = range(5)
+W_NONE, W_COP, W_PED, W_OWNER, W_CAMERA, W_HELI = range(6)   # (v0.10) W_HELI: the chopper
 
 B_UP, B_DOWN, B_LEFT, B_RIGHT = 1, 2, 4, 8
 B_USE, B_SPRINT, B_HANDBRAKE, B_HORN = 16, 32, 64, 128
@@ -36,7 +36,9 @@ T_WHITE, T_MONEY, T_BAD, T_INFO, T_COP = range(5)
  S_TASER, S_BARK, S_FLASH, S_CONFETTI, S_HYDRO, S_WASTED, S_GATE, S_KEYS, S_CUFF, S_WHISTLE,
  S_WHEE,
  # v0.9
- S_DOOR, S_BANG, S_SQUEAK, S_PFFT, S_CLUCK, S_CASH, S_FEATHERS) = range(58)
+ S_DOOR, S_BANG, S_SQUEAK, S_PFFT, S_CLUCK, S_CASH, S_FEATHERS,
+ # v0.10
+ S_AMBULANCE) = range(59)
 # comedy banners (Player.banner, shown big on that player's screen)
 BN_NONE, BN_YEETED, BN_HUMBLED, BN_BONKED, BN_HOMERUN, BN_STRIKE, BN_EJECT, \
     BN_WASTED, BN_BUSTED, BN_TASED, BN_PANTSED, BN_FREE, BN_SMILE, BN_BIGAIR = range(14)

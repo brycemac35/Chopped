@@ -248,6 +248,10 @@ class Audio:
                                                                        + math.sin(2 * math.pi * 2637 * t) * 0.2)
                                                     * max(0.0, 1 - t / 0.5) + rnd.uniform(-1, 1) * 0.3
                                                     * max(0.0, 1 - abs(t - 0.5) / 0.1)), 0.8)
+        # (v0.10) an ambulance, a couple of streets off: a two-tone siren (nee-naw), distant
+        self.sounds[S.S_AMBULANCE] = self._mk(self._tone(1.8, lambda t, p: sq(760 if int(t * 2.2) % 2 == 0
+                                                                              else 570, t) * 0.16
+                                                          * min(1, p * 6) * min(1, (1 - p) * 6)), 0.55)
         # ---- horns (the mod shop sells worse ones), indexed by vehicles.HORN_*
         self.horns = [
             self._mk(self._tone(0.2, lambda t, p: (sq(392, t) + sq(494, t)) * 0.18), 0.9),            # stock

@@ -59,6 +59,9 @@ class Police:
             t.uses = C.CELL_DOOR_HP
             self.cell_traps.append(t)
         self.jail_alert = False         # the guards know someone's loose in the hall
+        self.lethal_unseen_t = 0.0      # (v0.10) s since a cop last had eyes on a wanted target
+        self.cops_today = 0             # (v0.10) COPS_PER_DAY: also reset at midnight, see _economy
+        self.cops_exhausted_told = False
         self._rebuild_trap_rects()
 
     def gate(self):
@@ -72,8 +75,16 @@ class Police:
     # ------------------------------------------------------------------ per tick
     def _police(self, dt):
         if self.lethal_t > 0:
-            self.lethal_t -= dt
+            if self.witness == W_COP:
+                self.lethal_unseen_t = 0.0
+            else:
+                self.lethal_unseen_t += dt
+            if self.lethal_unseen_t >= C.LETHAL_UNSEEN_TIME:
+                self.lethal_t = 0.0             # lost you for long enough: stand down outright
+            else:
+                self.lethal_t -= dt
             if self.lethal_t <= 0:
+                self.lethal_t = self.lethal_unseen_t = 0.0
                 self.toast("THE POLICE HAVE HOLSTERED THEIR GUNS. BACK TO TASERS.", T_COP)
         self.whistle_cd -= dt
         self._deploy_officers()
@@ -84,6 +95,10 @@ class Police:
                 p.grace_t -= dt
             if p.tased_t > 0:
                 p.tased_t -= dt
+            if p.hurt_t > 0:
+                p.hurt_t -= dt
+            elif p.health < C.PLAYER_HEALTH_MAX and p.state != DEAD:
+                p.health = min(C.PLAYER_HEALTH_MAX, p.health + C.HEALTH_REGEN_RATE * dt)
             if p.pants_t > 0:
                 p.pants_t -= dt
                 if p.pants_t <= 0:
@@ -267,10 +282,25 @@ class Police:
         self.sfx(S_PISTOL, x, y)
         if self.rng.random() < accuracy and q.state == FOOT:
             self.tracer(ARM_PISTOL, x, y, q.x, q.y)
-            self._kill(q)
+            self._shoot_player(q, C.BULLET_DAMAGE, math.cos(a), math.sin(a))
         else:
             miss = a + self.rng.uniform(-0.3, 0.3)
             self.tracer(ARM_PISTOL, x, y, x + math.cos(miss) * (d + 5), y + math.sin(miss) * (d + 5))
+
+    def _shoot_player(self, q, damage, fx=0.0, fy=0.0):
+        """(v0.10, Bryce: "wasted too much have a health bar instead of 1 hit") a police
+        bullet takes a bite out of your health, not your life -- only an empty bar is
+        WASTED. Health mends on its own once nobody's hit you for a few seconds."""
+        if q.state not in (FOOT, CARRIED):
+            return False
+        q.health = max(0.0, q.health - damage)
+        q.hurt_t = C.HEALTH_REGEN_DELAY
+        if q.health <= 0:
+            self._kill(q)
+            return True
+        self._hurt_player(q, fx * 6, fy * 6, C.SHOT_PLAYER_TUMBLE, BN_HUMBLED)
+        self.toast("%s TOOK A HIT: %d%% HEALTH LEFT" % (q.name, int(100 * q.health / C.PLAYER_HEALTH_MAX)), T_BAD)
+        return True
 
     def _escalate(self, x, y):
         """A gun went off (or a cop got shot): are the police within earshot?"""
@@ -300,6 +330,8 @@ class Police:
         q.vx = q.vy = 0.0
         q.tumble_t = q.cuff_prog = 0.0
         q.spin = q.ang
+        q.health = C.PLAYER_HEALTH_MAX
+        q.hurt_t = 0.0
         loss = int(max(0, self.cash) * C.DEATH_LOSS / max(1, len(self.players)))
         self.cash -= loss
         self._banner(q, BN_WASTED)
@@ -311,6 +343,8 @@ class Police:
         p.x, p.y = self.map.player_spawns[(p.id - 1) % 4]
         p.vx = p.vy = 0.0
         p.spin = 0.0
+        p.health = C.PLAYER_HEALTH_MAX
+        p.hurt_t = 0.0
         p.jumpsuit = False
         p.pants_t = 0.0
         p.stamina = C.STAMINA_MAX
@@ -752,21 +786,21 @@ class Police:
             self.cam_cd[k] -= dt
             if self.cam_cd[k] <= 0:
                 del self.cam_cd[k]
-        car = self.cars.get(self.personal_id)
-        if car is None or car.driver is None or car.speed() < C.SPEEDCAM_SPEED:
-            return
-        for k, (cx, cy) in enumerate(self.map.cameras):
-            if k in self.cam_cd:
+        for car in self.cars.values():
+            if car.kind != PERSONAL or car.driver is None or car.speed() < C.SPEEDCAM_SPEED:
                 continue
-            if (car.x - cx) ** 2 + (car.y - cy) ** 2 < C.SPEEDCAM_RANGE ** 2:
-                self.cam_cd[k] = C.SPEEDCAM_COOLDOWN
-                self.cash -= C.SPEEDCAM_FINE
-                self.sfx(S_FLASH, cx, cy)
-                p = self.players.get(car.driver)
-                if p is not None:
-                    self._banner(p, BN_SMILE)
-                    self._charge(p, "speed")
-                self.toast("SMILE! SPEED CAMERA. -$%d TICKET, POSTED TO THE SHOP." % C.SPEEDCAM_FINE, T_BAD)
+            for k, (cx, cy) in enumerate(self.map.cameras):
+                if k in self.cam_cd:
+                    continue
+                if (car.x - cx) ** 2 + (car.y - cy) ** 2 < C.SPEEDCAM_RANGE ** 2:
+                    self.cam_cd[k] = C.SPEEDCAM_COOLDOWN
+                    self.cash -= C.SPEEDCAM_FINE
+                    self.sfx(S_FLASH, cx, cy)
+                    p = self.players.get(car.driver)
+                    if p is not None:
+                        self._banner(p, BN_SMILE)
+                        self._charge(p, "speed")
+                    self.toast("SMILE! SPEED CAMERA. -$%d TICKET, POSTED TO THE SHOP." % C.SPEEDCAM_FINE, T_BAD)
 
     # ------------------------------------------------------------------ smoke screens
     def _smoke_screens(self, dt):

@@ -30,10 +30,13 @@ BX = (W - 480) // 2      # the classic 480-wide bar sits in the middle; ARMS and
 TOAST_COLORS = {S.T_WHITE: P["white"], S.T_MONEY: P["money"], S.T_BAD: P["danger"],
                 S.T_INFO: P["gold"], S.T_COP: (130, 170, 255)}
 WITNESS_TEXT = {
-    S.W_COP: ("A COP SEES YOU +5/S", (130, 170, 255)),
-    S.W_PED: ("A WITNESS SEES YOU +3/S", P["gold"]),
-    S.W_OWNER: ("THE OWNER SEES YOU +3/S", P["danger"]),
-    S.W_CAMERA: ("STREET CAMERA SEES THE CAR +2/S", P["gold"]),
+    S.W_COP: ("A COP SEES YOU +3/S", (130, 170, 255)),
+    # (v0.10) peds/owners don't add heat live any more -- they're calling it in. No
+    # rate to show, just the warning: silence them before the call lands.
+    S.W_PED: ("A WITNESS SAW YOU - SHUT THEM UP OR RUN", P["gold"]),
+    S.W_OWNER: ("THE OWNER SAW YOU - SHUT THEM UP OR RUN", P["danger"]),
+    S.W_CAMERA: ("STREET CAMERA SEES THE CAR +1.2/S", P["gold"]),
+    S.W_HELI: ("THE CHOPPER'S GOT YOU +2.5/S", (130, 170, 255)),          # (v0.10)
 }
 # the big red digits: top rows bright, bottom rows dark, like they were chiselled
 BIG_RED = ((255, 80, 60), (236, 50, 40), (200, 30, 30), (160, 20, 20), (120, 14, 14))
@@ -639,6 +642,7 @@ class DoomHud:
         # ---- above the bar -------------------------------------------------
         self._toasts(low, now)
         self._status_line(low, snap, now)
+        self._box_status(low, me, now)
         self._minimap(low, view, info, flash)
         if me is not None:
             self._prompt(low, snap)
@@ -648,6 +652,7 @@ class DoomHud:
             if info.get("fp"):
                 self._shop_compass(low, view, info, now)
                 self._car_compass(low, view, info, now)
+                self._crew_compass(low, view, info, now)
         self._law_overlay(low, snap, me, now, flash)
         if not info.get("paused") and not info.get("menu"):
             self._inspect_card(low, snap, now)
@@ -753,6 +758,18 @@ class DoomHud:
         while self.toasts and now - self.toasts[0][2] > C.TOAST_TIME:
             self.toasts.popleft()
 
+    def _box_status(self, low, me, now):
+        """(v0.10, Bryce: "add overlay for in box vs out") the box only actually
+        hides you once you've stood still for BOX_STILL_TIME -- without this you'd
+        have no way to tell "invisible" from "wearing a very obvious cardboard box"
+        until a cop walked straight up to you."""
+        if me is None or not (len(me) > 17 and me[17] & PR.PF2_BOX):
+            return
+        hidden = me[17] & PR.PF2_HIDDEN
+        text = "BOXED UP - HIDDEN" if hidden else "BOXED UP - HOLD STILL TO HIDE"
+        col = P["money"] if hidden else P["gold"]
+        self.font.draw(low, text, W // 2, VIEW_H - 20, col, align="center")
+
     def _status_line(self, low, snap, now):
         if snap.witness in WITNESS_TEXT:
             text, col = WITNESS_TEXT[snap.witness]
@@ -798,7 +815,12 @@ class DoomHud:
             elif c[1] == S.CIV and c[3] != S.DELIVERED:
                 low.fill(P["gold"] if c[4] & PR.CF_WANTED else P["white"], (mx + int(c[7] * k), my + int(c[8] * k), 1, 1))
         for p in view.players.values():
-            low.fill(PLAYER_COLORS[p[1] % 4], (mx + int(p[4] * k), my + int(p[5] * k), 2, 2))
+            # (v0.10, Bryce: "can't spot teammates on the radar/map") a plain 2x2 dot got
+            # lost among all the car blips; an outline and an extra pixel make it read as
+            # a person, not scenery, and drawing it last keeps it from being buried.
+            bx, by = mx + int(p[4] * k), my + int(p[5] * k)
+            low.fill(P["ink"], (bx - 1, by - 1, 4, 4))
+            low.fill(PLAYER_COLORS[p[1] % 4], (bx, by, 2, 2))
         me = view.me
         if me is not None:
             yaw = info.get("yaw", 0.0)
@@ -854,7 +876,10 @@ class DoomHud:
             low.fill((30, 28, 34), (x0 + 6, by + 1, W - x0 - 12, 3))
             low.fill((90, 170, 255), (x0 + 6, by + 1, int((W - x0 - 12) * frac), 3))
         tr = getattr(snap, "trunk", None)
-        if tr is not None and me is not None and me[2] in (S.DRIVER, S.PASSENGER):
+        if tr is not None and me is not None and me[2] in (S.DRIVER, S.PASSENGER, S.FOOT):
+            # (v0.10, Bryce: "show assets for items in back of trunks") on foot this
+            # fires the moment you're stood at the bumper -- popping the trunk shows
+            # you what you're about to strip before you commit to holding E
             cid, cap, used, items = tr
             f.draw(low, "%d/%d" % (used, cap), cx, by + 4, P["gold"], align="center")
             for k, (tid, style) in enumerate(items[:5]):
@@ -898,6 +923,39 @@ class DoomHud:
             text = "CAR TO STEAL %dM" % bd
             pygame.draw.polygon(low, col, [(x - 4, 22), (x + 4, 22), (x, 27)])
         self.font.draw(low, text, int(x), 14, col, align="center")
+
+    def _crew_compass(self, low, view, info, now):
+        """(v0.10, Bryce: "better visibility for multiplayer", clarified as "can't spot
+        teammates on the radar/map") one line per teammate, in their own colour, naming
+        them and how far and which way -- so the crew can regroup without alt-tabbing to
+        the automap. Skips anyone close enough and in frame that you can just look at them."""
+        me = view.me
+        if me is None:
+            return
+        yaw = info.get("yaw", 0.0)
+        half = math.radians(C.FP_FOV) / 2
+        row = 0
+        for p in view.players.values():
+            if p[0] == me[0]:
+                continue
+            dist = math.hypot(p[4] - me[4], p[5] - me[5])
+            if dist < 10:
+                continue                          # close enough to just look at them
+            bearing = (math.atan2(p[5] - me[5], p[4] - me[4]) - yaw + math.pi) % (2 * math.pi) - math.pi
+            if dist < 60 and -half < bearing < half:
+                continue                          # already in frame and near
+            col = PLAYER_COLORS[p[1] % 4]
+            y = 34 + row * 8
+            row += 1
+            if row > 3:
+                break
+            name = p[13][:10]
+            if bearing < -half:
+                self.font.draw(low, "< %s %dM" % (name, dist), 6, y, col)
+            elif bearing > half:
+                self.font.draw(low, "%s %dM >" % (name, dist), W - 6, y, col, align="right")
+            else:
+                self.font.draw(low, "%s %dM" % (name, dist), W // 2, y, col, align="center")
 
     def _comedy_banner(self, low, me, now):
         """YEETED. HUMBLED. STRIKE! Big letters, a wobble, and your dignity."""

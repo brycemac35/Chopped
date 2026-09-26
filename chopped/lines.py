@@ -66,7 +66,21 @@ CHARGES = {"gta": "GRAND THEFT AUTO", "carjack": "CARJACKING", "assault": "ASSAU
            "gun": "DISCHARGING A FIREARM", "cop": "ASSAULTING AN OFFICER", "gnome": "GNOME THEFT",
            "dance": "UNLICENSED DANCING", "litter": "LITTERING (BANANAS)", "bribe": "BRIBERY (DONUTS)",
            "yeet": "THROWING A PERSON", "speed": "SPEEDING", "break": "JAILBREAK",
-           "copcar": "STEALING A POLICE CAR"}
+           "copcar": "STEALING A POLICE CAR", "murder": "MURDER"}
+
+# (v0.10) Bryce: "kill civilians to make sure no witness remains". A gun is lethal now, not
+# just a knockdown -- to civilians AND to the law. %s = the shooter's name.
+MURDER_LINES = [
+    "%s SHOT THEM. THERE'S NO WITNESS NOW. THERE'S ALSO NO COMING BACK FROM THAT.",
+    "%s SILENCED A WITNESS FOR GOOD. THE STREET REMEMBERS ANYWAY.",
+    "%s PULLED THE TRIGGER. ONE LESS PERSON TO TALK TO THE POLICE.",
+    "A BODY HITS THE PAVEMENT. %s DOESN'T LOOK BACK.",
+]
+COP_DOWN_LINES = [
+    "%s SHOT AN OFFICER. THE RADIO GOES VERY QUIET, THEN VERY LOUD.",
+    "OFFICER DOWN, FOR REAL THIS TIME. %s DID THAT.",
+    "%s JUST MADE THIS PERSONAL FOR EVERY COP IN THE CITY.",
+]
 
 # (v0.9) selling a car whole. %s = the model, %d = the money
 WHOLE_SALE_LINES = [
