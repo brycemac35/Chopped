@@ -787,6 +787,10 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
                 return (None, "HANDS FULL - SELL IT OR DROP (G)", 0, None)
             return (("pick", best.id), "E: PICK UP %s ($%d)" % (part.name.upper(), part.value),
                     C.PICKUP_TIME, lambda: self._pickup(p, best))
+        # (v0.12.1) somebody to talk to: Paige, the Fixer, Tommy, the Kingpin
+        talk = self._talk_interaction(p, ax, ay)
+        if talk is not None:
+            return talk
         # benches
         for bench, is_sell in ((m.sell_bench, True), (m.tune_bench, False)):
             bx, by, bw, bh = bench

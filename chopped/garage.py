@@ -246,6 +246,11 @@ class Garage:
         old.stolen = old.alarm = False
         old.driver = old.passenger = None
         new.kind, new.owner, new.bay = PERSONAL, p.id, old.bay
+        # (v0.12 fix, Bryce: "after swapping a car i cant start the new one") a delivered car
+        # is parked for good -- physics won't drive anything in DELIVERED -- so the new ride
+        # has to come out of that state, and stop counting as stolen for the cameras too
+        new.state = RUNNING
+        new.stolen = new.alarm = False
         new.x, new.y, new.ang = self.map.bays[old.bay]
         new.vx = new.vy = new.w = 0.0
         self.player_car[p.id] = new.id
@@ -524,6 +529,8 @@ class ShopDoor:
         x = x0 + (x1 - x0) * t
         for d in doors:
             if abs(x - d.x) <= C.DOOR_W / 2:
+                if d.id == C.DOOR_ID and abs(x - d.x) > C.WALK_DOOR_W / 2:
+                    return False        # (v0.12.1) the walking door's brick jambs: always solid
                 return not d.solid()
         return True                     # not a door column: map.los already ruled on it above
 

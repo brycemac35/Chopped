@@ -32,7 +32,7 @@ import math
 
 from . import config as C
 from . import vehicles as V
-from .enums import T_BAD, T_INFO, T_MONEY, S_CASH
+from .enums import T_BAD, T_INFO, T_MONEY, T_SAY, S_CASH
 
 # ---------------------------------------------------------------------------
 # The 15 jobs. Order is fixed -- it's how a job's index (not its string id)
@@ -87,6 +87,54 @@ ACT_BEATS = {
     3: ("TOMMY", "...FINE. YOU WIN. JUST DON'T RUB IT IN."),
 }
 
+# (v0.12.1, Bryce: "there are no quest NPC's") what the people standing around say when you walk
+# up and press E. mapgen.CityMap.story_npcs says where they stand; this is what comes out of them.
+PAIGE_HELLO = {
+    1: ("RIGHT. WE'RE BROKE AND THE LANDLORD'S CIRCLING. HERE'S TODAY'S WORK:",
+        "ANOTHER DAY, ANOTHER RENT CHEQUE WE CAN'T COVER. JOBS:"),
+    2: ("PEOPLE ARE STARTING TO KNOW OUR NAME. LET'S GIVE THEM A REASON:",
+        "BUSINESS IS GOOD. DON'T GET COMFORTABLE. TODAY:"),
+    3: ("DOWNTOWN'S OURS. MOSTLY. HERE'S HOW WE KEEP IT:",
+        "TOMMY'S STILL SULKING. HERE'S TODAY'S LIST:"),
+}
+TOMMY_LINES = ("YOUR SHOP SMELLS LIKE BURNT CLUTCH, PAL.", "EVERY CAR YOU NICK IS ONE I DIDN'T. FOR NOW.",
+               "NICE KEI. DID IT COME WITH A CRAYON?", "THIS LOT'S MINE TILL SOMEBODY PAYS FOR IT. SO: MINE.",
+               "I'D RACE YOU BUT I DON'T RACE PEOPLE WHO PARK LIKE THAT.")
+TOMMY_LOST = ("...YOU BOUGHT MY SPOT. I'M JUST STANDING HERE. IT'S A FREE COUNTRY.",
+              "FINE. YOU WIN THIS ONE. I'M NOT CRYING, IT'S EXHAUST FUMES.")
+TOMMY_RIVAL = "BODY SHOP WARS, EH? THAT CAR'S AS GOOD AS MINE. TICK TOCK."
+KINGPIN_LINES = {
+    1: ("COME BACK WHEN YOU'RE SOMEBODY. THIS LOT'S NOT FOR SMALL FRY.",
+        "YOU'RE THE KEI PEOPLE? ADORABLE."),
+    2: ("I HEAR THINGS ABOUT YOUR CREW. GOOD THINGS. MOSTLY LOUD THINGS.",
+        "THIRTY GRAND AND THIS LOT'S YOURS. THE RPGS COME WITH IT."),
+    3: ("DOWNTOWN'S YOURS NOW. DON'T FORGET WHO SOLD YOU THE ROCKETS.",
+        "YOU'VE DONE WELL. I'M ONLY A LITTLE BIT TERRIFIED."),
+}
+FIXER_STOCKED = "THAT'S EVERY LOT IN TOWN, BOSS. NOTHING LEFT TO SELL YOU BUT ADVICE."
+SHOP_TIER_SELLS = {1: "SHOTGUNS, BANANAS AND DONUTS", 2: "SMGS, RIFLES AND THE JOKE-SHOP STUFF",
+                   3: "SNIPERS, GRENADE LAUNCHERS AND ROCKETS"}
+
+
+def compass_word(dx, dy):
+    """A rough direction for somebody giving you directions ("up north", "out east")."""
+    a = math.degrees(math.atan2(dy, dx)) % 360          # screen y is down: 90 = south
+    return ("EAST", "SOUTH-EAST", "SOUTH", "SOUTH-WEST", "WEST", "NORTH-WEST", "NORTH",
+            "NORTH-EAST")[int((a + 22.5) // 45) % 8]
+
+
+def wrap(text, width):
+    lines, line = [], ""
+    for word in text.split():
+        if line and len(line) + 1 + len(word) > width:
+            lines.append(line)
+            line = word
+        else:
+            line = (line + " " + word) if line else word
+    if line:
+        lines.append(line)
+    return lines
+
 
 class Quests:
     def _init_quests(self):
@@ -97,6 +145,7 @@ class Quests:
         self.quest_progress = {}        # id -> tracker dict, only for ids in today_quests
         self.quest_done_today = set()
         self.completed_ever = set()     # for stats/save; never cleared by a rotation or SHOP SEIZED
+        self.talk_cd = {}               # (v0.12.1) story NPC key -> time they'll talk again
         self._rotate_quests()
 
     def _rotate_quests(self):
@@ -150,6 +199,64 @@ class Quests:
         if beat:
             self.toast("%s: %s" % beat, T_INFO)
         self.toast("ACT %s: %s" % (("I", "II", "III")[act - 1], ACT_NAMES[act - 1]), T_INFO)
+
+    # ------------------------------------------------------------------ (v0.12.1) the people
+    def _say(self, name, text):
+        """A line of dialogue for the HUD's speech box (T_SAY): wrapped to what one toast
+        event carries, the speaker's name on the first line only."""
+        for i, line in enumerate(wrap(text, 56 - len(name))):
+            self.toast(("%s: %s" % (name, line)) if i == 0 else "  " + line, T_SAY)
+
+    def _talk_interaction(self, p, ax, ay):
+        best, bd = None, C.TALK_RANGE
+        for npc in self.map.story_npcs:
+            d = math.hypot(npc[2] - ax, npc[3] - ay)
+            if d < bd:
+                best, bd = npc, d
+        if best is None:
+            return None
+        key, name = best[0], best[1]
+        return (("talk", key), "E: TALK TO %s" % name, 0, lambda: self._talk(p, key, name))
+
+    def _talk(self, p, key, name):
+        if self.time < self.talk_cd.get(key, 0.0):
+            return
+        self.talk_cd[key] = self.time + C.TALK_COOLDOWN
+        pick = self.rng.choice
+        if key == "paige":
+            self._say(name, pick(PAIGE_HELLO[max(1, min(3, self.act))]))
+            left = [q for q in self.today_quests if q not in self.quest_done_today]
+            for qid in left:
+                qn, brief, diff, cash, rep, _, tlim, coop = QUESTS[qid]
+                extra = (" (CREW JOB)" if coop else "") + (" %d MIN LIMIT." % (tlim // 60) if tlim else "")
+                self._say(name, "%s, $%d: %s%s" % (qn, cash, brief, extra))
+            if not left:
+                self._say(name, "THAT'S THE LOT FOR TODAY. GO STEAL SOMETHING FOR FUN.")
+        elif key == "fixer":
+            for i in range(1, len(self.shop_owned)):
+                if self.shop_owned[i] or i - 1 >= len(self.map.fence_shops):
+                    continue
+                fs = self.map.fence_shops[i - 1]
+                hx, hy = self.map.garage_center
+                fx, fy = fs["center"]
+                self._say(name, "THERE'S A LOT %dM %s OF HERE. $%s AND IT'S YOURS: %s, AND $%d A DAY RENT."
+                          % (math.hypot(fx - hx, fy - hy), compass_word(fx - hx, fy - hy),
+                             "{:,}".format(C.SHOP_PRICE[i]), SHOP_TIER_SELLS.get(fs["tier"], "MORE STOCK"),
+                             C.SHOP_RENT[i]))
+                break
+            else:
+                self._say(name, FIXER_STOCKED)
+        elif key == "tommy":
+            owned = any(self.shop_owned[i] for i in range(1, len(self.shop_owned))
+                        if i - 1 < len(self.map.fence_shops) and self.map.fence_shops[i - 1]["tier"] == 1)
+            if owned:
+                self._say(name, pick(TOMMY_LOST))
+            elif "body_shop_wars" in self.today_quests and "body_shop_wars" not in self.quest_done_today:
+                self._say(name, TOMMY_RIVAL)
+            else:
+                self._say(name, pick(TOMMY_LINES))
+        elif key == "kingpin":
+            self._say(name, pick(KINGPIN_LINES[max(1, min(3, self.act))]))
 
     def _tuned_count(self, car):
         return sum(1 for part in car.parts.values() if part is not None and part.style > 0)

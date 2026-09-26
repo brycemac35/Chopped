@@ -106,6 +106,7 @@ class DoomHud:
         self.bank = bank
         self.minimap = minimap
         self.toasts = deque(maxlen=5)
+        self.speech = deque(maxlen=8)  # (v0.12.1) T_SAY lines: Paige, the Fixer, Tommy talking to you
         self.help_until = time.perf_counter() + 20.0
         self.bar = self._make_bar()
         self._big = {}
@@ -180,6 +181,14 @@ class DoomHud:
         return s
 
     def add_toast(self, text, color, now):
+        if color == S.T_SAY:
+            name, sep, _ = text.partition(": ")
+            if sep and not text.startswith(" "):
+                if name != getattr(self, "speaker", None):
+                    self.speech.clear()      # somebody new talking: they get the box to themselves
+                self.speaker = name
+            self.speech.append((text, now))
+            return
         self.toasts.append((text, TOAST_COLORS.get(color, P["white"]), now))
 
     # ------------------------------------------------------------------ first-person overlays
@@ -707,6 +716,7 @@ class DoomHud:
         self._gear_panel(low, snap, me, view, by)
         # ---- above the bar -------------------------------------------------
         self._toasts(low, now)
+        self._speech(low, now)
         self._status_line(low, snap, now)
         self._box_status(low, me, now)
         self._minimap(low, view, info, flash)
@@ -747,7 +757,8 @@ class DoomHud:
             self.insp_id, self.insp_since = cid, now
         age = now - self.insp_since
         f = self.font
-        x, y, w = W - 186, 72, 180
+        # (v0.12.1) under the (now twice as big) radar and today's jobs, not on top of them
+        x, y, w = W - 186, getattr(self, "quest_bottom", 72) + 4, 180
         if age < C.INSPECT_DELAY:
             low.blit(self._panel(w, 11, 150), (x, y))
             dots = "." * (1 + int(age * 8) % 3)
@@ -824,6 +835,27 @@ class DoomHud:
         while self.toasts and now - self.toasts[0][2] > C.TOAST_TIME:
             self.toasts.popleft()
 
+    def _speech(self, low, now):
+        """(v0.12.1) someone talking to you: a box low in the middle of the view, lasting
+        long enough to actually read a job brief (the ticker's TOAST_TIME isn't)."""
+        while self.speech and now - self.speech[0][1] > C.SAY_TIME:
+            self.speech.popleft()
+        if not self.speech:
+            return
+        lines = [t for t, _ in self.speech]
+        w = min(W - 20, max(self.font.width(t) for t in lines) + 10)
+        h = 8 * len(lines) + 5
+        x, y = W // 2 - w // 2, VIEW_H - 22 - h
+        low.blit(self._panel(w, h, 190), (x, y))
+        low.fill(P["gold"], (x, y, w, 1))
+        for i, t in enumerate(lines):
+            name, sep, rest = t.partition(": ")
+            if sep and not t.startswith(" "):
+                self.font.draw(low, name + ":", x + 5, y + 3 + i * 8, P["gold"])
+                self.font.draw(low, rest, x + 5 + self.font.width(name + ": "), y + 3 + i * 8, P["white"])
+            else:
+                self.font.draw(low, t, x + 5, y + 3 + i * 8, P["white"])
+
     def _box_status(self, low, me, now):
         """(v0.10, Bryce: "add overlay for in box vs out") the box only actually
         hides you once you've stood still for BOX_STILL_TIME -- without this you'd
@@ -863,23 +895,26 @@ class DoomHud:
         if not info.get("fp"):
             return
         mm = self.minimap
-        s = 0.75    # (Bryce: "make the minimap bigger"; was 0.5) still a radar, not the automap
+        # (Bryce, twice: "make the minimap bigger", then "double the minimap size") 0.5 -> 0.75
+        # -> 1.5: about 100 px square now, the whole city at a glance without opening Tab
+        s = 1.5
         mw, mh = int(mm.get_width() * s), int(mm.get_height() * s)
         key = ("mm", mw)
         small = self._panels.get(key)
         if small is None:
             small = self._panels[key] = pygame.transform.scale(mm, (mw, mh))
         mx, my = W - mw - 3, 3
+        self.mm_left = mx - 1          # top-right text (compasses, crewmates) stops short of this
         low.fill(P["ink"], (mx - 1, my - 1, mw + 2, mh + 2))
         low.blit(small, (mx, my))
         k = s / (C.TILE_M * 2)
         for c in view.cars.values():
             if c[1] == S.COP:
-                low.fill((255, 60, 60) if flash else (80, 120, 255), (mx + int(c[7] * k) - 1, my + int(c[8] * k) - 1, 2, 2))
+                low.fill((255, 60, 60) if flash else (80, 120, 255), (mx + int(c[7] * k) - 1, my + int(c[8] * k) - 1, 3, 3))
             elif c[1] == S.PERSONAL:
-                low.fill((150, 222, 64), (mx + int(c[7] * k), my + int(c[8] * k), 2, 2))
+                low.fill((150, 222, 64), (mx + int(c[7] * k) - 1, my + int(c[8] * k) - 1, 3, 3))
             elif c[1] == S.CIV and c[3] != S.DELIVERED:
-                low.fill(P["gold"] if c[4] & PR.CF_WANTED else P["white"], (mx + int(c[7] * k), my + int(c[8] * k), 1, 1))
+                low.fill(P["gold"] if c[4] & PR.CF_WANTED else P["white"], (mx + int(c[7] * k), my + int(c[8] * k), 2, 2))
         for p in view.players.values():
             # (v0.10, Bryce: "can't spot teammates on the radar/map") a plain 2x2 dot got
             # lost among all the car blips; an outline and an extra pixel make it read as
@@ -891,25 +926,32 @@ class DoomHud:
         if me is not None:
             yaw = info.get("yaw", 0.0)
             px, py = mx + me[4] * k, my + me[5] * k
-            pygame.draw.line(low, P["white"], (px, py), (px + math.cos(yaw) * 5, py + math.sin(yaw) * 5))
-        self._quest_panel(low, view.snap, mx, my + mh + 3)
+            pygame.draw.line(low, P["white"], (px, py), (px + math.cos(yaw) * 7, py + math.sin(yaw) * 7))
+        self._quest_panel(low, view.snap, W - 3, my + mh + 3)
 
     def _quest_panel(self, low, snap, x, y):
         """Under the radar: today's 3 jobs and the crew's reputation/act. Nothing but
         ids and a done bitmask rides the wire (protocol.SNAP_HDR) -- names, briefs and
-        rewards come from quests.QUESTS, the same fixed table on both ends."""
+        rewards come from quests.QUESTS, the same fixed table on both ends. Right-aligned
+        to the screen edge (v0.12.1: it used to start at the radar's left edge and run off
+        the right side of the screen -- Bryce: "the daily quests are off the screen")."""
         f = self.font
+        rows = []
         act = ("I", "II", "III")[max(0, min(2, snap.act - 1))]
-        f.draw(low, "REP %d - ACT %s" % (snap.story_points, act), x, y, P["gold"])
-        y += 8
+        rows.append(("REP %d - ACT %s" % (snap.story_points, act), P["gold"]))
         for i, idx in enumerate(snap.today_quests):
             if idx == PR.NO_QUEST or idx >= len(QUEST_ORDER):
                 continue
             name, brief, diff, cash, rep, minp, tlim, coop = QUESTS[QUEST_ORDER[idx]]
             done = bool(snap.quest_done & (1 << i))
-            col = P["money"] if done else P["white"]
-            f.draw(low, ("%s $%d" % (name, cash)) if not done else "%s DONE" % name, x, y, col)
-            y += 7
+            rows.append((("%s $%d" % (name, cash)) if not done else "%s DONE" % name,
+                         P["money"] if done else P["white"]))
+        width = max(f.width(t) for t, _ in rows) + 6
+        low.blit(self._panel(width, 8 * len(rows) + 3, 150), (x - width + 2, y - 2))
+        for t, col in rows:
+            f.draw(low, t, x, y, col, align="right")
+            y += 8
+        self.quest_bottom = y
 
     def _shop_compass(self, low, view, info, now):
         me = view.me
@@ -926,8 +968,9 @@ class DoomHud:
         col = P["gold"] if int(now * 3) % 2 else P["white"]
         dist = math.hypot(gx - me[4], gy - me[5])
         arrow = "<" if bearing < -half else ">" if bearing > half else "V"
-        self.font.draw(low, "%s SHOP %dM %s" % (arrow if arrow == "<" else "", dist, arrow if arrow == ">" else ""),
-                       int(x), 14, col, align="center")
+        text = "%s SHOP %dM %s" % (arrow if arrow == "<" else "", dist, arrow if arrow == ">" else "")
+        x = self._clear_of_radar(x, text)
+        self.font.draw(low, text, int(x), 14, col, align="center")
         if arrow == "V":
             pygame.draw.polygon(low, col, [(x - 4, 22), (x + 4, 22), (x, 27)])
 
@@ -984,6 +1027,12 @@ class DoomHud:
             f.draw(low, "-", cx, by + 8, (70, 68, 76), align="center")
         f.draw(low, "GEAR", cx, by + 23, P["white"], align="center")
 
+    def _clear_of_radar(self, x, text):
+        """(v0.12.1) the radar doubled in size and now owns the top-right corner: a centred
+        compass label that would run under it slides left until it doesn't."""
+        half_w = self.font.width(text) / 2 + 3
+        return max(half_w, min(x, getattr(self, "mm_left", W) - half_w))
+
     def _car_compass(self, low, view, info, now):
         """Can't find anything to steal? Follow the green arrow."""
         me = view.me
@@ -1008,6 +1057,8 @@ class DoomHud:
             text = "CAR TO STEAL %dM >" % bd
         else:
             text = "CAR TO STEAL %dM" % bd
+        x = self._clear_of_radar(x, text)
+        if -half <= bearing <= half:
             pygame.draw.polygon(low, col, [(x - 4, 22), (x + 4, 22), (x, 27)])
         self.font.draw(low, text, int(x), 14, col, align="center")
 
@@ -1040,7 +1091,8 @@ class DoomHud:
             if bearing < -half:
                 self.font.draw(low, "< %s %dM" % (name, dist), 6, y, col)
             elif bearing > half:
-                self.font.draw(low, "%s %dM >" % (name, dist), W - 6, y, col, align="right")
+                self.font.draw(low, "%s %dM >" % (name, dist), getattr(self, "mm_left", W) - 4, y, col,
+                               align="right")
             else:
                 self.font.draw(low, "%s %dM" % (name, dist), W // 2, y, col, align="center")
 
@@ -1103,7 +1155,7 @@ class DoomHud:
         for l in ("MOUSE / ARROWS LOOK (UP AND DOWN TOO)     WASD MOVE / DRIVE     SPACE JUMP (IN A CAR: HANDBRAKE)",
                   "SHIFT SPRINT (IN A CAR WITH NOS: BOOST)     E USE (HOLD FOR TIMED ACTIONS)     F EXIT CAR",
                   "V CHASE CAM     TAB MAP     H HORN (CONFUSES COPS)     T DANCE     M MUSIC",
-                  "F8 FISHEYE LENS     F9 BIG HEADS     F10 DISCO FLOOR",
+                  "F5 SAVE (HOST)     F8 FISHEYE LENS     F9 BIG HEADS     F10 DISCO FLOOR",
                   "IN A CAR: W+S TOGETHER = BURNOUT (+STEER: DONUTS)     X = HYDRAULIC HOP (IF FITTED)",
                   "CLICK / CTRL: PUNCH, SHOOT, PLACE A TRAP OR THROW WHATEVER'S IN YOUR HANDS",
                   "HOLD CLICK WITH EMPTY FISTS, LET GO: HAYMAKER.  1-9 / WHEEL / Q: PICK A WEAPON",

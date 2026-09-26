@@ -207,7 +207,7 @@ class Player:
                  "moving", "last_seen", "addr", "dolly", "weapon", "arms", "ammo", "gear", "fire_cd",
                  "prev_fire", "z", "vz", "seat_t", "carrying", "carrier", "wriggle", "prev_jump",
                  "charge_t", "dancing", "chute", "banner", "banner_t", "robbed_from", "menu", "menu_ack",
-                 "trunk_view", "jailed", "keys", "jumpsuit", "pants_t", "tased_t", "dead_t", "cuffer",
+                 "trunk_view", "jailed", "keys", "jumpsuit", "head_start_t", "pants_t", "tased_t", "dead_t", "cuffer",
                  "cuff_prog", "arrests", "rap", "prev_hop", "slide_t", "prev_alt", "prev_horn", "boxed", "has_box",
                  "grace_t", "inspect", "prev_box", "still_t", "health", "hurt_t", "sneak", "prev_nos")
 
@@ -265,6 +265,7 @@ class Player:
         self.jailed = False           # in the precinct's lockup, looking for a way out
         self.keys = False             # ...holding the lockup keys (lifted off the big guard)
         self.jumpsuit = False         # escaped: orange, conspicuous, until you get back to the shop
+        self.head_start_t = 0.0       # (v0.12.1) > 0: just escaped; the law can look but not touch
         self.pants_t = 0.0            # > 0: a police dog has your trousers. Walk of shame.
         self.tased_t = 0.0            # > 0: twitching on the pavement
         self.dead_t = 0.0             # DEAD: seconds until you wake up at the shop, poorer
@@ -421,7 +422,8 @@ class Trap:
             return (self.x - r, self.y - r, 2 * r, 2 * r)
         long_, short = ((C.SPIKE_LEN, C.SPIKE_WID) if self.kind == TRAP_SPIKES
                         else (C.CELL_DOOR_W, C.CELL_BAR_T) if self.kind == TRAP_CELL
-                        else (C.DOOR_W, C.DOOR_T) if self.kind == TRAP_DOOR
+                        else ((C.WALK_DOOR_W if self.id == C.DOOR_ID else C.DOOR_W), C.DOOR_T)
+                        if self.kind == TRAP_DOOR
                         else (C.GATE_LEN, C.GATE_WID) if self.kind == TRAP_GATE
                         else (C.ROADBLOCK_LEN, C.ROADBLOCK_WID))
         if abs(math.cos(self.ang)) > 0.5:          # traffic runs along x: the trap spans y

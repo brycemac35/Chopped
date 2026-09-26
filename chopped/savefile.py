@@ -18,6 +18,8 @@ save just means the host starts a fresh run, same as it always has.
 """
 
 import json
+import os
+import time
 
 from .enums import PERSONAL
 from .parts import Part, SLOTS
@@ -66,6 +68,10 @@ def dump(world):
         # (v0.12) which shops the crew owns -- rent (World.rent_due) is computed from this,
         # so losing it on load would quietly refund every fence the crew ever bought.
         "shop_owned": list(world.shop_owned),
+        # (v0.12.1) the city itself. shop_owned is a list of lot INDICES, which only mean
+        # anything in the city they were bought in -- load them into a fresh random city
+        # and the crew wakes up owning somebody else's warehouse. Also: your city, back.
+        "map_seed": world.map_seed,
     }
 
 
@@ -108,9 +114,60 @@ def load_into(world, path):
 
 
 def save_to(world, path):
+    """Written to a temp file and swapped in, so a crash halfway through a save
+    leaves the previous save intact instead of half a JSON file."""
     try:
-        with open(path, "w", encoding="utf-8") as f:
+        folder = os.path.dirname(path)
+        if folder:
+            os.makedirs(folder, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(dump(world), f)
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        return False
+
+
+# ---------------------------------------------------------------- (v0.12.1) slots
+def save_dir():
+    """Where the main menu's save slots live. %APPDATA%\\Chopped\\saves on Windows
+    (next to the exe would be friendlier, but that breaks the day somebody runs it
+    out of Program Files or a read-only USB stick), ~/.local/share/chopped/saves
+    elsewhere. CHOPPED_SAVE_DIR overrides it (the tests use that)."""
+    env = os.environ.get("CHOPPED_SAVE_DIR")
+    if env:
+        return env
+    if os.environ.get("APPDATA"):
+        return os.path.join(os.environ["APPDATA"], "Chopped", "saves")
+    base = os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
+    return os.path.join(base, "chopped", "saves")
+
+
+def slot_path(n):
+    return os.path.join(save_dir(), "slot%d.json" % n)
+
+
+def peek(path):
+    """A save's headline numbers for the menu, without touching a world:
+    {"day", "cash", "act", "rep", "crew", "map_seed", "age"} -- or None if
+    there's nothing (valid) there."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or data.get("save_version") != SAVE_VERSION:
+            return None
+        return {"day": int(data.get("day", 1)), "cash": int(data.get("cash", 0)),
+                "act": int(data.get("act", 1)), "rep": int(data.get("story_points", 0)),
+                "crew": sorted(data.get("cars", {})), "map_seed": data.get("map_seed"),
+                "age": max(0.0, time.time() - os.path.getmtime(path))}
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def wipe(path):
+    try:
+        os.remove(path)
         return True
     except OSError:
         return False

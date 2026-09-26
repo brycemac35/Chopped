@@ -248,7 +248,7 @@ class TestTrunks(unittest.TestCase):
         w = quiet_world()
         p = w.add_player("BRYCE")
         car = S.Car(w.new_id(), S.CIV, 0, 0, 0.0, model_loadout(rng, V.SEDAN), model=V.SEDAN)
-        car.x, car.y = p.x + 10, p.y
+        car.x, car.y = p.x + 10, p.y + 6          # (clear of the counters, which win over a trunk)
         car.trunk = [Part("cash_bag")]
         w.cars[car.id] = car
         self._behind(w, p, car)

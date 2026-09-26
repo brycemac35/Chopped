@@ -40,6 +40,8 @@ class CityMap:
         self.jail_spawns, self.guard_posts = [], []
         self.cells, self.cell_doors, self.cell_bars = [], [], []
         self.fence_shops = []    # (v0.12) shops 2-4: {"tier", "center", "sign", "market"}, buyable
+        self.staff = []          # (v0.12.1) the people behind the counters (see _make_shop)
+        self.story_npcs = []     # (v0.12.1) Paige, the Fixer, Tommy, the Kingpin
 
         # ---- choose block types --------------------------------------------
         shop = (C.BLOCKS // 2, C.BLOCKS // 2)
@@ -76,6 +78,19 @@ class CityMap:
                 else:
                     self._make_buildings(rng, ox, oy)
 
+        # (v0.12.1 fix) fence_shops[i] is "shop i+2" everywhere (World.shop_owned[i+1], its price,
+        # its rent), so it has to be in tier order -- the block loop builds them in whatever order
+        # it meets the blocks, which let the RPG lot sell at the cheapest lot's price
+        self.fence_shops.sort(key=lambda fs: fs["tier"])
+        # (v0.12.1) the rival and the big fish, each loitering by a lot you can buy
+        for fs in self.fence_shops:
+            who = {1: ("tommy", "TOMMY", "tommy"), 3: ("kingpin", "THE KINGPIN", "kingpin")}.get(fs["tier"])
+            if who is not None:
+                sx, sy = fs["sign"]
+                self.story_npcs.append((who[0], who[1], sx + 2.2, sy, math.pi / 2, who[2]))
+        for (_k, _n, x, y, _f, _o) in self.story_npcs:
+            r = C.STORY_NPC_R
+            self.static_rects.append((x - r, y - r, 2 * r, 2 * r))
         self._make_parking(rng, shop)
         self._make_ramps()
         self._make_cameras(rng)
@@ -235,10 +250,30 @@ class CityMap:
         # tiers 1-3); buy those and their crates carry it instead.
         self.market = [(gx + 1.0, gy + 3.2 + k * 1.75, item)
                        for k, item in enumerate(C.SHOP_MARKET[0])]
-        self.sell_bench = (gx + 5.0, gy, 6.0, 1.6)
-        self.tune_bench = (gx + gw - 11.0, gy, 6.0, 1.6)
-        self.static_rects.append(self.sell_bench)
-        self.static_rects.append(self.tune_bench)
+        # (v0.12.1, Bryce: "make the mod shop and parts counter turn about 90 deg so the long
+        # side is visible normally. put employees behind the counters") the counters stand a
+        # COUNTER_GAP off the back wall now, long side facing the room, with somebody behind
+        # each. The solid part runs all the way back to the wall, so nobody wanders round the
+        # back and into the staff.
+        gap = C.COUNTER_GAP
+        self.sell_bench = (gx + 5.0, gy + gap, 6.0, 1.6)
+        self.tune_bench = (gx + gw - 11.0, gy + gap, 6.0, 1.6)
+        for bx, by, bw, bh in (self.sell_bench, self.tune_bench):
+            self.static_rects.append((bx, gy, bw, gap + bh))
+        # the staff (cosmetic: the counters are what you talk to) -- (name, x, y, facing, outfit)
+        self.staff = [("DAVE", gx + 8.0, gy + gap * 0.5, math.pi / 2, "clerk"),
+                      ("MO", gx + gw - 8.0, gy + gap * 0.5, math.pi / 2, "mechanic")]
+        # the people the jobs are about. PAIGE hands them out between the counters; the FIXER
+        # minds the crates and knows which lots are for sale. (Tommy and the Kingpin are out
+        # at the fence shops -- see __init__, after every block's been placed.)
+        # (key, name, x, y, facing, outfit)
+        self.story_npcs = [("paige", "PAIGE", gx + gw / 2, gy + 1.2, math.pi / 2, "paige"),
+                           ("fixer", "THE FIXER", gx + 1.3, gy + 12.2, 0.0, "fixer")]
+        # (v0.12.1) the walking door: brick jambs either side of a person-sized gap
+        wx = gx + (C.DOOR_COLS[0] + 0.5) * T
+        jamb = (T - C.WALK_DOOR_W) / 2
+        for x0 in (wx - T / 2, wx + C.WALK_DOOR_W / 2):
+            self.static_rects.append((x0, gy + gh - C.DOOR_T / 2, jamb, C.DOOR_T))
         cx = gx + gw / 2
         self.player_spawns = [(cx - 2, gy + 5), (cx + 2, gy + 5), (cx - 2, gy + 8), (cx + 2, gy + 8)]
         self.garage_center = (gx + gw / 2, gy + gh / 2)

@@ -9,8 +9,8 @@ engine and exactly no maths textbooks).
 import math
 
 GAME_TITLE = "Chopped"
-VERSION = 12  # bump when the wire protocol changes so old clients get a polite "no"
-RELEASE = (0, 12, 0)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
+VERSION = 13  # bump when the wire protocol changes so old clients get a polite "no"
+RELEASE = (0, 12, 1)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
 
 # --------------------------------------------------------------------------
 # Rendering scale
@@ -99,6 +99,12 @@ INTERACT_RANGE_SLOT = 2.4        # metres from a slot anchor for stripping
 INTERACT_RANGE_PICKUP = 1.6
 INTERACT_RANGE_BENCH = 2.2
 INTERACT_RANGE_DOLLY = 1.8
+# (v0.12.1, Bryce: "there are no quest NPC's") the people the jobs and the story talk about --
+# Paige, the Fixer, Tommy, the Kingpin -- actually standing somewhere now. Talk to them with E.
+TALK_RANGE = 1.8                 # m from where you're looking to the person, same feel as a pickup
+TALK_COOLDOWN = 4.0              # s before the same person will repeat themselves (E-spam isn't a conversation)
+STORY_NPC_R = 0.35               # m: they're solid, you bump into them like anyone else
+COUNTER_GAP = 1.4                # m between the back wall and the counters: room for the staff behind them
 CAR_PROMPT_TIME = 4.0            # s the driving controls stay on screen after you get in
 TAP_HOLD = 0.2                   # holds shorter than this fire on a single tap
 AIM_REACH = 1.0                  # you interact with whatever's this far in front of your face
@@ -457,6 +463,11 @@ BAIL_BASE = 250                  # bail at the front desk: the cowardly way out.
 BAIL_PER_ARREST = 100            # ...and it goes up every time
 JAILBREAK_HEAT = 40.0            # walking out of a police station is noticed
 JUMPSUIT_WITNESS = True          # escaped convicts in orange are wanted on sight, heat or no heat
+JAILBREAK_HEAD_START = 15.0     # (v0.12.1, Bryce: "im spawn locked in jail") seconds after you walk out
+                                # of the precinct before any cop may cuff, tase or shoot you. The cops
+                                # still SEE the jumpsuit and heat still climbs -- you just get a
+                                # sporting chance to reach a car instead of being re-arrested on the
+                                # front steps 7 seconds later, which is what the playtest kept doing.
 COP_SPAWN_GAP = 2.0
 COP_REINFORCE_DELAY = 9.0        # after you blow one up, dispatch takes a moment to stop crying
 COP_SPAWN_MIN_DIST = 45.0
@@ -693,6 +704,10 @@ DEBT_GRACE = 120.0               # two minutes in the red and the landlord chang
 # real seconds, so a crash or a yanked power cord costs at most this much. Also saved once,
 # unconditionally, on a clean shutdown -- this is just the safety net in between.
 AUTOSAVE_INTERVAL = 30.0
+SAVE_SLOTS = 3                  # (v0.12.1, Bryce: "I cant find the option to open a save file or even
+                                # save one") the main menu's SAVE SLOT row. Three: one for the real
+                                # crew, one for solo practice, one for the run where you bought
+                                # every hubcap in town. More than that and it's a filing cabinet.
 GAMEOVER_BANNER = 6.0
 SHELL_VALUE = 150
 CRUSH_DOLLY_FRACTION = 0.5
@@ -710,6 +725,18 @@ INSPECT_EVERY = 6                # ticks between looks (10 Hz is plenty for "wha
 # (v0.9) the chop shop's roof and roller door (Bryce: "add a roof to the chop shop and a closable
 # door that blocks cops. but it needs to be opened for you to get in")
 ROOF_H = 6.0                     # m: the roof sits on the shop's 6 m walls
+# (v0.12.1, Bryce: "the shops ceiling breaks the visuals, only shows sky from looking outside in
+# the direction of the shop") the walls used to stop exactly at the roof, so from the street the
+# shop was a 6 m box with sky over it and its ceiling hanging in mid-air behind the doorways. Now
+# the outer walls carry on up past the roof as a parapet -- a proper false front, like every
+# garage on every industrial estate -- and a brick lintel spans the top of each door opening, so
+# from outside it reads as a building and the ceiling is only ever seen through a door, under it.
+SHOP_FACADE_H = 8.0              # m: the top of the parapet (2 m above the roof, hiding it)
+# (v0.12.1, Bryce: "make an actual door for walking") the walking entrance was a whole 4 m roller
+# door, the same as a bay. Now it's a person-sized door in a brick wall: a gap this wide in the
+# middle of its tile, the rest of the tile solid brick jambs either side.
+WALK_DOOR_W = 1.4                # m: wide enough to carry a door through; nowhere near wide enough for a car
+WALK_DOOR_H = 2.4                # m: the frame's height (brick above it, up to the parapet)
 # (v0.10, Bryce: "make the garage door smaller, make a walking entrance and a bay for each
 # player that joins") one 28 m roller door for the whole crew became five small ones, each
 # exactly one tile (TILE_M) wide so they drop cleanly onto the raycaster's tile grid with no
@@ -741,6 +768,7 @@ PICKUP_SHRINK = 30.0             # last 30 s it visibly shrinks
 MAX_PICKUPS = 90
 
 TOAST_TIME = 3.5
+SAY_TIME = 9.0                   # (v0.12.1) s a line of NPC dialogue stays up: long enough to read a job brief
 MUSIC_VOLUME = 0.45              # the beat sits under the engine and the sirens, not on top of them
 MOUSE_PITCH_SENS = 0.0022        # look up/down: share of the view height per mouse count
 PITCH_LIMIT = 0.42               # ...up to this share of the view (y-shearing gets weird past it)

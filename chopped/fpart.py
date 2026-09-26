@@ -89,7 +89,7 @@ def facade(style, floors, variant, night):
     return s
 
 
-def brick_wall(height_px, night, sign=None):
+def brick_wall(height_px, night, sign=None, sign_y=10):
     s = pygame.Surface((TEX, height_px))
     base = P["wall_l"] if not night else shade(P["wall_l"], 0.6)
     s.fill(base)
@@ -100,9 +100,9 @@ def brick_wall(height_px, night, sign=None):
         for x in range(off, TEX, 8):
             s.fill(mortar, (x, y, 1, 4))
     if sign:
-        s.fill(P["ink"], (0, 10, TEX, 14))
-        s.fill(P["gold"], (0, 11, TEX, 1))
-        s.fill(P["gold"], (0, 22, TEX, 1))
+        s.fill(P["ink"], (0, sign_y, TEX, 14))
+        s.fill(P["gold"], (0, sign_y + 1, TEX, 1))
+        s.fill(P["gold"], (0, sign_y + 12, TEX, 1))
     return s
 
 
@@ -140,19 +140,54 @@ def concrete_wall(height_px, night):
     return s
 
 
+def walk_door(height_px, night):
+    """(v0.12.1, Bryce: "make an actual door for walking") the staff entrance: brick up to the
+    parapet, a steel door with a wired-glass window and a push bar in a 1.4 m frame at the
+    bottom middle, a caged bulkhead light over it, and a sign nobody reads."""
+    s = brick_wall(height_px, night)
+    ppm = TEX / 4.0                                                        # 8 px per metre
+    dw, dh = int(round(1.4 * ppm)), int(round(2.4 * ppm))
+    x0, y0 = TEX // 2 - dw // 2, height_px - dh
+    frame = (70, 70, 78) if not night else (44, 44, 50)
+    door = (150, 60, 44) if not night else (84, 36, 28)                   # oxblood. Every staff door is
+    s.fill(frame, (x0 - 1, y0 - 1, dw + 2, dh + 1))                        # oxblood, it's the law
+    s.fill(door, (x0, y0, dw, dh))
+    s.fill(shade(door, 1.15), (x0, y0, 1, dh))
+    s.fill(shade(door, 0.75), (x0 + dw - 1, y0, 1, dh))
+    s.fill((150, 170, 180) if not night else (200, 180, 110), (x0 + 3, y0 + 3, dw - 6, 4))   # wired glass
+    s.fill(shade(door, 0.6), (x0 + 1, y0 + 10, dw - 2, 1))                 # the push bar
+    s.fill((200, 200, 206), (x0 + dw - 3, y0 + 11, 2, 1))                  # handle
+    s.fill((230, 230, 200) if night else (180, 180, 170), (TEX // 2 - 2, y0 - 4, 4, 2))  # bulkhead light
+    s.fill(P["ink"], (TEX // 2 - 3, y0 - 3, 6, 1))
+    return s
+
+
 def roller_door(panel, night):
     """(v0.9) One 4 m bay of the chop shop's roller door: galvanised slats, guide rails
-    each side, a kick bar and a handle at the bottom, and somebody's tag."""
+    each side, a kick bar and a handle at the bottom, and somebody's tag. (v0.12.1, Bryce:
+    "the garage doors need to be segmented") -- now a sectional door: four panels with a
+    dark seam between each, a row of little windows in the second one, and a proper frame
+    post down each side, so five doors side by side read as five doors, not one wall."""
     h = 48
     s = pygame.Surface((TEX, h))
     base = (150, 152, 160) if not night else (88, 90, 100)
     s.fill(base)
     for y in range(0, h, 3):
-        s.fill(shade(base, 0.78), (0, y, TEX, 1))
-        s.fill(shade(base, 1.08), (0, y + 1, TEX, 1))
+        s.fill(shade(base, 0.9), (0, y, TEX, 1))                          # (fine ribbing on each panel)
+    for k in range(1, 4):
+        y = k * h // 4
+        s.fill(shade(base, 0.45), (0, y - 1, TEX, 2))                      # the seams between sections
+        s.fill(shade(base, 1.18), (0, y + 1, TEX, 1))
+    wy = h // 4 + 3
+    for x in range(5, TEX - 6, 6):                                         # a row of windows, section two
+        s.fill((40, 46, 58) if not night else (210, 190, 120), (x, wy, 4, 4))
+        s.fill(shade(base, 0.6), (x, wy, 4, 1))
     rail = shade(base, 0.45)
-    s.fill(rail, (0, 0, 2, h))
-    s.fill(rail, (TEX - 2, 0, 2, h))
+    post = (84, 80, 86) if not night else (50, 48, 52)
+    s.fill(post, (0, 0, 3, h))                                             # frame posts: this door ends here
+    s.fill(post, (TEX - 3, 0, 3, h))
+    s.fill(rail, (3, 0, 1, h))
+    s.fill(rail, (TEX - 4, 0, 1, h))
     s.fill((56, 56, 62), (0, h - 3, TEX, 3))                             # the kick bar
     s.fill(P["line_y"], (2, h - 6, TEX - 4, 2))                          # hazard stripe
     for x in range(2, TEX - 2, 6):
@@ -734,6 +769,13 @@ OUTFITS = {
     "guard": ((96, 104, 124), (54, 58, 70), (60, 66, 84)),
     "keyguard": ((96, 104, 124), (54, 58, 70), (60, 66, 84)),
     "jumpsuit": ((240, 120, 30), (240, 120, 30), None),
+    # (v0.12.1) the staff and the people the jobs are about
+    "clerk": ((56, 120, 70), (40, 40, 48), None),              # Dave, behind the sell counter: green apron
+    "mechanic": ((50, 80, 140), (50, 80, 140), (190, 40, 40)), # Mo, the mod shop: overalls, red cap
+    "paige": ((196, 44, 70), (30, 30, 40), None),              # Paige: red jacket, means business
+    "fixer": ((72, 70, 78), (40, 40, 46), (34, 32, 36)),       # the Fixer: grey coat, flat grey cap
+    "tommy": ((240, 200, 40), (240, 200, 40), None),           # Tommy: a yellow tracksuit. Of course
+    "kingpin": ((236, 232, 222), (236, 232, 222), (24, 24, 28)),  # the Kingpin: white suit, black hat
 }
 BOXER_WHITE, BOXER_HEART = (240, 236, 240), (220, 50, 80)
 
@@ -834,7 +876,8 @@ def person_boxes(shirt, skin, hair, frame, extra=None, pants=(52, 56, 78), gun=0
         # a peaked cap. Authority, in box form.
         b.append((-0.16, 0.16, -0.16, 0.16, 1.7, 1.82, hat))
         b.append((0.12, 0.26, -0.14, 0.14, 1.7, 1.74, P["ink"]))
-        b.append((0.15, 0.17, -0.04, 0.04, 1.73, 1.79, (230, 196, 70)))
+        if outfit in ("officer", "guard", "keyguard"):
+            b.append((0.15, 0.17, -0.04, 0.04, 1.73, 1.79, (230, 196, 70)))   # (only the law gets a badge)
         return b
     if extra == "clown":
         b.append((0.15, 0.2, -0.03, 0.03, 1.5, 1.56, (255, 40, 40)))                      # honk

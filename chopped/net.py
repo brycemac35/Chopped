@@ -22,7 +22,7 @@ from . import savefile as SF
 from .mapgen import CityMap
 from .predict import Predictor
 from .protocol import ME_FOOT, ME_DRIVER
-from .sim import World, InputState, FOOT, DRIVER, T_INFO
+from .sim import World, InputState, FOOT, DRIVER, T_INFO, T_BAD
 from .protocol import PF_MOVING, PF_SPRINT, PF_EXHAUSTED
 
 
@@ -122,6 +122,8 @@ class Server:
     def __init__(self, port=C.DEFAULT_PORT, bind_host="0.0.0.0", map_seed=None, world=None, save_path=None):
         self.sock = _make_socket(bind_host, port)
         self.port = self.sock.getsockname()[1]
+        if world is None and map_seed is None and save_path:
+            map_seed = (SF.peek(save_path) or {}).get("map_seed")   # (v0.12.1) the save's own city
         self.world = world or World(map_seed)
         self.clients = {}           # addr -> ClientConn
         self.running = False
@@ -140,6 +142,19 @@ class Server:
             if SF.load_into(self.world, self.save_path):
                 self.world.toast("WELCOME BACK. $%d IN THE TIN, DAY %d." % (self.world.cash, self.world.day),
                                  T_INFO)
+
+    def save_now(self):
+        """(v0.12.1) F5 on the host: save right now (on the server thread, between ticks)."""
+        if not self.save_path:
+            return False
+        path = self.save_path
+
+        def _save(w):
+            ok = SF.save_to(w, path)
+            w.toast("GAME SAVED. DAY %d, $%d." % (w.day, w.cash) if ok else "COULDN'T WRITE THE SAVE FILE!",
+                    T_INFO if ok else T_BAD)
+        self.post(_save)
+        return True
 
     def post(self, fn):
         """Run fn(world) on the server thread before the next tick. The only

@@ -111,7 +111,8 @@ class App:
         self.audio = Audio(enabled=not getattr(args, "mute", False),
                            music=not getattr(args, "no_music", False))
         self.menu = Menu(self.font, (getattr(args, "name", None) or os.environ.get("USERNAME")
-                                     or os.environ.get("USER") or "CROOK")[:12].upper())
+                                     or os.environ.get("USER") or "CROOK")[:12].upper(),
+                         save_file=getattr(args, "save", None))
         self.state = "menu"
         self.server = None
         self.client = None
@@ -131,6 +132,7 @@ class App:
         self.pitch = 0.0               # looking up/down, in pixels of horizon shift (client-only)
         self.chase = False             # V: third-person chase camera when driving
         self.modshop = ModShop(self.font)
+        self.ms_backdrop = None        # (v0.12.1) the frozen, darkened world behind the mod shop
         self.horn_heard = None
         self.tachos = {}               # car id -> drivetrain.Tacho (your car and the ones you can hear)
         self.tacho_view = None         # what the tachometer shows this frame
@@ -171,7 +173,12 @@ class App:
     def host(self):
         port = getattr(self.args, "port", None) or C.DEFAULT_PORT
         try:
-            self.server = Server(port=port, map_seed=self.menu_seed, save_path=getattr(self.args, "save", None))
+            # (v0.12.1) the main menu's save slot (or --save FILE). The selftest bot never
+            # touches your slots -- it'd overwrite the real crew with a robot's bad decisions.
+            save = getattr(self.args, "save", None) if self.selftest else self.menu.save_path()
+            info = self.menu.slot_info() if save else None
+            seed = (info or {}).get("map_seed") or self.menu_seed    # a saved run gets its own city back
+            self.server = Server(port=port, map_seed=seed, save_path=save)
         except OSError as e:
             self.menu.set_error("CAN'T OPEN UDP PORT %d (%s). ALREADY HOSTING?" % (port, e.__class__.__name__.upper()))
             self.server = None
@@ -216,6 +223,7 @@ class App:
         self.paused = False
         self.state = "menu"
         self._grab_mouse(False)
+        self.menu.refresh_slots()            # (the slot's DAY/CASH just changed)
         if msg:
             self.menu.set_error(msg)
             if self.selftest:
@@ -322,6 +330,14 @@ class App:
                     self._grab_mouse(not self.paused)
                 elif self.paused and ev.key == pygame.K_q:
                     self.leave("YOU LEFT THE CREW")
+                elif ev.key == pygame.K_F5:
+                    # (v0.12.1) save now. Only the host has the world to write down.
+                    if self.server is not None and self.server.save_now():
+                        pass                              # (the host's toast says how it went)
+                    else:
+                        self.hud.add_toast("ONLY THE HOST SAVES." if self.server is None else
+                                           "NO SAVE SLOT PICKED (MAIN MENU: SAVE SLOT).", S.T_INFO,
+                                           time.perf_counter())
                 elif not self.paused:
                     if ev.key == pygame.K_e:
                         self.use_c += 1
@@ -547,15 +563,30 @@ class App:
                 self.fp.on_sfx(sid, x, y, me[4], me[5], view.my_car)
                 self.audio.play(sid, math.hypot(x - me[4], y - me[5]))
         self._engines(view)            # revs first: the tachometer and the engine notes both read them
-        if self.fp_mode:
-            self._draw_fp(low, view, now, dt)
-        else:
-            r.draw(low.subsurface((0, 0, W, VIEW_H)), view, now, dt)
         info = {"lines": self._info_lines(), "help_until": self.hud.help_until, "paused": self.paused,
                 "menu": self.modshop.open,
                 "fp": self.fp_mode, "yaw": self.yaw, "garage": self.client.map.garage_center,
                 "in_garage": self.client.map.in_garage(me[4], me[5]), "weapon": self._held_weapon()}
-        self.hud.draw(low, view, now, info)
+        if not self.modshop.open:
+            self.ms_backdrop = None
+        if self.ms_backdrop is not None:
+            # (v0.12.1, Bryce: "theres a glitch when entering the mod shop, the UI flickers")
+            # the menu used to sit on a see-through shade over the LIVE world and HUD, so the
+            # radar, compass, toasts and Mo's idle animation all kept twitching away underneath
+            # the text. Now the world is photographed once, darkened, and held still like a
+            # waiting-room poster. Bonus: no raycasting while you're choosing hubcaps.
+            low.blit(self.ms_backdrop, (0, 0))
+        else:
+            if self.fp_mode:
+                self._draw_fp(low, view, now, dt)
+            else:
+                r.draw(low.subsurface((0, 0, W, VIEW_H)), view, now, dt)
+            self.hud.draw(low, view, now, info)
+            if self.modshop.open:
+                shade_ = pygame.Surface((W, H), pygame.SRCALPHA)
+                shade_.fill((12, 10, 20, 225))
+                low.blit(shade_, (0, 0))
+                self.ms_backdrop = low.copy()
         if self.server and now < self.host_banner_until and not self.paused and not self.modshop.open:
             lines = self._host_lines()
             # just under the help card (which ends at y=73), so neither covers the other
@@ -564,6 +595,11 @@ class App:
                 self.font.draw(low, l, W // 2, 81 + i * 8, col, align="center")
         if self.modshop.open:
             self.modshop.draw(low, view.snap.cash, now)
+            # the world's frozen now, so the host's replies ("CAN'T AFFORD THAT", "FITTED")
+            # get their own line down here instead of the ticker hidden under the title
+            fresh = [t for t in self.hud.toasts if now - t[2] <= C.TOAST_TIME]
+            for i, (text, col, _) in enumerate(fresh[-2:]):
+                self.font.draw(low, text, W - 12, 300 + i * 9, col, align="right")
             if self.modshop.hover_horn != self.horn_heard:
                 self.horn_heard = self.modshop.hover_horn
                 if self.horn_heard is not None:
@@ -642,6 +678,11 @@ class App:
             lines.append(("CONNECTED TO %s:%d   PING %d MS" % (c.addr[0], c.addr[1], c.ping_ms), P["white"]))
         if snap:
             lines.append(("RUN %d" % snap.run, P["metal_l"]))
+        if self.server and self.server.save_path:
+            name = self.server.save_path.replace("\\", "/").rsplit("/", 1)[-1].upper()
+            lines.append(("SAVING TO %s EVERY %d S.  F5: SAVE NOW" % (name, C.AUTOSAVE_INTERVAL), P["money"]))
+        elif self.server:
+            lines.append(("NOT SAVING THIS RUN (PICK A SAVE SLOT ON THE MAIN MENU)", P["metal_l"]))
         return lines
 
     def _audio_loops(self, view):

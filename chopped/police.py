@@ -93,6 +93,8 @@ class Police:
         for p in self.players.values():
             if p.grace_t > 0:
                 p.grace_t -= dt
+            if p.head_start_t > 0:
+                p.head_start_t -= dt
             if p.tased_t > 0:
                 p.tased_t -= dt
             if p.hurt_t > 0:
@@ -133,8 +135,8 @@ class Police:
         out = []
         for p in self.players.values():
             if p.state not in (FOOT, TUMBLE) or p.jailed or self.map.in_garage(p.x, p.y) or \
-                    self.map.in_precinct(p.x, p.y) or p.hidden():
-                continue
+                    self.map.in_precinct(p.x, p.y) or p.hidden() or p.head_start_t > 0:
+                continue                        # (v0.12.1: a fresh escapee gets a head start)
             if self.heat > 0 or (p.jumpsuit and C.JUMPSUIT_WITNESS):
                 out.append(p)
         return out
@@ -383,6 +385,8 @@ class Police:
         p.jailed = True
         p.keys = False
         p.jumpsuit = False
+        p.head_start_t = 0.0
+        self._stand_down()
         p.x, p.y = self._cell_spawn(p)
         p.vx = p.vy = 0.0
         p.ang = math.pi / 2
@@ -393,6 +397,20 @@ class Police:
         self._staff_precinct()
         self.toast("%s IS IN A CELL. PICK THE LOCK (QUIET) OR PUNCH THE DOOR (LOUD)." % p.name, T_COP)
         self.toast(self.rng.choice(PHONE_CALL_LINES) % p.name, T_INFO)
+
+    def _stand_down(self):
+        """(v0.12.1, Bryce: "make the heat go to zero once you're in jail") you're in a
+        cell: as far as the city's concerned the case is closed. Same wipe a delivery
+        gets -- heat, dispatch, lethal force, and any witness still dialling 911 hangs
+        up (who'd they be reporting? you're already in the building)."""
+        self.heat = 0.0
+        self.dispatched = False
+        self.unseen_t = C.HEAT_COOL_DELAY
+        self.witness, self.witness_rate = W_NONE, 0.0
+        self.lethal_t = self.lethal_unseen_t = 0.0
+        self.targets = []
+        for n in self.npcs.values():
+            n.call_t = 0.0
 
     def _cell_spawn(self, p):
         """Into whichever cell has fewer of your crew in it. An empty cell gets its
@@ -468,6 +486,7 @@ class Police:
                 p.jailed = False
                 p.keys = False
                 p.jumpsuit = True
+                p.head_start_t = C.JAILBREAK_HEAD_START
                 self._charge(p, "break")
                 self._banner(p, BN_FREE)
                 self._crime(C.JAILBREAK_HEAT)

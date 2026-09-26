@@ -64,6 +64,7 @@ class ModShop:
         self.menu = None
         self.hover_horn = None        # the client plays a horn preview when this changes
         self.all_cars = {}            # (v0.10) every car in view, for the SWITCH CAR tab
+        self.closing = False          # (v0.12.1) we've sent OP_CLOSE; don't let a stale snapshot reopen us
 
     # ------------------------------------------------------------------ state
     def sync(self, menu, all_cars=None):
@@ -71,9 +72,16 @@ class ModShop:
         if all_cars is not None:
             self.all_cars = all_cars
         if menu is None:
+            self.closing = False
             if self.open:
                 self.open = False
                 self.pending.clear()
+            return
+        if self.closing:
+            # (v0.12.1) we already said goodbye; the host just hasn't read it yet. Without
+            # this the next snapshot re-opened the menu for a frame or three -- AND threw
+            # away the queued OP_CLOSE, so leaving sometimes needed a second Esc.
+            self.menu = menu                      # (still need its ack to send the close)
             return
         if not self.open:
             self.open = True
@@ -95,6 +103,7 @@ class ModShop:
     def close(self):
         self.pending.append((G.OP_CLOSE, 0, 0))
         self.open = False
+        self.closing = True
 
     # ------------------------------------------------------------------ items
     def items(self):
@@ -283,9 +292,7 @@ class ModShop:
             return
         f = self.font
         m = self.menu
-        shade_ = pygame.Surface((W, H), pygame.SRCALPHA)
-        shade_.fill((12, 10, 20, 225))
-        low.blit(shade_, (0, 0))
+        # (the game darkens the world behind us once, on the way in: v0.12.1)
         f.draw(low, "MOD SHOP", 12, 8, P["gold"], scale=3)
         f.draw(low, "YOUR %s" % V.model(m["model"]).name, 12, 30, P["white"])
         f.draw(low, "CASH $%d" % cash, W - 12, 10, P["money"] if cash >= 0 else P["danger"], scale=2, align="right")
