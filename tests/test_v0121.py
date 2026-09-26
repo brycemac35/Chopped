@@ -92,6 +92,19 @@ class TestJail(unittest.TestCase):
         self.assertLessEqual(p.head_start_t, 0)
 
 
+class TestShopSeized(unittest.TestCase):
+    def test_whoopee_cushion_after_a_seizure_doesnt_crash_the_host(self):
+        """Soak test: reset_run gave everyone 4 gear slots, not 5, so selecting the
+        cushion (gear slot 4) afterwards was an IndexError on the server."""
+        w = quiet_world()
+        p = w.add_player("ALICE")
+        w.reset_run()
+        self.assertEqual(len(p.gear), len(S.GEAR_OF_ARM))
+        w.set_input(p.id, S.InputState(0, 0, 0, 0, 0.0, 0, S.ARM_WHOOPEE))
+        w.step(1 / 60)
+        self.assertEqual(p.weapon, S.ARM_FISTS)          # (not owned: fists, not a crash)
+
+
 class TestDispatch(unittest.TestCase):
     def test_cops_that_never_saw_you_still_come_looking(self):
         """Playtest: 55 heat, four cop cars, and they all sat idling round the corner

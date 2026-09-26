@@ -259,7 +259,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             for slot in GUN_SLOTS:
                 p.arms |= 1 << slot
                 p.ammo[slot] = C.MAX_AMMO
-            p.gear = [C.MAX_TRAPS_EACH] * 4
+            p.gear = [C.MAX_TRAPS_EACH] * len(GEAR_OF_ARM)   # (v0.12.1: was * 4 -- one short since the whoopee cushion)
         self.players[pid] = p
         # (v0.10, Bryce: "a bay for each player that joins") the first player to ever join
         # inherits the car that was already sitting in bay 0 at world creation; everyone
@@ -576,8 +576,11 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             p.hold = 0.0
             p.hold_key = None
             p.dolly = None
-            p.arms, p.ammo, p.gear, p.weapon = 1 << ARM_FISTS, [0] * ARM_COUNT, [0, 0, 0, 0], ARM_FISTS
+            # (v0.12.1: gear was [0, 0, 0, 0] -- one slot short since v0.9's whoopee cushion, so
+            # after a SHOP SEIZED picking the cushion crashed the host with an IndexError)
+            p.arms, p.ammo, p.gear, p.weapon = 1 << ARM_FISTS, [0] * ARM_COUNT, [0] * len(GEAR_OF_ARM), ARM_FISTS
             p.jailed = p.keys = p.jumpsuit = False
+            p.head_start_t = 0.0
             p.pants_t = p.tased_t = p.dead_t = p.cuff_prog = 0.0
             p.arrests = 0
             p.rap.clear()
