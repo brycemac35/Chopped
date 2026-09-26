@@ -18,7 +18,10 @@ from .garage import encode_menu, decode_menu
 from .enums import ARSENAL_LEN
 from .sim import (COP, TRAFFIC, TUMBLE, FOOT, DRIVER, PASSENGER, DEAD, OFFICER, GUARD, KEYGUARD, DOG,
                   TRAP_GATE, TRAP_SMOKE, TRAP_CELL, TRAP_DOOR)
+from .quests import QUEST_ORDER
 from . import vehicles as V
+
+QUEST_INDEX = {qid: i for i, qid in enumerate(QUEST_ORDER)}
 
 MAGIC = b"CH"
 P_JOIN, P_WELCOME, P_REJECT, P_INPUT, P_SNAPSHOT, P_LEAVE, P_SHUTDOWN = range(1, 8)
@@ -30,12 +33,14 @@ INPUT = struct.Struct("<IIIHBBBHBBBBBB")  # seq, client_ms, ack_event, buttons (
                                           # yaw16, fire (click counter), weapon slot,
                                           # mod-shop command: counter, op, arg, arg2
 
-SNAP_HDR = struct.Struct("<IIBiHHBBBBHBBIHIB")
+SNAP_HDR = struct.Struct("<IIBiHHBBBBHBBIHIBHBBBBB")
 # tick, echo_ms, your_pid, cash, day_left_ds, debt_ds, heat, witness(|128 cooling),
 # cops, gameover_ds, run, hold_byte, nplayers_total, ack_input (last input seq applied for you),
-# day, rent_due, (v0.8) alert bits (AL_*)
+# day, rent_due, (v0.8) alert bits (AL_*), (quests) story_points, act, today's 3 quest indices
+# into quests.QUEST_ORDER (255 = none), done-today bitmask (bit i = today_quests[i] is done)
 AL_LETHAL = 1                   # the police are shooting to kill
 AL_HELI = 2                     # (v0.10) a helicopter is up (heat >= config.HELI_HEAT)
+NO_QUEST = 255
 
 # Your own physics state at full precision, for client-side prediction. The
 # regular entity rows are 1/16 m fixed point; rewinding to a rounded position
@@ -222,13 +227,17 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
     cops = sum(1 for c in world.cars.values() if c.kind == COP and not c.patrol)   # (chasing, not cruising)
     wit = world.witness | (128 if world.witness_rate <= 0 and world.heat > 0 and
                            world.unseen_t >= C.HEAT_COOL_DELAY else 0)
+    qids = world.today_quests
+    q_idx = [QUEST_INDEX.get(qids[i], NO_QUEST) if i < len(qids) else NO_QUEST for i in range(3)]
+    q_done = sum(1 << i for i in range(3) if i < len(qids) and qids[i] in world.quest_done_today)
     head = SNAP_HDR.pack(
         world.tick & 0xFFFFFFFF, echo_ms & 0xFFFFFFFF, pid, int(world.cash),
         min(65535, max(0, int(world.day_t * 10))), min(65535, max(0, int(world.debt_t * 10))),
         int(round(world.heat)), wit, cops, min(255, max(0, int(world.gameover_t * 10))),
         world.run & 0xFFFF, int((me.hold_frac if me else 0) * 255), len(world.players),
         max(0, ack_input) & 0xFFFFFFFF, min(65535, world.day), min(0xFFFFFFFF, world.rent_due()),
-        (AL_LETHAL if world.lethal_t > 0 else 0) | (AL_HELI if world.heat >= C.HELI_HEAT else 0))
+        (AL_LETHAL if world.lethal_t > 0 else 0) | (AL_HELI if world.heat >= C.HELI_HEAT else 0),
+        min(65535, world.story_points), world.act, q_idx[0], q_idx[1], q_idx[2], q_done)
     prompt = encode_text(me.prompt if me else "") + encode_self(world, me)
 
     r2 = C.NET_CULL_RADIUS ** 2
@@ -361,7 +370,7 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
 class Snapshot:
     __slots__ = ("tick", "time", "echo_ms", "pid", "cash", "rent", "debt", "heat", "witness",
                  "cooling", "cops", "gameover", "run", "hold", "nplayers", "prompt", "ack_input", "day",
-                 "rent_due", "alert",
+                 "rent_due", "alert", "story_points", "act", "today_quests", "quest_done",
                  "me", "me2", "arsenal", "trunk", "menu", "inspect", "cars", "players", "npcs", "pickups", "dollies", "traps", "events", "arrival")
 
 
@@ -374,7 +383,9 @@ def decode_snapshot(payload):
     data = zlib.decompress(payload)
     s = Snapshot()
     (s.tick, s.echo_ms, s.pid, s.cash, rent, debt, s.heat, wit, s.cops, go, s.run, hold,
-     s.nplayers, s.ack_input, s.day, s.rent_due, s.alert) = SNAP_HDR.unpack_from(data, 0)
+     s.nplayers, s.ack_input, s.day, s.rent_due, s.alert, s.story_points, s.act,
+     q0, q1, q2, s.quest_done) = SNAP_HDR.unpack_from(data, 0)
+    s.today_quests = (q0, q1, q2)
     s.time = s.tick / C.SIM_HZ
     s.rent, s.debt, s.gameover = rent / 10.0, debt / 10.0, go / 10.0
     s.witness, s.cooling = wit & 127, bool(wit & 128)

@@ -11,6 +11,78 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
 
 ## 1. Status and your tasks, in order
 
+### Where things stand (Sept 26, 2026, session 2, RELEASE 0.11.0: jobs and a story arc)
+- **Jobs and the story arc** (Bryce uploaded `CHOPPED_QUEST_SYSTEM.md`, a design doc written for
+  the Unity side -- NetworkBehaviours, ScriptableObject quest assets, named NPCs. Asked where it
+  should go: ported to the Python game, crew-shared, no per-player state). All done:
+  - **`chopped/quests.py`** (new, no pygame, `Quests` mixin added to `World`'s bases): 15 jobs as
+    plain data (`QUESTS`, keyed by id; `QUEST_ORDER` is the FIXED order a job's index rides the
+    wire in -- append only, never reorder). 3 rotate in daily (`_rotate_quests`, hooked into the
+    existing midnight rent rollover in `_economy` and into `reset_run`), picked from whatever
+    `world.story_points` has unlocked.
+  - **No "start quest" button.** All 3 of today's jobs track passively, all the time, off
+    whatever you're already doing -- steal a Kei and you're automatically working "Hot Wire
+    Special" if it's in today's three. Ten one-line hooks do the watching: `_quest_on_steal`
+    (from `_break_in`, `_cut_wires`, `_carjack`, `_steal_cop_car`, and the bailed-traffic branch
+    of `_enter_car`), `_quest_on_deliver` (from `_deliver`, called *before* it zeroes heat, so
+    heat-gated jobs like Corporate Contract can still read it), `_quest_on_strip` (from `_strip`),
+    `_quest_on_dolly_engine` (from `_dolly_strip`), `_quest_on_install` (from `garage._ms_install`)
+    and `_quest_on_arrest` (from `arrest`). `_quest_tick`, called last in `World.step`, drives
+    everything that's a clock instead of an event (heat thresholds, evasion timers, the two co-op
+    jobs' delivery-cadence windows).
+  - **Adapted, not copied, where the Unity doc leaned on mechanics Chopped doesn't have** (each
+    is a comment on the job in `quests.py`): no AI racer for Body Shop Wars (a timer instead --
+    "Tommy beats you to it" if you're too slow); no second drop-off point for The Repo or Black
+    Market Deal (both deliver to the shop, same as everything else); no mid-drive stripping from
+    the passenger seat for Family Business (the passenger strips after delivery instead); Part
+    Collector's "+$40 per part beyond 3" bonus is gone -- it assumed a separate turn-in step that
+    doesn't exist here, and without it there's no way to hold more than 3 before the job
+    completes.
+  - **Story points move the crew through 3 acts** (`ACT_THRESHOLDS` 6/16/25, `_check_act_up`),
+    same shape as the Unity doc's Struggling/Growing/Dominance, with a toast standing in for the
+    doc's dialogue system -- narrative beats are lines with a name on them (`"PAIGE: ..."`), the
+    same way every other line in this game talks to you (`lines.py`). 25 points sets
+    `World.campaign_won` (a flag, not a 4th act) and prints a "credits roll" toast; nothing stops
+    the run.
+  - **Wire cost: 7 bytes, always sent, no optional block.** `SNAP_HDR` (`protocol.py`) gained
+    `story_points` (H), `act` (B), today's 3 job indices into `QUEST_ORDER` (B each, `NO_QUEST`
+    255 = fewer than 3 unlocked yet) and a done-today bitmask (B) -- jobs are crew-shared like
+    cash and heat, so this rides the header everyone already gets, not a per-player SELF block.
+    Client renders names/briefs/rewards locally from `quests.QUESTS`: nothing but ids and numbers
+    goes over the wire.
+  - **HUD:** `doomhud._quest_panel`, drawn just under the radar (`_minimap` calls it) -- REP, act,
+    and today's 3 jobs, each turning gold-green and reading DONE once finished.
+  - **Save files:** story points, the act and which jobs have *ever* been completed persist like
+    the economy does (`savefile.dump`/`apply` gained `story_points`/`act`/`campaign_won`/
+    `completed_ever`, additive fields under the same `save_version` -- an old save missing them
+    just defaults to a fresh story, no version bump needed); today's specific 3 and whatever's
+    mid-progress reset fresh on load, the same way heat always does. Loading a save re-rolls
+    today's rotation against the restored story points.
+  - **Fixed in passing, caught by the test suite:** the first version of Heat Run tied itself to
+    whichever car got delivered first and never let go, so one delivery at bad heat permanently
+    blew the job for the rest of the day even though the doc never specified a fail condition for
+    it. It doesn't track a specific car at all now -- just watches the clock continuously, so a
+    calmer delivery later still counts (`tests/test_quests.py`'s `TestHeatRun`).
+  - **Protocol VERSION 11, RELEASE 0.11.0.**
+  - **Tests:** `tests/test_quests.py` (new), 17 tests -- rotation respecting story-point locks,
+    act transitions (and victory at 25 without a 4th act), Hot Wire Special's model/heat/damage
+    gates, Heat Run's no-permanent-lock behaviour, Part Collector's one-handed-only rule, a crash
+    ending The Perfect Steal, an arrest failing Night Job, the wire format, and the save file. 233
+    tests total, all OK.
+- **Decisions flagged for Bryce:**
+  - **No quest board, no start/turn-in menu.** All 3 of today's jobs track simultaneously and
+    silently. This fits Chopped's fast, prompt-driven pace far better than a menu you'd have to
+    stop and click through -- but it does mean there's no in-fiction moment where a job is
+    "accepted," and no way to deliberately skip one you don't want. If he'd rather have an actual
+    board (E at a noticeboard in the shop, say), that's a real UI addition, not a small tweak.
+  - **Killing peds/cops still costs the usual murder/cop heat on top of whatever a job pays** --
+    jobs never override or discount the existing crime-and-heat rules, only add cash and REP on
+    top of them.
+  - **A job whose target car despawns or gets crushed before delivery is stuck for the rest of
+    that day** for the handful of jobs with no built-in timeout (The Repo, Clown Car Chaos) --
+    matches the original doc, which didn't specify a fail condition for them either. Worth
+    revisiting if it turns out to feel bad in practice.
+
 ### Where things stand (Sept 26, 2026, session 2, RELEASE 0.10.1: save files)
 - **Save files** (Bryce: "can you make save files?", then, clarified: crew progress only, not a
   full mid-heist snapshot). All done:
@@ -175,7 +247,7 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
 ## 2. Hard rules
 - **Networking stays stdlib UDP.** No networking libraries; this keeps PyInstaller packaging trivial. `miniupnpc` is optional and must stay an optional import.
 - **No asset files.** All sprites, textures, the pixel font, sounds and the music are generated in code (`art.py`, `fpart.py`, `audio.py`, `music.py`). Keep it that way unless Bryce says otherwise.
-- **The sim modules must not import pygame:** `sim.py`, `physics.py`, `brawl.py`, `garage.py`, `police.py`, `sillies.py`, `entities.py`, `enums.py`, `vehicles.py`, `parts.py`, `lines.py` (and the client-side pure modules `drivetrain.py`, `enginesynth.py`). They're the authoritative, testable simulation. (`tests/test_v09.py` checks this.)
+- **The sim modules must not import pygame:** `sim.py`, `physics.py`, `brawl.py`, `garage.py`, `police.py`, `sillies.py`, `quests.py`, `entities.py`, `enums.py`, `vehicles.py`, `parts.py`, `lines.py` (and the client-side pure modules `drivetrain.py`, `enginesynth.py`). They're the authoritative, testable simulation. (`tests/test_v09.py` checks this.)
 - **All tuning numbers live in `chopped/config.py`**, each with a comment explaining why.
 - **Bump `config.VERSION`** whenever the wire protocol changes. Clients with a different version get rejected politely.
 - **Keep packets under `MAX_PACKET` (1150 bytes).** `tests/test_misc.py` checks a worst-case snapshot, rush-hour traffic included.
@@ -184,11 +256,11 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
   ```
   set SDL_VIDEODRIVER=dummy & set SDL_AUDIODRIVER=dummy & python -m unittest discover -s tests -v
   ```
-  (On Linux/macOS: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests -v`.) At handoff (session 2, RELEASE 0.10.1): **216 tests, all OK**, and the game-loop selftest ran at about 48-52 fps.
+  (On Linux/macOS: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests -v`.) At handoff (session 2, RELEASE 0.11.0): **233 tests, all OK**, and the game-loop selftest ran at about 45-52 fps.
 
 ## 3. Architecture (details in README.md)
 - `main.py` is the command line: `--host`, `--join IP[:PORT]`, `--server` (headless), `--selftest`, `--port`, `--name`, `--mute`, `--no-upnp`, `--log FILE`, `--fake-lag MS`, `--no-predict`.
-- **Networking model (protocol VERSION 9):**
+- **Networking model (protocol VERSION 11):**
   - The host runs the simulation at 60 Hz in-process.
   - Clients send one input per 60 Hz tick. One-shot keys are sent as counters, so a lost packet can't eat a tap.
   - The server sends each client its own zlib snapshot at 20 Hz. Far-away peds, pickups and traffic are culled beyond 95 m.

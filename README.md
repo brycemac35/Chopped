@@ -99,7 +99,7 @@ Command-line shortcuts:
 
 Being carried by a crewmate, or being cuffed by an officer? Mash **Space** to wriggle free.
 
-The status bar reads, left to right: **ARMS** (the weapons you own, 1-9), **CASH**, **HEAT %**, **HANDS** (the dolly, or your ammo when a gun is out), your crook's **face** (it sweats as the heat rises, grins when money comes in, and sees stars when you get run over), **STAMINA %** (**KM/H** in a car), **COPS** (it reads **LETHAL** while the police are shooting to kill), **DAY / RENT**, and **GEAR** (traps in your pocket; in a car, or on foot at its bumper, the trunk contents and the NOS gauge). The radar is top right, and every teammate shows on it as an outlined dot in their own colour; if one's too far off to see, small coloured lines name them and point the way. When you're carrying loot, a **SHOP** marker at the top of the screen points home; when you're empty-handed, a green **CAR TO STEAL** marker points at the nearest parked car. Look at a car for half a second and an **inspect card** slides in on the right (see below). Hold a slide and the **DRIFT** meter counts it up. In a car, the dashboard has a **tachometer** next to the speedo: revs, redline, the gear you're in, and a boost gauge if there's a turbo (blue) or a supercharger (gold) under the bonnet. Hop in your cardboard box and a line above the bar tells you whether you're actually hidden yet or still an obvious box with legs.
+The status bar reads, left to right: **ARMS** (the weapons you own, 1-9), **CASH**, **HEAT %**, **HANDS** (the dolly, or your ammo when a gun is out), your crook's **face** (it sweats as the heat rises, grins when money comes in, and sees stars when you get run over), **STAMINA %** (**KM/H** in a car), **COPS** (it reads **LETHAL** while the police are shooting to kill), **DAY / RENT**, and **GEAR** (traps in your pocket; in a car, or on foot at its bumper, the trunk contents and the NOS gauge). The radar is top right, and every teammate shows on it as an outlined dot in their own colour; if one's too far off to see, small coloured lines name them and point the way. Under the radar: today's 3 jobs and your crew's reputation and act (see [Jobs and the story](#jobs-and-the-story)). When you're carrying loot, a **SHOP** marker at the top of the screen points home; when you're empty-handed, a green **CAR TO STEAL** marker points at the nearest parked car. Look at a car for half a second and an **inspect card** slides in on the right (see below). Hold a slide and the **DRIFT** meter counts it up. In a car, the dashboard has a **tachometer** next to the speedo: revs, redline, the gear you're in, and a boost gauge if there's a turbo (blue) or a supercharger (gold) under the bonnet. Hop in your cardboard box and a line above the bar tells you whether you're actually hidden yet or still an obvious box with legs.
 
 ---
 
@@ -296,6 +296,17 @@ Cars hitting people (v0.9): what counts is how fast the car's **bodywork** is mo
 
 ---
 
+## Jobs and the story
+
+Under the radar, top right, is today's board: **3 jobs**, your crew's **REP**, and the **act** you're in. There's no menu and no start button -- all 3 track in the background off whatever you're already doing. Steal a Kei and, if "HOT WIRE SPECIAL" is one of today's three, you're already working it. A finished job pays out cash and REP the moment its last condition is met, and shows **DONE** on the board until the next rotation (once a day, at midnight, alongside the rent).
+
+- **15 jobs total, in rough order of REP needed to unlock:** Hot Wire Special (steal and deliver a Kei under 40 heat), Heat Run (deliver anything without heat sitting over 60 for more than 20s), Part Collector (strip 3 one-handed parts), Night Job (steal, stay free 90s, deliver uncrashed), The Perfect Steal (zero damage, start to finish), The Repo (steal a car whose owner's watching and get away with it anyway), Clown Car Chaos (find one, deliver it, clowns included) -- then, once your crew's earned some REP: The Engine Pull (deliver with the engine in, winch it out, bolt it to your own ride -- a two-person job, but nothing stops you doing both halves yourself), Body Shop Wars (Tommy's after the same car -- steal and deliver one inside 5 minutes or he beats you to it), The Corporate Contract (deliver something with 5+ styled parts, heat under 30), Family Business (deliver with a passenger aboard, then have them strip 2 parts), Catch & Release (hold 70+ heat for 2 minutes without getting busted, then deliver) -- and at the top: Black Market Deal (two different 5+-styled-part cars, delivered within 5 minutes of each other), The Escape (steal loud on purpose, stay free 3 minutes or reach the shop), King of Downtown (3 deliveries back to back, each within 2 minutes of the last).
+- **Reputation moves you through 3 acts** -- Struggling, Growing, Dominance, at 6 and 16 REP -- with a toast when the city's mood shifts. 25 REP and the crew's basically running downtown; the game doesn't end there, it just means you've made it.
+- **Story points and which jobs you've ever finished persist in your save file** (see [Save files](#save-files)); today's specific 3 and whatever's mid-progress on them reset fresh each load, same as heat always does.
+- This is adapted from a bigger design doc that assumed a quest board, named NPCs and per-quest start/turn-in menus; a few jobs (the ones that leaned on mechanics Chopped doesn't have, like an AI racer or a second drop-off point) were rebuilt around what the game actually does instead. Nothing about it needed new controls -- it's all riding on top of stealing, driving and delivering, same as everything else.
+
+---
+
 ## Hosting and joining
 
 The host runs the authoritative simulation. Everyone else connects to the host's IP on **UDP port 27015**. Up to 4 players can join.
@@ -386,7 +397,9 @@ SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests
 
 - `tests/test_savefile.py` covers save files: the economy (cash, day, locker) round-tripping through a dump and apply, a returning name getting their exact car back (parts, paint, livery, extras) while a stranger gets an ordinary one, a switched primary car being what actually gets saved, heat/cops/positions never being saved, a missing or corrupt file being a quiet no-op, a foreign save version being ignored, and `net.Server`'s `--save` wiring loading on start and saving on a clean stop.
 
-216 tests in total.
+- `tests/test_quests.py` covers the jobs and the story arc: the daily rotation only offering unlocked jobs, story points moving you through the acts (and campaign victory at 25 without a 4th act), Hot Wire Special (model, heat and damage gates), Heat Run (a blown attempt isn't a permanent lock -- a real bug this suite caught), Part Collector (one-handed parts only), a crash ending The Perfect Steal, an arrest failing Night Job, today's 3 jobs and REP/act surviving the wire in `SNAP_HDR`, and reputation/completed-ever persisting through a save while today's specific rotation resets fresh.
+
+233 tests in total.
 
 ---
 
@@ -410,6 +423,7 @@ chopped/police.py    officers, tasers, lethal force, health and dying, ambulance
                      precinct lockup and its cells, K9s, the streaker, speed cameras, smoke screens,
                      hydraulics (World mixin)
 chopped/sillies.py   v0.9's chickens, mimes, stunt ramps and money trucks (World mixin)
+chopped/quests.py    the 15 daily jobs, rotation and the 3-act story arc (World mixin, no pygame)
 chopped/drivetrain.py  revs, gears and boost for the tachometer and the engine notes (client, no pygame)
 chopped/enginesynth.py the engine voices, turbo whistle, blow-off, pops, screech (pure Python synthesis)
 chopped/sim.py       authoritative world: crashes, heat, cops, traffic, pedestrians, the dolly,

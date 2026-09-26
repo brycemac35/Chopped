@@ -20,6 +20,7 @@ from .brawl import Brawl
 from .garage import Garage, Appraisal, ShopDoor
 from .sillies import Sillies
 from .police import Police
+from .quests import Quests
 from .enums import *  # noqa: F401,F403
 from .lines import *  # noqa: F401,F403
 from .entities import *  # noqa: F401,F403
@@ -29,7 +30,7 @@ DIRS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 _REEXPORTS = (kei_loadout,)   # tests (and old habits) reach for S.kei_loadout
 
 
-class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
+class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests):
     def __init__(self, map_seed=None, rng_seed=None):
         if map_seed is None:
             map_seed = random.randrange(1, 2 ** 31)
@@ -96,6 +97,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
         self._init_door()
         self._init_police()
         self._init_sillies()
+        self._init_quests()
 
     # ------------------------------------------------------------------ ids/events
     def new_id(self):
@@ -344,6 +346,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
             car.stolen = True
             self._crime(C.HEAT_BREAKIN)
             self.toast("%s TOOK A CAR IN BROAD DAYLIGHT. +%d HEAT" % (p.name, C.HEAT_BREAKIN), T_BAD)
+            self._quest_on_steal(p, car)
         if seat == DRIVER:
             car.driver = p.id
         else:
@@ -460,6 +463,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
         self._traffic(dt)
         self._traffic_fleet(dt)
         self._patrol_fleet(dt)
+        self._quest_tick(dt)
 
     # ------------------------------------------------------------------ economy
     def rent_due(self):
@@ -485,6 +489,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
             self.cops_today = 0         # (v0.10) dispatch gets a fresh COPS_PER_DAY budget
             self.cops_exhausted_told = False
             self.toast("DAY %d. RENT AT MIDNIGHT: $%d" % (self.day, self.rent_due()), T_INFO)
+            self._rotate_quests()
         if self.cash < 0:
             self.debt_t += dt
             if self.debt_t >= C.DEBT_GRACE:
@@ -529,6 +534,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
         self.traps.clear()
         self._init_door()                 # (the door goes back up: the landlord's got the remote now)
         self._init_police()               # (a fresh gate, and the police calm down)
+        self._rotate_quests()             # a fresh day's jobs; story points and rep survive the seizure
         if self.stash:
             self.toast("THE LANDLORD SOLD YOUR PARTS LOCKER ON MARKETPLACE.", T_BAD)
         self.stash = []
@@ -903,6 +909,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
         self.sfx(S_BREAKIN, car.x, car.y)
         self.toast("%s SMASHED A WINDOW. ALARM! +%d HEAT" % (p.name, C.HEAT_BREAKIN), T_BAD)
         self._breakin_specials(p, car, loud=True)
+        self._quest_on_steal(p, car)
 
     def _cut_wires(self, p, car):
         """(v0.10) the slow, quiet way in: one wire in ALARM_CUT_WIRES is the right one.
@@ -922,6 +929,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
             self.sfx(S_BREAKIN, car.x, car.y)
             self.toast("%s CUT THE WRONG WIRE. ALARM! +%d HEAT" % (p.name, C.ALARM_CUT_FAIL_HEAT), T_BAD)
         self._breakin_specials(p, car, loud=not quiet)
+        self._quest_on_steal(p, car)
 
     def _breakin_specials(self, p, car, loud):
         """Clown cars burst open no matter how quietly you got the door open -- that's the
@@ -965,6 +973,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
         car.parts[slot] = None
         p.hands.append(part)
         self.sfx(S_STRIP, car.x, car.y)
+        self._quest_on_strip(p, part)
 
     def _crush(self, car, pay):
         self._spill_trunk(car)
@@ -1086,6 +1095,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
             d.part = part
             self.sfx(S_STRIP, car.x, car.y)
             self.toast("%s WINCHED OUT THE %s" % (p.name, part.name.upper()), T_INFO)
+            self._quest_on_dolly_engine(p, car)
 
     def _dolly_sell(self, p, d):
         part = d.part
@@ -1418,6 +1428,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
         self._crime(C.CARJACK_HEAT)
         self.sfx(S_PUNCH, x, y)
         self.toast("%s DRAGGED THE DRIVER OUT. CARJACKED! +%d HEAT" % (p.name, C.CARJACK_HEAT), T_BAD)
+        self._quest_on_steal(p, car)
         self._enter_car(p, car, DRIVER)
 
     # ------------------------------------------------------------------ black market
@@ -1531,6 +1542,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
         self._crime(C.COPCAR_STEAL_HEAT)
         self._charge(p, "copcar")
         self.sfx(S_HOTWIRE, car.x, car.y)
+        self._quest_on_steal(p, car)
         self._enter_car(p, car, DRIVER)
 
     # ------------------------------------------------------------------ traps
@@ -2341,6 +2353,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
                 self._deliver(car)
 
     def _deliver(self, car):
+        self._quest_on_deliver(car, car.driver, car.passenger, self.heat)  # before heat resets below
         car.state = DELIVERED
         self.day_stats[0] += 1
         car.alarm = False
@@ -2566,6 +2579,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies):
         self.sfx(S_ARREST, p.x, p.y)
         self.toast("%s GOT BUSTED! PARTS DROPPED AT THE SCENE." % p.name, T_COP)
         self._mugshot(p)
+        self._quest_on_arrest(p)
 
 
     # ------------------------------------------------------------------ panicking pedestrians

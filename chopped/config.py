@@ -9,8 +9,8 @@ engine and exactly no maths textbooks).
 import math
 
 GAME_TITLE = "Chopped"
-VERSION = 10  # bump when the wire protocol changes so old clients get a polite "no"
-RELEASE = (0, 10, 1)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
+VERSION = 11  # bump when the wire protocol changes so old clients get a polite "no"
+RELEASE = (0, 11, 0)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
 
 # --------------------------------------------------------------------------
 # Rendering scale

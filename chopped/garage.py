@@ -277,6 +277,7 @@ class Garage:
         car.refresh()
         self.sfx(S_MOD, p.x, p.y)
         self.toast("BOLTED ON: %s. YOUR RIDE: %d POWER" % (part.name.upper(), car.power()), T_INFO)
+        self._quest_on_install(p, car, slot)
 
     def _ms_buy(self, p, car, k, slot_i):
         if not 0 <= slot_i < len(SLOTS):

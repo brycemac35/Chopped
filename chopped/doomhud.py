@@ -22,6 +22,7 @@ from . import fpart as FA
 from .art import P, PixelFont, PLAYER_COLORS, CAR_COLORS, GLYPHS, SKINS, shade
 from .parts import PART_IDS, PART_DEFS, PART_INDEX, NO_PART, Part
 from . import vehicles as V
+from .quests import QUESTS, QUEST_ORDER, ACT_NAMES
 
 W, H = C.LOW_W, C.LOW_H
 BAR_H = 32
@@ -826,6 +827,24 @@ class DoomHud:
             yaw = info.get("yaw", 0.0)
             px, py = mx + me[4] * k, my + me[5] * k
             pygame.draw.line(low, P["white"], (px, py), (px + math.cos(yaw) * 5, py + math.sin(yaw) * 5))
+        self._quest_panel(low, view.snap, mx, my + mh + 3)
+
+    def _quest_panel(self, low, snap, x, y):
+        """Under the radar: today's 3 jobs and the crew's reputation/act. Nothing but
+        ids and a done bitmask rides the wire (protocol.SNAP_HDR) -- names, briefs and
+        rewards come from quests.QUESTS, the same fixed table on both ends."""
+        f = self.font
+        act = ("I", "II", "III")[max(0, min(2, snap.act - 1))]
+        f.draw(low, "REP %d - ACT %s" % (snap.story_points, act), x, y, P["gold"])
+        y += 8
+        for i, idx in enumerate(snap.today_quests):
+            if idx == PR.NO_QUEST or idx >= len(QUEST_ORDER):
+                continue
+            name, brief, diff, cash, rep, minp, tlim, coop = QUESTS[QUEST_ORDER[idx]]
+            done = bool(snap.quest_done & (1 << i))
+            col = P["money"] if done else P["white"]
+            f.draw(low, ("%s $%d" % (name, cash)) if not done else "%s DONE" % name, x, y, col)
+            y += 7
 
     def _shop_compass(self, low, view, info, now):
         me = view.me
