@@ -21,6 +21,7 @@ import json
 import os
 import time
 
+from . import config as C
 from .enums import PERSONAL
 from .parts import Part, SLOTS
 
@@ -59,7 +60,10 @@ def dump(world):
     return {
         "save_version": SAVE_VERSION,
         "cash": world.cash, "day": world.day, "day_t": world.day_t, "run": world.run,
-        "stash": [_part_to_json(p) for p in world.stash],
+        # (v0.14) plus anything under Dave's hammer: the auction doesn't survive a reload, so
+        # its lots go back on the shelf rather than into thin air
+        "stash": [_part_to_json(p) for p in list(world.stash) +
+                  [lot.part for lot in getattr(world, "lots", ()) if lot.part is not None]],
         "cars": cars,
         # (quests) reputation and act persist like the economy does; today's rotation and
         # whatever's mid-progress don't -- those reset fresh on load, same as heat does.
@@ -76,6 +80,10 @@ def dump(world):
         # inside a chapter (a count, a tracked car id) doesn't survive a reload -- car ids
         # don't, and "deliver 3 before midnight" was never going to span two sessions.
         "story_ch": world.story_ch, "story_active": world.story_active,
+        # (v0.14) the business: Mo's dolly, and how much junk is left in each garage you own
+        # (orders, the auction and sold cars are the day's weather: they start fresh)
+        "dolly_level": world.dolly_level, "dolly_job": world.dolly_job,
+        "junk_left": {str(i): len(v) for i, v in world.junk.items()},
     }
 
 
@@ -104,6 +112,23 @@ def apply(world, data):
     world.story_ch = max(0, int(data.get("story_ch", world.story_ch)))
     world.story_active = bool(data.get("story_active", world.story_active))
     world.story_n, world.story_flags, world.story_told = 0, {}, False
+    world.dolly_level = max(0, min(len(C.DOLLY_UPGRADES), int(data.get("dolly_level", 0))))
+    world.dolly_job = bool(data.get("dolly_job", False))
+    world.lots = []
+    world._reset_workshops()                 # (unowned garages full again, owned ones as they were:)
+    junk_left = data.get("junk_left")
+    if not isinstance(junk_left, dict):
+        # a pre-v0.14 save: the lots it bought were open-air and already trading -- they come
+        # back clean, not full of somebody's sofa
+        junk_left = {str(i): 0 for i in world.junk}
+    for key, left in junk_left.items():
+        try:
+            idx, left = int(key), int(left)
+        except (TypeError, ValueError):
+            continue
+        if idx in world.junk and world.shop_owned[idx]:
+            del world.junk[idx][max(0, left):]
+    world._rebuild_trap_rects()
     world._rotate_quests()   # a fresh day's 3, now that story points may have unlocked more
     return True
 

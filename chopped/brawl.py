@@ -103,7 +103,7 @@ class Brawl:
         """A pedestrian with a grudge. Returns True if it drove n's movement."""
         q = self.players.get(n.foe)
         n.hostile_t -= dt
-        if q is None or n.hostile_t <= 0 or q.state in (CUFFED, DEAD) or q.jailed or self.map.in_garage(q.x, q.y):
+        if q is None or n.hostile_t <= 0 or q.state in (CUFFED, DEAD) or q.jailed or self.in_shop(q.x, q.y):
             n.hostile_t = 0.0
             n.foe = None
             return False
@@ -329,6 +329,7 @@ class Brawl:
             carrier.carrying = None
         q.state = FOOT
         q.carrier = None
+        q.escort = None
 
     def _update_carries(self, dt):
         """Carried people ride your shoulder. Pedestrians struggle free after a

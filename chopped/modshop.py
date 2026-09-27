@@ -126,7 +126,14 @@ class ModShop:
                 if PART_DEFS[tid][1] == cat:
                     out.append(Item("LOCKER: " + Part(tid, cond, style).name.upper(), "%d%%  FIT" % (cond * 100),
                                     G.OP_INSTALL, i, si, preview=("slot", slot, (tid, style, cond)), col=P["gold"]))
+            tier = m.get("tier", 0)
             for k, (tid, style, price) in enumerate(G.catalogue(slot)):
+                need = G.part_tier(tid)
+                if need > tier:
+                    # (v0.14) this counter doesn't get those in: say which shop does, don't hide it
+                    out.append(Item("NEW: " + Part(tid, 1.0, style).name.upper(), "SHOP %d ONLY" % (need + 1),
+                                    G.OP_NONE, preview=("slot", slot, (tid, style, 1.0)), col=(120, 118, 130)))
+                    continue
                 out.append(Item("NEW: " + Part(tid, 1.0, style).name.upper(), "$%d" % price, G.OP_BUY, k, si,
                                 preview=("slot", slot, (tid, style, 1.0))))
         elif kind == "paint":
@@ -151,7 +158,12 @@ class ModShop:
                                 G.OP_GLOW, c + 1, preview=("glow", c + 1), col=CAR_COLORS[c]))
         elif kind == "extra":
             owned = (m["nos"], m["ejector"], m["gnome"], m.get("hydro", False))
+            tier = m.get("tier", 0)
             for k, name in enumerate(G.EXTRA_NAMES):
+                need = C.EXTRA_SHOP_TIER[k] if k < len(C.EXTRA_SHOP_TIER) else 0
+                if not owned[k] and need > tier:
+                    out.append(Item(name, "SHOP %d ONLY" % (need + 1), col=(120, 118, 130)))
+                    continue
                 out.append(Item(name, "FITTED" if owned[k] else "$%d" % G.extra_price(k), G.OP_EXTRA, k,
                                 preview=("gnome", True) if k == G.EXTRA_GNOME else None))
         elif kind == "switch":
@@ -167,10 +179,11 @@ class ModShop:
         else:
             for i, (tid, style, cond) in enumerate(m["stash"]):
                 part = Part(tid, cond, style)
-                out.append(Item(part.name.upper(), "$%d  SELL / X: TAKE" % part.value, G.OP_SELL, i,
+                # (v0.14) "sell" is Dave's auction now, at a fair price: the money comes at the hammer
+                out.append(Item(part.name.upper(), "$%d  AUCTION / X: TAKE" % part.value, G.OP_SELL, i,
                                 PART_INDEX[tid], alt=(G.OP_TAKE, i, PART_INDEX[tid])))
             if not out:
-                out.append(Item("THE LOCKER IS EMPTY. BRING PARTS TO THE BENCH.", ""))
+                out.append(Item("THE LOCKER IS EMPTY. BRING PARTS TO THE COUNTER.", ""))
         return out
 
     # ------------------------------------------------------------------ input
@@ -294,7 +307,8 @@ class ModShop:
         m = self.menu
         # (the game darkens the world behind us once, on the way in: v0.12.1)
         f.draw(low, "MOD SHOP", 12, 8, P["gold"], scale=3)
-        f.draw(low, "YOUR %s" % V.model(m["model"]).name, 12, 30, P["white"])
+        f.draw(low, "YOUR %s  -  SHOP %d'S COUNTER" % (V.model(m["model"]).name, m.get("tier", 0) + 1), 12, 30,
+               P["white"])
         f.draw(low, "CASH $%d" % cash, W - 12, 10, P["money"] if cash >= 0 else P["danger"], scale=2, align="right")
         # categories
         cx, cy = CAT_X, CAT_Y
@@ -355,7 +369,7 @@ class ModShop:
                                                                  max(1, int(bw * abs(b - a))), 5))
         hint = "W/S OR WHEEL: MOVE   ENTER/E OR CLICK: SELECT   A/BACKSPACE/RIGHT CLICK: BACK   ESC: LEAVE"
         if CATS[self.cat][1] == "locker":
-            hint = "W/S: MOVE   ENTER: SELL   X: TAKE OUT   A: BACK   ESC: LEAVE"
+            hint = "W/S: MOVE   ENTER: AUCTION   X: TAKE OUT   A: BACK   ESC: LEAVE"
         elif CATS[self.cat][1] == "livery":
             hint = "W/S: PATTERN   A/D: SECOND COLOUR   ENTER: PAINT IT   ESC: LEAVE"
         f.draw(low, hint, W // 2, H - 12, P["metal_l"], align="center")

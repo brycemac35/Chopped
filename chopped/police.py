@@ -119,7 +119,7 @@ class Police:
                 if p.cuff_prog <= 0 and p.state == FOOT:
                     p.wriggle = 0
             p.cuffer = None
-            if p.jumpsuit and self.map.in_garage(p.x, p.y):
+            if p.jumpsuit and self.in_shop(p.x, p.y):
                 p.jumpsuit = False
                 self.toast("%s CHANGED OUT OF THE JUMPSUIT. NOBODY SAW NOTHING." % p.name, T_INFO)
         for car in self.cars.values():
@@ -134,7 +134,7 @@ class Police:
         custody, outside the shop -- while there's heat, or while wearing orange."""
         out = []
         for p in self.players.values():
-            if p.state not in (FOOT, TUMBLE) or p.jailed or self.map.in_garage(p.x, p.y) or \
+            if p.state not in (FOOT, TUMBLE) or p.jailed or self.in_shop(p.x, p.y) or \
                     self.map.in_precinct(p.x, p.y) or p.hidden() or p.head_start_t > 0:
                 continue                        # (v0.12.1: a fresh escapee gets a head start)
             if self.heat > 0 or (p.jumpsuit and C.JUMPSUIT_WITNESS):
@@ -147,7 +147,7 @@ class Police:
         if not cands:
             return
         for cop in list(self.cars.values()):
-            if cop.kind != COP or cop.patrol or cop.fire_t > 0 or cop.donut_t > 0 or cop.confused_t > 0 or \
+            if cop.kind != COP or cop.patrol or cop.prisoner is not None or cop.fire_t > 0 or cop.donut_t > 0 or cop.confused_t > 0 or \
                     cop.officer is not None or cop.speed() > C.OFFICER_DEPLOY_SPEED or self._donut_for(cop):
                 continue                        # (busy: burning, eating, spinning, or smelling donuts)
             best, bd = None, C.OFFICER_DEPLOY_RANGE
@@ -201,6 +201,8 @@ class Police:
         car = self.cars.get(n.car_id)
         n.life_t += dt
         n.attack_cd -= dt
+        if n.mode == 5:
+            return self._escort(n, car, dt)
         q = None
         if n.mode != 4 and n.life_t < C.OFFICER_GIVE_UP:
             q = self._nearest_crook(n, C.OFFICER_CHASE_RANGE, prefer=n.foe)
@@ -246,9 +248,123 @@ class Police:
             q.cuffer = n.id
             q.cuff_prog += dt * (2.0 if q.state == TUMBLE else 1.0)
             if q.cuff_prog >= C.CUFF_TIME:
-                self.arrest(q)
                 n.mode = 4
+                self.arrest(q, officer=n)       # (v0.14: he may well pick you up now -- see _start_escort)
         return True
+
+    # ------------------------------------------------------------------ (v0.14) the ride in
+    def _start_escort(self, q, n):
+        """Just cuffed q: if his car's close enough, the officer throws q over his shoulder
+        and heads for it. Otherwise it's the old way: a few seconds on the kerb, then the van."""
+        car = self.cars.get(n.car_id) if n.car_id is not None else None
+        if car is None or car.kind != COP or car.fire_t > 0 or car.prisoner is not None or \
+                car.passenger is not None or self.map.precinct_outer is None or \
+                math.hypot(car.x - q.x, car.y - q.y) > C.ESCORT_MAX_WALK:
+            return False
+        q.state = CARRIED
+        q.carrier = None
+        q.escort = n.id
+        q.z = 1.25
+        n.mode = 5
+        n.foe = q.id
+        n.life_t = 0.0
+        self.toast("OFFICER: YOU'RE COMING WITH ME. OVER THE SHOULDER YOU GO.", T_COP)
+        return True
+
+    def _escort(self, n, car, dt):
+        """Officer, mode 5: carrying q back to his car. Returns False once he's in it."""
+        q = self.players.get(n.foe)
+        if q is None or q.escort != n.id or q.state != CARRIED:
+            n.mode = 0                          # (they got away. After them!)
+            return True
+        if car is None or car.kind != COP or car.fire_t > 0 or car.prisoner is not None or \
+                n.life_t > C.ESCORT_MAX_TIME:
+            # no car to put them in (stolen, burning, or he can't get to it): call the van
+            q.escort = None
+            q.state = CUFFED
+            q.cuffed_t = C.CUFFED_TIME
+            q.z = q.vz = 0.0
+            n.mode = 4
+            return True
+        dx, dy = car.x - n.x, car.y - n.y
+        d = math.hypot(dx, dy) or 1.0
+        if d < car.hl + 1.8:
+            q.escort = None
+            q.z = q.vz = 0.0
+            self._enter_car(q, car, PASSENGER)
+            car.prisoner = q.id
+            car.ride_t = 0.0
+            car.officer = None                  # he's back behind the wheel
+            car.patrol = False
+            self._join_grid(car)                # (and drives the lanes, like anyone else: see _transport)
+            self.sfx(S_DOOR, car.x, car.y)
+            self.toast("%s IS IN THE BACK OF A COP CAR. NEXT STOP: A CELL." % q.name, T_COP)
+            return False
+        n.vx, n.vy = dx / d * C.ESCORT_SPEED, dy / d * C.ESCORT_SPEED
+        n.ang = math.atan2(dy, dx)
+        fx, fy = math.cos(n.ang), math.sin(n.ang)
+        q.x, q.y = n.x - fy * 0.35, n.y + fx * 0.35
+        q.vx, q.vy = n.vx, n.vy
+        q.z = 1.25
+        q.ang = n.ang
+        return True
+
+    def _escorted(self, p):
+        """p's side of it: stays put on his shoulder -- unless he's been knocked flat (a crewmate
+        punched him, a car hit him) or he's gone, in which case p drops off and runs."""
+        n = self.npcs.get(p.escort)
+        if n is None or n.kind != OFFICER or n.tumble_t > 0 or n.mode != 5 or n.foe != p.id:
+            self._free_prisoner(p)
+            if n is not None and n.kind == OFFICER:
+                n.mode = 0
+            return
+        p.prompt = "BUSTED. HE'S CARRYING YOU TO HIS CAR. (A CREWMATE COULD PUNCH HIM...)"
+
+    def _free_prisoner(self, p):
+        p.escort = None
+        p.carrier = None
+        p.state = TUMBLE
+        p.tumble_t = 0.6
+        p.vz = 0.0
+        p.grace_t = C.GETUP_GRACE
+        self.toast("%s HIT THE PAVEMENT. STILL CUFFED. RUN ANYWAY!" % p.name, T_MONEY)
+
+    def _transport(self, cop, dt):
+        """A cop car with somebody in the back: to the precinct steps, then into a cell."""
+        q = self.players.get(cop.prisoner)
+        if q is None or q.state != PASSENGER or q.car_id != cop.id:
+            cop.prisoner = None                 # (thrown out in a crash, or the car got nicked)
+            if q is not None:
+                self.toast("%s IS OUT OF THE COP CAR! RUN!" % q.name, T_MONEY)
+            return
+        cop.ride_t += dt
+        ex, ey = self.map.precinct_exit
+        sx, sy = ex, ey + C.ARREST_RIDE_KERB                 # pulled up in the road outside the gate
+        d = math.hypot(sx - cop.x, sy - cop.y)
+        spd = cop.speed()
+        if cop.ride_t > C.ARREST_RIDE_MAX or (d < C.ARREST_RIDE_ARRIVE and spd < 4.0):
+            self._drop_off_prisoner(cop, q)
+            return
+        if d > C.ARREST_RIDE_PULL_IN or not self.los(cop.x, cop.y, sx, sy):
+            # most of the way: the traffic lanes, turning toward the station at every junction
+            # (sim._traffic_plan). No lights, no hurry -- and no flow field through the alleys,
+            # which is how the first version of this kept throwing its passenger out
+            self._traffic_ai(cop, dt)
+            return
+        # the last bit: pull straight in to the kerb, slowly
+        self._cop_drive(cop, dt, sx, sy, 0.0, 0.0, True)
+        if d < C.ARREST_RIDE_ARRIVE:
+            cop.throttle, cop.handbrake = (-1.0 if spd > 0.5 else 0.0), False       # (whoa, whoa)
+        elif spd > C.ARREST_RIDE_PULL_SPEED:
+            cop.throttle = min(cop.throttle, -0.3)
+
+    def _drop_off_prisoner(self, cop, q):
+        self._leave_car(q, place=False)
+        cop.prisoner = None
+        cop.ride_t = 0.0
+        self._jail(q)
+        if cop.beat:
+            self._back_on_patrol(cop)
 
     def _cuff_wriggle(self, p):
         """Space while an officer's got hold of you: wriggle, wriggle, wriggle."""

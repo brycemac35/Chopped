@@ -134,10 +134,14 @@ class TestCoreLoop(unittest.TestCase):
         p.x, p.y = bx + bw / 2, by + bh + 1.0
         face(p, bx + bw / 2, by)
         cash0 = w.cash
+        p.ask = 0                                   # (v0.14) Dave's auction: QUICK SALE always sells
         press(p, S.B_USE)
         step(w, C.SELL_TIME + 0.1)
         self.assertEqual(p.hands, [])
-        self.assertEqual(w.cash, cash0 + wheel.value)
+        tip = w.cash - cash0                        # (the tip jar: somebody in the crowd, maybe)
+        self.assertLessEqual(tip, C.TIP_JAR_MAX, "the money comes at the hammer, not the counter")
+        step(w, C.AUCTION_ASKS[0][3] + 0.1)
+        self.assertEqual(w.cash, cash0 + tip + int(round(wheel.value * C.AUCTION_ASKS[0][1])))
         press(p, 0)
         step(w, DT)
         # --- tune-up bench = mod shop: walk in with a tuned ECU, bolt it on from the locker
@@ -476,9 +480,9 @@ class TestCops(unittest.TestCase):
         for _ in range(int(5.0 / DT)):
             w.heat = 40.0
             w.step(DT)
-            if a.state == S.CUFFED:
+            if a.arrests:
                 break
-        self.assertEqual(a.state, S.CUFFED)
+        self.assertEqual(a.state, S.CARRIED, "(v0.14) cuffed, and over his shoulder")
         self.assertEqual(a.hands, [])
         near = [pk for pk in w.pickups.values() if math.hypot(pk.x - x, pk.y - y) < 4.0]
         self.assertEqual(len(near), 2)
@@ -670,13 +674,20 @@ class TestDays(unittest.TestCase):
         w.cash = 1_000_000
         w._buy_shop(1)
         items = {item for (_, _, item) in w._market_crates()}
+        self.assertNotIn("shotgun", items, "(v0.14) not until the junk's cleared out")
+        for t in list(w.junk[1]):
+            w._clear_junk(None, 1, t)
+        items = {item for (_, _, item) in w._market_crates()}
         self.assertIn("shotgun", items, "shop 2's crates should be live now")
 
     def test_day_summary_counts_the_haul(self):
         w = quiet_world()
         p = w.add_player("ALICE")
         p.hands = [Part("whl_stock_alloy", 1.0)]
+        p.ask = 0
         w._sell(p)
+        w.lots[0].t = 0.0                            # (v0.14) the hammer falls before midnight
+        w.step(DT)
         w.day_t = 0.001
         w.step(DT)
         texts = [e[3][1] for e in w.events if e[2] == 0]

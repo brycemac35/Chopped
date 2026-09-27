@@ -87,7 +87,8 @@ class FPRenderer:
         size = int(n * T * FLOOR_PPM)
         self.floor_map = pygame.transform.scale(map_surf, (size, size)).convert()
         # the benches are 3D objects here; scrub their flat top-down drawings off the floor
-        for bx, by, bw, bh in (cmap.sell_bench, cmap.tune_bench):
+        for bx, by, bw, bh in (cmap.sell_bench, cmap.tune_bench) + tuple(
+                fs["bench"] for fs in getattr(cmap, "fence_shops", ()) if fs.get("bench") is not None):
             self.floor_map.fill(P["concrete"], (int(bx * FLOOR_PPM) - 2, int(by * FLOOR_PPM) - 2,
                                                 int(bw * FLOOR_PPM) + 6, int(bh * FLOOR_PPM) + 6))
         if getattr(cmap, "bail_desk", None) is not None:      # (and the precinct desk: it's 3D too)
@@ -100,6 +101,19 @@ class FPRenderer:
         self.floor_map.fill((200, 200, 212), shadow, special_flags=pygame.BLEND_RGB_MULT)
         self.roof_tex = FA.roof_texture(gw, gh, ROOF_PPM).convert()
         self.roof_tex.set_colorkey(ROOF_KEY)
+        # (v0.14) the garages you can buy are proper buildings now, roofs and all: every roof is
+        # (key, floor rect, texture) -- "home", or the fence shop's index into cmap.fence_shops
+        self.roofs = [("home", cmap.garage_rect, self.roof_tex)]
+        for i, fs in enumerate(getattr(cmap, "fence_shops", ())):
+            if fs.get("rect") is None:
+                continue
+            fx, fy, fw, fh = fs["rect"]
+            self.floor_map.fill((200, 200, 212), pygame.Rect(int(fx * FLOOR_PPM), int(fy * FLOOR_PPM),
+                                int(fw * FLOOR_PPM), int(fh * FLOOR_PPM)), special_flags=pygame.BLEND_RGB_MULT)
+            tex = FA.roof_texture(fw, fh, ROOF_PPM).convert()
+            tex.set_colorkey(ROOF_KEY)
+            self.roofs.append((i, fs["rect"], tex))
+        self.cam_box = None           # (v0.14) the building (walls included) whose roof the camera's under
         self.roof_layer = pygame.Surface((vw, vh)).convert()
         self.roof_layer.set_colorkey(ROOF_KEY)
         self.roof_clip = None         # per column: (depth where the roof ends, screen row it ends on)
@@ -184,6 +198,20 @@ class FPRenderer:
                         self.inner_plain[def_id(("pier", k))] = def_id(("brick", -1))
                         continue
                     self.wall_of[y * n + x] = def_id(("brick", sign))
+        # (v0.14) the garages you buy: their name on the parapet either side of the opening
+        # (street side only), and the opening itself, so the ray march can put brick above it
+        self.fence_gap = set()
+        for i, fs in enumerate(getattr(cm, "fence_shops", ())):
+            t = fs.get("tiles")
+            if t is None:
+                continue
+            x0, y0, w, h = t
+            row = y0 + h - 1
+            for x in range(x0 + 2, x0 + w - 2):
+                self.fence_gap.add((x, row))
+            for x in (x0 + 1, x0 + w - 2):
+                self.wall_of[row * n + x] = def_id(("fsign", i + 1))
+            self.inner_plain[def_id(("fsign", i + 1))] = def_id(("brick", -1))
         self.edge_def = def_id(("concrete",))
         self.jamb_def = def_id(("brick", -1))       # (v0.12.1) the walking door's jambs
         self.walk_def = def_id(("walkdoor",))       # ...and the door itself, shut
@@ -243,6 +271,11 @@ class FPRenderer:
                 surf.blit(sign, (-d[1] * FA.TEX, 12))
             elif d[0] == "walkdoor":
                 surf = FA.walk_door(FACADE_PX, night)
+            elif d[0] == "fsign":
+                surf = FA.brick_wall(FACADE_PX, night, sign=True)
+                sign = pygame.Surface((FA.TEX, 12), pygame.SRCALPHA)
+                self.font.draw(sign, "SHOP %d" % (d[1] + 1), FA.TEX // 2, 3, P["gold"], (0, 0, 0), align="center")
+                surf.blit(sign, (0, 12))
             else:
                 surf = FA.concrete_wall(48, night)
             wt = self.tex_cache[key] = FA.WallTex(surf)
@@ -295,6 +328,18 @@ class FPRenderer:
         for rect, is_sell in ((cm.sell_bench, True), (cm.tune_bench, False)):
             bx, by, bw, bh = rect
             self.benches.append((bx + bw / 2, by + bh / 2, is_sell, bw, bh))
+        # (v0.14) each garage you can buy has its own tune-up counter, long side down the east wall
+        for fs in getattr(cm, "fence_shops", ()):
+            if fs.get("bench") is not None:
+                bx, by, bw, bh = fs["bench"]
+                self.benches.append((bx + bw / 2, by + bh / 2, False, bw, bh))
+        # (v0.14) the contacts (drop-off orders, car buyers) and the records clerk at the precinct
+        self.contacts = [(nm, x, y, f, FA.CONTACT_OUTFITS[i % len(FA.CONTACT_OUTFITS)], i)
+                         for i, (nm, x, y, f) in enumerate(getattr(cm, "contacts", ()))]
+        rec = getattr(cm, "records", None)
+        if rec is not None:
+            self.fixed_people.append(("RECORDS", rec[0], rec[1] - 0.85, math.pi / 2, "records", True))
+        self.records = rec
         # (v0.9) the precinct: cell bars in short straight runs, and the front desk
         self.bar_segs = []
         for (bx, by, bw, bh) in getattr(cm, "cell_bars", ()):
@@ -360,8 +405,23 @@ class FPRenderer:
             self.person_keys[(eid, kind)] = k
         return k
 
+    def _board(self, which):
+        """(v0.14) a sandwich board on a post: the records hatch's."""
+        img = self.sign_cache.get(which)
+        if img is None:
+            w, h = 44, 40
+            img = pygame.Surface((w, h), pygame.SRCALPHA)
+            img.fill(P["metal"], (w // 2 - 1, 18, 3, h - 18))
+            img.fill(P["ink"], (0, 0, w, 20))
+            img.fill((40, 60, 150), (1, 1, w - 2, 18))
+            self.font.draw(img, "RECORDS", w // 2, 3, P["white"], None, align="center")
+            self.font.draw(img, "PAPERS", w // 2, 11, P["gold"], None, align="center")
+            img = self.sign_cache[which] = img
+        return img
+
     def _sale_sign(self, idx, owned):
-        """(v0.12.1) the board outside a fence shop: FOR SALE and the price, or whose it is."""
+        """(v0.12.1) the board outside a fence shop: FOR SALE and the price, or whose it is.
+        (v0.14: owned is 0 for sale, 1 bought but still full of junk, 2 open)"""
         key = (idx, owned)
         img = self.sign_cache.get(key)
         if img is None:
@@ -373,7 +433,8 @@ class FPRenderer:
             img.fill(board, (1, 1, w - 2, 18))
             if owned:
                 self.font.draw(img, "SHOP %d" % (idx + 1), w // 2, 3, P["white"], None, align="center")
-                self.font.draw(img, "OURS NOW", w // 2, 11, P["gold"], None, align="center")
+                self.font.draw(img, "OURS NOW" if owned == 2 else "CLEAR IT", w // 2, 11, P["gold"], None,
+                               align="center")
             else:
                 self.font.draw(img, "FOR SALE", w // 2, 3, (190, 30, 40), None, align="center")
                 self.font.draw(img, "$" + "{:,}".format(C.SHOP_PRICE[idx]), w // 2, 11, P["ink"], None,
@@ -550,7 +611,8 @@ class FPRenderer:
         # (v0.12.1) under the roof, nothing above ROOF_H can be seen -- the ceiling's in the
         # way -- so the parapet and the bay lintels needn't be drawn at all (they were ~40% of
         # the frame in there, all of it painted over a moment later by _roof)
-        self.cam_inside = self.map.in_garage(cx, cy)
+        self.cam_box = self._roof_box(cx, cy)
+        self.cam_inside = self.cam_box is not None
         self._walls(surf, cx, cy, yaw, eye, dark, night)
         self._roof(surf, cx, cy, yaw, eye)
         self._sprites(surf, view, cx, cy, yaw, eye, me_pid, now, dt, dark, night, bank, hide_car)
@@ -650,6 +712,7 @@ class FPRenderer:
         door_defs = self.door_defs
         walk_col, walk_cx, half_walk = self.walk_col, self.walk_cx, C.WALK_DOOR_W / 2
         lintels = self.lintels = {}          # (v0.12.1) column -> (lintel distance, its bottom row)
+        fence_gap = self.fence_gap
         for x, k in enumerate(self.ray_k):
             dx, dy = ca + rx * k, sa + ry * k
             mx, my = mx0, my0
@@ -699,6 +762,9 @@ class FPRenderer:
                             # half up: remember it, keep marching to whatever's behind it, and
                             # draw the door over that afterwards (so the gap isn't sky)
                             door_at = (door_defs[mx - dc0], (sdy - ddy) * T, up)
+                    elif sy < 0 and lintel is None and (mx, my) in fence_gap:
+                        # (v0.14) walking up to a bought garage's open front: brick over the gap
+                        lintel = ((sdy - ddy) * T, C.ROOF_H, None)
                 if 0 <= mx < n and 0 <= my < n:
                     did = wall_of[my * n + mx]
                     if did:
@@ -729,7 +795,7 @@ class FPRenderer:
             level = base_level + int(dist / 11.0) + side
             col = wt.cols[level if level < FA.SHADES else FA.SHADES - 1][u]
             th = wt.h
-            if H > C.ROOF_H and self.cam_inside and self.wall_def[did][0] in ("brick", "pier", "walkdoor") \
+            if H > C.ROOF_H and self.cam_inside and self.wall_def[did][0] in ("brick", "pier", "walkdoor", "fsign") \
                     and self._in_shop_box(cx + dist * dx, cy + dist * dy):
                 cut = int(th * (1.0 - C.ROOF_H / H))       # (the parapet's above the ceiling)
                 col = col.subsurface((0, cut, 1, th - cut))
@@ -763,11 +829,18 @@ class FPRenderer:
                     lintel = (dist, C.ROOF_H, None)      # a shut bay door: brick above it too
                 self._lintel_slice(surf, x, dx, lintel, cx, eye, base_level, night)
 
+    def _roof_box(self, cx, cy):
+        """(v0.14) the roofed building the camera's standing in, walls included, or None."""
+        for _k, (gx, gy, gw, gh), _t in self.roofs:
+            if gx <= cx <= gx + gw and gy <= cy <= gy + gh:
+                return (gx - T, gy - T, gw + 2 * T, gh + 2 * T)
+        return None
+
     def _in_shop_box(self, x, y):
-        """The home shop's footprint, walls included (a fence shop across the road is still
-        8 m of brick when you look at it through an open bay door)."""
-        gx, gy, gw, gh = self.map.garage_rect
-        return gx - T <= x <= gx + gw + T and gy - T <= y <= gy + gh + T
+        """The footprint of the building the camera's inside, walls included (a fence shop
+        across the road is still 8 m of brick when you look at it through an open bay door)."""
+        b = self.cam_box
+        return b is not None and b[0] <= x <= b[0] + b[2] and b[1] <= y <= b[1] + b[3]
 
     def _lintel_slice(self, surf, x, dx, lintel, cx, eye, base_level, night):
         """(v0.12.1) the brick over a doorway, from the top of the opening up to the parapet --
@@ -835,27 +908,46 @@ class FPRenderer:
         """(v0.9) The shop's roof: a mode-7 ceiling, the floor trick upside down. Drawn
         after the walls, but only where it's nearer than them (a tall building seen out
         of the front of the shop is behind the roof's edge, not in front of it). From
-        outside you only see it through the front, and only if the door's up."""
+        outside you only see it through the front, and only if the door's up.
+        (v0.14) ...and the same for every garage you can buy (they open to the south too)."""
         self.roof_clip = None
-        gx, gy, gw, gh = self.map.garage_rect
+        for key, rect, tex in self.roofs:
+            self._one_roof(surf, cx, cy, yaw, eye, key, rect, tex)
+
+    def _one_roof(self, surf, cx, cy, yaw, eye, key, rect, tex):
+        gx, gy, gw, gh = rect
         inside = gx <= cx <= gx + gw and gy <= cy <= gy + gh
+        ca, sa = math.cos(yaw), math.sin(yaw)
         if not inside:
             # (v0.12.1: 60/45 m -> the full floor draw distance, so the ceiling doesn't pop out of
             # existence when you back off down the street and look in through the doors)
-            if cy < gy + gh or max(self.door_open) < 0.3 or abs(cx - (gx + gw / 2)) > C.FP_FLOOR_DIST \
-                    or cy > gy + gh + C.FP_FLOOR_DIST:
+            if cy < gy + gh or abs(cx - (gx + gw / 2)) > C.FP_FLOOR_DIST or cy > gy + gh + C.FP_FLOOR_DIST:
+                return
+            if key == "home" and max(self.door_open) < 0.3:
+                return
+            # (v0.14) off to one side of the view entirely: nothing to draw, skip the rotate
+            left = right = behind = 0
+            for x, y in ((gx, gy), (gx + gw, gy), (gx, gy + gh), (gx + gw, gy + gh)):
+                dx, dy = x - cx, y - cy
+                depth, lat = dx * ca + dy * sa, -dx * sa + dy * ca
+                if depth < 0.3:
+                    behind += 1
+                elif lat > depth * self.tanh:
+                    right += 1
+                elif lat < -depth * self.tanh:
+                    left += 1
+            if behind == 4 or right + behind == 4 and right or left + behind == 4 and left:
                 return
         rh = C.ROOF_H - eye
         if rh <= 0.2:
             return
         hor, vw, D, th = self.hor, self.vw, self.D, self.tanh
-        ca, sa = math.cos(yaw), math.sin(yaw)
         far = max(math.hypot(cx - x, cy - y) for x in (gx, gx + gw) for y in (gy, gy + gh))
         r_lo = 0
         r_hi = min(hor, int(hor - rh * D / far))
         if r_hi <= r_lo:
             return
-        rot = pygame.transform.rotate(self.roof_tex, math.degrees(yaw) + 90.0)
+        rot = pygame.transform.rotate(tex, math.degrees(yaw) + 90.0)
         RW, RHt = rot.get_size()
         # where the camera lands in the rotated texture (forward = up the image, right = right)
         vx, vy = (gx + gw / 2 - cx) * ROOF_PPM, (gy + gh / 2 - cy) * ROOF_PPM
@@ -946,9 +1038,33 @@ class FPRenderer:
             # side is visible normally") the model's long side runs along its own y axis, but the
             # counter's footprint is long in world x -- it was being drawn end-on, poking out
             # into the room. A quarter turn lines the model up with what you actually bump into.
-            az = math.atan2(by - cy, bx - cx) - math.pi / 2
-            add(bx, by, lambda a=az, s=is_sell, w=bw, h=bh: self._model_sprite(
+            # (v0.14: the bought garages' counters run along y already: no turn for those)
+            if abs(bx - cx) > maxd or abs(by - cy) > maxd:
+                continue
+            az = math.atan2(by - cy, bx - cx) - (math.pi / 2 if bw > bh else 0.0)
+            L, W = max(bw, bh), min(bw, bh)
+            add(bx, by, lambda a=az, s=is_sell, w=L, h=W: self._model_sprite(
                 ("bench", s), lambda: FA.bench_boxes(s, w, h), a, 8, 10))
+        if self.records is not None and abs(self.records[0] - cx) < maxd and abs(self.records[1] - cy) < maxd:
+            rx_, ry_ = self.records
+            az = math.atan2(ry_ - cy, rx_ - cx) - math.pi / 2
+            add(rx_, ry_, lambda a=az: self._model_sprite("records", FA.records_desk_boxes, a, None, 16))
+            add(rx_ - 2.0, ry_ + 0.1, lambda: (self._board("records"), 16))
+        snap = getattr(view, "snap", None)
+        busy = {}
+        for o in (getattr(snap, "orders", None) or ()):
+            busy[o[0]] = "order"
+        for sl in (getattr(snap, "sales", None) or ()):
+            busy[sl[1]] = "sale"
+        for (nm, x, y, face, outfit, i) in self.contacts:
+            if abs(x - cx) > maxd or abs(y - cy) > maxd:
+                continue
+            az = math.atan2(y - cy, x - cx) - face
+            h = sum(map(ord, nm))
+            mark = None if i not in busy else P["gold"] if busy[i] == "order" else (90, 230, 120)
+            add(x, y, lambda a=az, h=h, o=outfit: self._person_sprite(
+                None, SKINS[h % len(SKINS)], HAIRS[h % len(HAIRS)], 0, None, False, a, 0, o),
+                tag=("contact", nm, mark, i))
         shops = getattr(view.snap, "shops", 1) if getattr(view, "snap", None) is not None else 1
         for (nm, x, y, face, outfit, talks) in self.fixed_people:
             if abs(x - cx) > maxd or abs(y - cy) > maxd:
@@ -960,17 +1076,17 @@ class FPRenderer:
                 None, SKINS[h % len(SKINS)], HAIRS[h % len(HAIRS)], 0, e, False, a, 0, o),
                 tag=("label", nm, talks))
         for (x, y, item, idx) in self.fence_crates:
-            if abs(x - cx) > maxd or abs(y - cy) > maxd:
+            # (v0.14) only once the place is bought AND cleared out: until then it's junk in there
+            if abs(x - cx) > maxd or abs(y - cy) > maxd or not shops & (16 << idx):
                 continue
-            az = math.atan2(y - cy, x - cx) + math.pi / 2     # facing the FOR SALE board / the street
-            owned = bool(shops & (1 << idx))
+            az = math.atan2(y - cy, x - cx) + math.pi / 2     # facing into the room (they're on the back wall)
             add(x, y, lambda a=az, it=item: self._model_sprite(("crate", it), lambda: FA.crate_boxes(it), a, None, 16),
-                tag=("crate", item) if owned else ("locked", idx))
+                tag=("crate", item))
         for (x, y, idx) in self.fence_signs:
             if abs(x - cx) > maxd or abs(y - cy) > maxd:
                 continue
-            owned = bool(shops & (1 << idx))
-            add(x, y, lambda i=idx, o=owned: (self._sale_sign(i, o), 16))
+            state = 2 if shops & (16 << idx) else 1 if shops & (1 << idx) else 0
+            add(x, y, lambda i=idx, o=state: (self._sale_sign(i, o), 16))
         for (x, y, ang) in self.map.ramps:
             if abs(x - cx) < maxd and abs(y - cy) < maxd:
                 az = math.atan2(y - cy, x - cx) - ang
@@ -994,6 +1110,12 @@ class FPRenderer:
                 # (smoke is particles: see smoke_clouds. The shop's doors are drawn by the
                 # raycaster -- before v0.12.1 they fell through to the roadblock branch below,
                 # so every bay had a row of orange traffic barriers parked across it)
+                continue
+            if t[1] == S.TRAP_JUNK:
+                k = (t[0] - C.JUNK_ID_BASE) % C.JUNK_PER_SHOP
+                az = math.atan2(t[3] - cy, t[2] - cx) - k * 0.8
+                add(t[2], t[3], lambda a=az, k_=k: self._model_sprite(("junk", k_), lambda: FA.junk_boxes(k_),
+                                                                       a, None, 16))
                 continue
             if t[1] == S.TRAP_CELL:
                 L = C.CELL_DOOR_W
@@ -1178,7 +1300,9 @@ class FPRenderer:
             if d[5] == me_pid:
                 continue
             az = math.atan2(d[2] - cy, d[1] - cx) - d[3]
-            add(d[1], d[2], lambda a=az: self._model_sprite("dolly", FA.dolly_boxes, a, None, 16),
+            lvl = (getattr(view.snap, "dolly", 0) or 0) & 3 if getattr(view, "snap", None) is not None else 0
+            add(d[1], d[2], lambda a=az, lv=lvl: self._model_sprite(("dolly", lv), lambda: FA.dolly_boxes(lv),
+                                                                     a, None, 16),
                 tag=("dolly", d[4]))
         for e in self.explosions:
             add(e[0], e[1], None, z=1.2, tag=("boom", e))
@@ -1256,6 +1380,18 @@ class FPRenderer:
                     r = max(3, min(8, int(0.35 * D / depth)))
                     pygame.draw.polygon(surf, P["ink"], [(sx - r - 1, my - r - 1), (sx + r + 1, my - r - 1), (sx, my + 1)])
                     pygame.draw.polygon(surf, tag[1], [(sx - r, my - r), (sx + r, my - r), (sx, my)])
+                elif tag[0] == "contact":
+                    # (v0.14) a contact: their name up close, and a marker from down the street if
+                    # they've got an order in (gold) or a car coming to them (green)
+                    if depth < 22:
+                        self.font.draw(surf, tag[1], int(sx), top - 8, P["gold"], align="center")
+                    if tag[2] is not None and depth < 90:
+                        bob = math.sin(now * 4 + tag[3]) * 0.12
+                        my = int(ground - (2.5 + bob) * D / depth)
+                        r = max(3, min(8, int(0.35 * D / depth)))
+                        pygame.draw.polygon(surf, P["ink"], [(sx - r - 1, my - r - 1), (sx + r + 1, my - r - 1),
+                                                             (sx, my + 1)])
+                        pygame.draw.polygon(surf, tag[2], [(sx - r, my - r), (sx + r, my - r), (sx, my)])
                 elif tag[0] == "label" and depth < 22:
                     self.font.draw(surf, tag[1], int(sx), top - 8, P["gold"] if tag[2] else P["white"],
                                    align="center")

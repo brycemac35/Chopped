@@ -106,7 +106,9 @@ class TestMisc(unittest.TestCase):
         self.assertEqual(len(snap.menu["stash"]), C.STASH_MAX)
         p.menu = False             # (with the locker open, loose parts are what gets shed first)
         snap = P.decode_snapshot(P.encode_snapshot(w, 1, 0, 0)[P.HDR.size:])
-        self.assertGreater(len(snap.pickups), 10)
+        # (v0.14: > 10 until the business block joined the header -- orders, the auction, sold cars.
+        # This scene was already sitting right on the 1200-byte line; it keeps 9 of 24 now)
+        self.assertGreaterEqual(len(snap.pickups), 8)
         car = next(iter(w.cars.values()))
         row = snap.cars[car.id]
         self.assertAlmostEqual(row[7], car.x, delta=0.07)

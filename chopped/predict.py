@@ -19,7 +19,7 @@ import math
 from collections import deque
 
 from . import config as C
-from .sim import Physics, Car, Trap, TRAP_BLOCK, TRAP_GATE, TRAP_CELL, TRAP_DOOR, FIXTURES, drive_input
+from .sim import Physics, Car, Trap, TRAP_BLOCK, TRAP_GATE, TRAP_CELL, TRAP_DOOR, TRAP_JUNK, FIXTURES, drive_input
 from .parts import SLOTS, SLOT_INDEX
 from .protocol import ME_NONE, ME_FOOT, ME_DRIVER, SF_EXHAUSTED, SX_NOS
 
@@ -70,7 +70,7 @@ def trap_row_solid(row):
     """Trap.solid(), from a row (life decoded to 0..1). Same answer the server gets,
     or prediction drifts."""
     k, life = row[1], row[5]
-    if k == TRAP_BLOCK:
+    if k in (TRAP_BLOCK, TRAP_JUNK):
         return True
     if k in (TRAP_GATE, TRAP_CELL):
         return life > 0

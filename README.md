@@ -153,7 +153,25 @@ Look at the **TUNE-UP** bench and press E. Whatever you're holding (and the engi
 | 3 | $12,000 | +$250 | SMG, assault rifle, rubber chicken, whoopee cushion, cardboard box |
 | 4 | $30,000 | +$400 | Sniper rifle, grenade launcher, RPG |
 
-Buying a shop is permanent (until SHOP SEIZED) and its crates work exactly like the home shop's: look at one and hold E. There are no bays or roller doors at a fence shop -- just the market. Rent is billed once, at midnight, for every shop you own added together.
+Buying a shop is permanent (until SHOP SEIZED). Rent is billed once, at midnight, for every shop you own added together.
+
+**(v0.14) They're proper garages now**: brick walls, a roof, a wide opening onto the street, "SHOP N" on the front -- and full of the last tenant's junk (a sofa, forty tyres, a fridge you shouldn't open, a mannequin...). Buy it at the sign out front, then either **hold E on each pile** to shift it yourself (a few dollars of scrap each, sometimes a knackered part) or **pay a clean-up crew** at the sign ($400 / $900 / $1,800 for shops 2 / 3 / 4, less if you've started) who carry it out a pile every 5 s. Only once it's clean do its crates stock up, its own **tune-up counter** open, and stolen cars count as delivered there. Each counter sells a better tier of parts than the last:
+
+| Counter | Adds to the mod shop's catalogue |
+|---|---|
+| Shop 1 (home) | Stock parts, the V6, V8 and diesel |
+| Shop 2 | Lightweight wheels, aero bumpers, carbon hoods, tuned exhaust/ECU, bucket seats, GT/whale-tail wings, the 1.6 supercharged and the VTEC; NOS and hydraulics |
+| Shop 3 | The 2.0 turbo, the 13B rotary, the 6-speed, the ironing-board wing; the ejector seat |
+| Shop 4 | The 3.0 twin-turbo six and the 6.2 supercharged V8 |
+
+Fitting parts you already have (from the locker) works at any counter; it's only buying new that's gated.
+
+### The business (v0.14)
+
+- **Dave the auctioneer.** The sell bench is an auction counter now. Bring a part (or the dolly) and hold E: it goes under the hammer at the price you set with **X** -- QUICK SALE (80%, always sells, 15 s), FAIR (100%, 85%, 30 s), PUNCHY (125%, 55%, 45 s) or GREEDY (160%, 25%, 60 s). The money comes when the hammer falls; an unsold part goes back in the locker. The mod shop's locker "sell" is an auction too (at FAIR).
+- **Selling a car whole** needs **papers**: buy them at the **records hatch** outside the precinct (10% of the car's value, $100 minimum; the clerk won't serve you above 25 heat or in an orange jumpsuit). A papered car in the shop gets "HOLD E: AUCTION IT WHOLE" (X for the price). When it sells, one of the city's **contacts** has bought it: it's a legal car again (the cameras don't care), and you **drive it to them** -- park within 7 m and you're paid, minus anything that fell off on the way. Whole cars fetch 85% of their parts' value plus the shell and any collector's bonus.
+- **Drop-off orders.** Eight contacts stand around town (a gold marker over the ones with an order). Each day three of them want parts -- "3 wheels", "a gearbox", "an engine" -- and pay **1.5x** a part's value handed over in person, a bonus for the full set, and +1 REP (two a day at most). Hold the part, walk up, hold E. A green arrow on the HUD points to whoever wants what you're carrying.
+- **Mo's dolly.** The hand truck only takes a four-cylinder. **X at Mo's counter** (the tune-up bench): at 4 REP he'll build a **heavy-duty dolly** (sixes) for a gearbox and $300; at 10 REP an **engine crane** (V8s and the diesel) for a six-cylinder engine on the dolly and $900. Bigger engines left in a car still pay 50% when it's crushed, or go with it when it's sold whole.
 
 ### Vehicles and styles
 
@@ -307,7 +325,7 @@ The cars run on a tyre model now, not a rail:
 - **A helicopter joins in once heat is high enough.** It sees over walls and buildings (it's airborne), so getting indoors matters more than ducking down an alley once it's up.
 - **Lethal force** only happens once *you* escalate: fire a gun anywhere a cop can hear it, or hit a cop or a cop car with a bullet, and the police shoot to kill (officers on foot and out of car windows; the status bar says **LETHAL**) for 45 s -- refreshed by every shot, and it also stands down early if no cop's had eyes on any of the crew for a while. A police bullet that empties your health bar is **WASTED**: you drop everything, and the crew loses **50% ÷ the number of players** of its cash (half solo, a quarter each for two, an eighth for four). You wake up at the shop 4 s later.
 - **Shooting an officer or a guard kills them, not just knocks them down**, and an ambulance is sent for the body -- but every other cop in the city is now shooting to kill.
-- **Busted = the precinct.** You drop what you're carrying (your partner can grab it), sit on the kerb for the mugshot, then wake up in a **cell** in the precinct lockup, a walled police station a few blocks from the shop. (Two cells, one in each back corner. With two of you busted, you get one each.)
+- **Busted = the precinct.** You drop what you're carrying (your partner can grab it) and **(v0.14) the officer throws you over his shoulder, carries you to his car and drives you there himself**, down the traffic lanes, turning toward the station at every junction. That's your crew's chance: knock him down while he's carrying you, or stop the car (spikes, a roadblock, donuts, the horn, standing at its door), carjack it and you're just a passenger, or crash it hard enough to throw you out. (No car nearby: the old way, a few seconds on the kerb and the van.) Then a **cell** in the precinct lockup, a walled police station a few blocks from the shop. (Two cells, one in each back corner. With two of you busted, you get one each.)
   - **(v0.13) The impound:** five motorbikes are parked nose-out along the outside of the precinct walls with the keys in them (the desk sergeant is having a day). Walk out of the gate, hop on (E), gone. Taking one is a theft (+10 heat), and a new one is put out every 20 s or so when nobody's watching. Made for the solo escapee.
   - **(v0.12.1) The heat drops to 0 the moment you're in a cell** -- as far as the city's concerned, the case is closed -- and when you walk out of the precinct you get a **15-second head start**: cops can see the jumpsuit (and heat climbs), but nobody can cuff, tase or shoot you until it runs out. No more getting re-arrested on the front steps.
   - **Get out of the cell** (v0.9): walk up to the door and **hold E for 7 s to pick the lock** (quiet: the guards don't notice), or **punch the door six times** (loud: they come running). A crewmate in the hall can let you out in 1.5 s. Or press **X** to post bail.

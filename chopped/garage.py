@@ -22,7 +22,7 @@ from .entities import TIERS, buy_price
 from .parts import (SLOTS, SLOT_CATEGORY, CATEGORY_SLOTS, PART_DEFS, PART_IDS, PART_INDEX, DOLLY, Part,
                     OPTIONAL_SLOTS)
 from . import vehicles as V
-from .lines import WHOLE_SALE_LINES, DOOR_BANG_LINES
+from .lines import DOOR_BANG_LINES
 from .entities import Trap
 from .physics import obb_rect_contact, circle_rect_contact
 
@@ -35,6 +35,11 @@ EXTRA_NAMES = ("NITROUS (SHIFT)", "EJECTOR SEAT (F AT SPEED)", "GNOME HOOD ORNAM
 # parts you can't buy new (they come off scooters, out of trunks, or out of gardens)
 NOT_FOR_SALE = {"eng_electric", "whl_scooter", "gnome", "cash_bag", "briefcase", "rubber_duck",
                 "eng_bike_600", "eng_bike_450", "whl_bike", "seat_saddle"}   # (v0.13: strip a bike for those)
+
+
+def part_tier(tid):
+    """(v0.14) the cheapest shop (0 = home) whose counter will sell you this part new."""
+    return C.PART_SHOP_TIER.get(tid, 0)
 
 
 def catalogue(slot):
@@ -123,6 +128,8 @@ class Garage:
             return (("bed_in", car.id), "HOLD E: LOAD %s INTO THE BED" % d.part.name.upper(), C.DOLLY_LOAD_TIME,
                     lambda: self._bed_load(d, car))
         eng = next((q for q in car.trunk if q.bulk == DOLLY), None)
+        if eng is not None and not self.dolly_fits(eng):
+            return (None, self.dolly_refusal(eng), 0, None)
         if eng is not None:
             return (("bed_out", car.id), "HOLD E: UNLOAD %s ONTO THE DOLLY" % eng.name.upper(), C.DOLLY_LOAD_TIME,
                     lambda: self._bed_unload(d, car, eng))
@@ -135,7 +142,7 @@ class Garage:
             self.sfx(S_TRUNK, car.x, car.y)
 
     def _bed_unload(self, d, car, eng):
-        if d.part is None and eng in car.trunk:
+        if d.part is None and eng in car.trunk and self.dolly_fits(eng):
             car.trunk.remove(eng)
             d.part = eng
             self.sfx(S_TRUNK, car.x, car.y)
@@ -158,10 +165,14 @@ class Garage:
         self.stash.append(part)
 
     # ------------------------------------------------------------------ the mod shop
-    def _open_modshop(self, p):
+    def _open_modshop(self, p, tier=0):
+        """tier (v0.14): which shop's counter this is (0 home, 1-3 the garages you buy). It
+        decides what's for sale NEW (config.PART_SHOP_TIER): fitting what's in the locker works
+        at any of them."""
         car = self._my_car(p)
         if car is None:
             return
+        p.menu_tier = tier
         stored = 0
         while p.hands:
             self._to_locker(p.hands.pop())
@@ -201,9 +212,11 @@ class Garage:
             if 0 <= a < len(self.stash) and PART_INDEX[self.stash[a].type_id] == b:
                 part = self.stash.pop(a)
                 if op == OP_SELL:
-                    self._earn(part.value, 1)
-                    self.sfx(S_SELL, p.x, p.y)
-                    self.toast("SOLD %s FROM THE LOCKER: +$%d" % (part.name.upper(), part.value), T_MONEY)
+                    # (v0.14) the locker's "sell" is Dave's auction too, always at a FAIR price
+                    # (the menu has no price dial). Book full: it stays in the locker.
+                    if not self._list_part(part, C.AUCTION_DEFAULT_ASK, p):
+                        self.stash.insert(a, part)
+                        self.toast("DAVE'S BOOK IS FULL. WAIT FOR A HAMMER.", T_BAD)
                 elif part.bulk == DOLLY:
                     self._to_locker(part)          # can't carry an engine out in your arms
                     self.toast("ENGINES LEAVE ON THE DOLLY. PUSH IT TO THE BENCH.", T_INFO)
@@ -241,7 +254,7 @@ class Garage:
         new = self.cars.get(target_id)
         if new is None or new is old or new.kind != CIV or new.state != DELIVERED:
             return
-        if not all(self.map.in_garage(x, y) for x, y in new.corners()):
+        if new.lot or new.sale is not None or not all(self.in_shop(x, y) for x, y in new.corners()):
             return
         old.kind, old.owner, old.state = CIV, None, DELIVERED
         old.stolen = old.alarm = False
@@ -306,6 +319,10 @@ class Garage:
         if slot in V.model(car.model).no_slots:
             self.toast("IT'S A BIKE. WHERE WOULD THAT EVEN GO?", T_BAD)     # (v0.13: before taking the money)
             return
+        if part_tier(tid) > p.menu_tier:
+            self.toast("ONLY SHOP %d'S COUNTER GETS THOSE IN. BUY IT, CLEAR IT, BUY IT THERE." % (
+                part_tier(tid) + 1), T_BAD)
+            return
         if not self._pay(price):
             return
         old = car.parts.get(slot)
@@ -317,6 +334,9 @@ class Garage:
         self.toast("BOUGHT %s: -$%d" % (car.parts[slot].name.upper(), price), T_INFO)
 
     def _ms_extra(self, p, car, which):
+        if 0 <= which < len(C.EXTRA_SHOP_TIER) and C.EXTRA_SHOP_TIER[which] > p.menu_tier:
+            self.toast("ONLY SHOP %d'S COUNTER FITS THOSE." % (C.EXTRA_SHOP_TIER[which] + 1), T_BAD)
+            return
         if which == EXTRA_NOS and not car.nos and self._pay(C.PRICE_NOS):
             car.nos, car.nos_fuel = True, C.NOS_TANK
         elif which == EXTRA_EJECTOR and not car.ejector and self._pay(C.PRICE_EJECTOR):
@@ -343,6 +363,7 @@ def encode_menu(world, me):
     car = world._my_car(me)                    # (v0.10) your OWN car, not always bay 0's
     out = bytearray()
     out.append(me.menu_ack & 255)
+    out.append(me.menu_tier & 255)             # (v0.14) which shop's counter: what's for sale new
     out += bytes(((car.id if car else 0) & 0xFF, ((car.id if car else 0) >> 8) & 0xFF))
     if car is None:
         out += bytes(6)
@@ -365,8 +386,8 @@ def encode_menu(world, me):
 
 def decode_menu(data, off):
     """-> (menu dict, new offset)"""
-    menu = {"ack": data[off]}
-    off += 1
+    menu = {"ack": data[off], "tier": data[off + 1]}
+    off += 2
     menu["car_id"] = data[off] | (data[off + 1] << 8)
     off += 2
     (menu["color"], menu["livery"], menu["horn"], menu["glow"], ex, menu["model"]) = data[off:off + 6]
@@ -471,21 +492,6 @@ class Appraisal:
         if complete:
             bonus = C.WHOLE_SALE_SPORTY if m.sporty else C.WHOLE_SALE_4X4 if m.awd else 0
         return int(sum(pt.value for pt in parts) * C.WHOLE_SALE_RATE) + C.SHELL_VALUE + bonus
-
-    def _sell_whole(self, p, car):
-        if self.cars.get(car.id) is not car or car.state != DELIVERED or car.kind == PERSONAL:
-            return
-        pay = self.whole_price(car)
-        self._spill_trunk(car, 2.0)                           # (the boot's contents are yours: keep them)
-        for pid in car.occupants():
-            q = self.players.get(pid)
-            if q:
-                self._leave_car(q)
-        self._earn(pay)
-        self.sfx(S_SELL, car.x, car.y)
-        self.sfx(S_CONFETTI, car.x, car.y)
-        self.toast(self.rng.choice(WHOLE_SALE_LINES) % (V.model(car.model).name, pay), T_MONEY)
-        del self.cars[car.id]
 
 
 class ShopDoor:

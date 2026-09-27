@@ -76,6 +76,9 @@ class TestSellWhole(unittest.TestCase):
         return car
 
     def test_x_sells_it_whole(self):
+        """(v0.14) whole cars go through Dave's auction now, and need papers first: X on an
+        unpapered car just gets you told where to buy them. The full papers -> auction -> buyer
+        run is in test_v014."""
         w = world()
         p = w.add_player("BRYCE")
         car = self.delivered(w)
@@ -86,12 +89,20 @@ class TestSellWhole(unittest.TestCase):
         p.x, p.y = car.x, car.y - car.hw - 1.2
         face(p, car.x, car.y)
         w.step(DT)
-        self.assertIn("X: SELL IT WHOLE $%d" % price, p.prompt)
+        self.assertIn("X: SELL WHOLE?", p.prompt)
         cash = w.cash
         inp(p, buttons=S.B_HOP)
         w.step(DT)
-        self.assertNotIn(car.id, w.cars, "Dave drove it away")
-        self.assertEqual(w.cash, cash + price)
+        self.assertIn(car.id, w.cars, "no papers, no sale")
+        self.assertEqual(w.cash, cash)
+        car.papers = True
+        inp(p)
+        w.step(DT)
+        self.assertIn("AUCTION THE %s WHOLE AT $%d" % (V.model(car.model).name.upper(), price), p.prompt)
+        inp(p, buttons=S.B_USE)
+        for _ in range(int((C.SELL_TIME + 0.2) / DT)):
+            w.step(DT)
+        self.assertTrue(car.lot, "under the hammer")
         self.assertTrue(any(pk.part.type_id == "cash_bag" for pk in w.pickups.values()),
                         "the boot's contents stay with you")
 
@@ -109,10 +120,10 @@ class TestSellWhole(unittest.TestCase):
         p = w.add_player("BRYCE")
         x, y = street(w)
         car = civ(w, x, y)
-        cash = w.cash
-        w._sell_whole(p, car)
-        self.assertIn(car.id, w.cars)
-        self.assertEqual(w.cash, cash)
+        car.papers = True
+        w._list_car(p, car)
+        self.assertFalse(car.lot, "only a delivered car goes under the hammer")
+        self.assertEqual(w.lots, [])
 
 
 class TestInspect(unittest.TestCase):
@@ -607,7 +618,7 @@ class TestNoPygameInTheSim(unittest.TestCase):
     def test_sim_modules_dont_import_pygame(self):
         """The simulation is authoritative and testable: it must not need pygame."""
         import subprocess
-        mods = ["sim", "physics", "brawl", "garage", "police", "sillies", "quests", "story", "entities", "enums",
+        mods = ["sim", "physics", "brawl", "garage", "police", "sillies", "quests", "story", "business", "entities", "enums",
                 "vehicles", "parts", "lines", "drivetrain", "enginesynth", "mapgen"]
         code = ("import sys; sys.modules['pygame'] = None; sys.path.insert(0, %r)\n"
                 "import importlib\n"

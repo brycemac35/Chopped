@@ -215,14 +215,41 @@ class Renderer:
                 del self.skid_prev[k]
 
     def _traps_and_crates(self, low, view, now):
-        for (x, y, item) in getattr(self.map, "market", ()):
+        crates = list(getattr(self.map, "market", ()))
+        snap = getattr(view, "snap", None)
+        shops = getattr(snap, "shops", 1) or 1
+        for i, fs in enumerate(getattr(self.map, "fence_shops", ())):
+            if shops & (16 << (i + 1)):                    # (v0.14) bought and cleared out
+                crates.extend(fs["market"])
+        for (x, y, item) in crates:
             sx, sy = self.to_screen(x, y)
             if -10 < sx < W + 10 and -10 < sy < H + 10:
                 low.fill(P["wood_d"], (sx - 4, sy - 4, 9, 9))
                 low.fill(P["wood"], (sx - 3, sy - 3, 7, 7))
                 low.fill(P["ink"], (sx - 3, sy, 7, 1))
+        # (v0.14) contacts with an order in (gold) or a car coming to them (green)
+        busy = {}
+        for o in (getattr(snap, "orders", None) or ()):
+            busy[o[0]] = P["gold"]
+        for sl in (getattr(snap, "sales", None) or ()):
+            busy[sl[1]] = (90, 230, 120)
+        for i, (nm, x, y, _f) in enumerate(getattr(self.map, "contacts", ())):
+            if i not in busy:
+                continue
+            sx, sy = self.to_screen(x, y)
+            if -40 < sx < W + 40 and -20 < sy < H + 20:
+                low.fill(P["ink"], (sx - 3, sy - 3, 7, 7))
+                low.fill(busy[i], (sx - 2, sy - 2, 5, 5))
+                self.font.draw(low, nm, sx, sy - 11, busy[i], (0, 0, 0), align="center")
         blink = int(now * 6) % 2
         for t in getattr(view, "traps", {}).values():
+            if t[1] == S.TRAP_JUNK:
+                r = C.JUNK_SIZE / 2
+                x0, y0 = self.to_screen(t[2] - r, t[3] - r)
+                w = max(2, int(C.JUNK_SIZE * PPM))
+                low.fill((70, 56, 40), (x0, y0, w, w))
+                low.fill((120, 96, 64), (x0 + 1, y0 + 1, w - 2, w - 2))
+                continue
             if t[1] == S.TRAP_SMOKE:
                 sx, sy = self.to_screen(t[2], t[3])
                 pygame.draw.circle(low, (150, 150, 158), (sx, sy), max(2, int(C.SMOKE_SCREEN_R * PPM * (0.6 + 0.4 * t[5]))))

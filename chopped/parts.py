@@ -130,6 +130,16 @@ ENGINE_SPECS = {
     "eng_bike_450":   (V_I4,       ASP_NA,    10500,   1300),   # one big thumper, pretending
 }
 NO_ENGINE_SPEC = (V_I4, ASP_NA, 6500, 800)
+
+# (v0.14) how much engine it is, for the dolly (config.DOLLY_UPGRADES): 0 = a four-pot or less
+# (the stock hand truck's limit), 1 = a straight-six or a V6 (the heavy-duty dolly), 2 = a V8 or
+# the big diesel (Mo's engine crane). Anything not listed is class 0.
+ENGINE_CLASS = {"eng_v6_3_0": 1, "eng_tt_3_0": 1, "eng_v8_5_7": 2, "eng_sc_6_2": 2, "eng_diesel_4_5": 2}
+ENGINE_CLASS_NAMES = ("FOUR-POT", "SIX", "V8")
+
+
+def engine_class(type_id):
+    return ENGINE_CLASS.get(type_id, 0)
 # gears per gearbox (the tachometer shifts through them; the physics doesn't care)
 GEARBOX_GEARS = {"trn_worn_4mt": 4, "trn_stock_5mt": 5, "trn_tuned_6mt": 6}
 

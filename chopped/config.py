@@ -9,8 +9,8 @@ engine and exactly no maths textbooks).
 import math
 
 GAME_TITLE = "Chopped"
-VERSION = 14  # bump when the wire protocol changes so old clients get a polite "no"
-RELEASE = (0, 13, 1)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
+VERSION = 15  # bump when the wire protocol changes so old clients get a polite "no"
+RELEASE = (0, 14, 0)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
 
 # --------------------------------------------------------------------------
 # Rendering scale
@@ -489,6 +489,20 @@ HORN_CONFUSE_RANGE = 40.0
 HORN_CONFUSE_TIME = 3.0
 HORN_CONFUSE_COOLDOWN = 7.0      # (our call) a cop can't be re-donut'd for 7 s, or holding H is god mode
 CUFFED_TIME = 3.0                # s cuffed on the kerb (the mugshot), then off to the precinct
+# (v0.14, Bryce: "make the cop pick you up and take you to his car and drive you to jail") no more
+# teleporting into the cell: the officer who cuffed you carries you, over his shoulder, back to his
+# car, shoves you in the back and drives you to the precinct himself. Which means there's a ride
+# for your crew to interrupt: punch him while he's carrying you, stop the car (spikes, a roadblock,
+# donuts, the horn, standing at its door), carjack it, or crash it hard enough to throw you out.
+ESCORT_SPEED = 3.2               # m/s: walking with a grown adult on your shoulder
+ESCORT_MAX_WALK = 45.0           # m: his car's further than this, the precinct sends a van (the old way)
+ESCORT_MAX_TIME = 25.0           # s: can't get back to his car in this long (walls, a crowd): the van again
+ARREST_RIDE_PULL_IN = 30.0       # m out (in sight of it) he leaves the lanes and pulls in to the kerb
+ARREST_RIDE_PULL_SPEED = 7.0     # m/s doing that (the lanes' own speed limits do the rest of the ride)
+ARREST_RIDE_KERB = 4.6           # m out from the precinct steps: in the road, just off the pavement
+ARREST_RIDE_ARRIVE = 5.0         # m from that spot that counts as "here"
+ARREST_RIDE_MAX = 120.0          # s: stuck or in a pile-up this long, he radios for the van (corner to
+                                 # corner of town down the lanes is about 90)
 
 # --------------------------------------------------------------------------
 # Traffic & NPCs
@@ -740,9 +754,78 @@ CRUSH_DOLLY_FRACTION = 0.5
 # whole"). 70% of what the parts would fetch one at a time, plus the shell: you trade ~30% of the
 # money for not spending two minutes with a spanner and a dolly. A complete sports car or 4x4
 # fetches a collector's bonus on top -- that's the "is it worth stripping?" decision.
-WHOLE_SALE_RATE = 0.7
+WHOLE_SALE_RATE = 0.85           # (v0.14: was 0.7 when it was instant. It's papers + an auction + a
+                                 # drive across town now, so it pays more for the trouble: still less
+                                 # than stripping it yourself, a lot less spanner work)
 WHOLE_SALE_SPORTY = 400
 WHOLE_SALE_4X4 = 250
+
+# --------------------------------------------------------------------------
+# (v0.14) the business end. Bryce: "instead of the other shops you can buy being a shop in the
+# open, make it so they are other garages that you have to clean out when you buy them (or pay
+# someone to) and then its upgraded shops (mod shop too). gate some car components from the mod
+# shop behind the shop you are in. also make it so the dolly needs to be upgraded via the REP
+# points + upgrade quest to pick up bigger motor. Also please add drop off quests for parts. make
+# the parts seller an auctioneer, so that the money doesn't come instantly, and you have to price
+# your cars / deliver them after going to the precinct and buying papers for the car."
+# --------------------------------------------------------------------------
+# ---- the garages you buy: full of the last tenant's rubbish -------------------------------
+JUNK_ID_BASE = 65300             # the junk piles' fixed entity ids (3 garages x 8 piles; below the cells)
+JUNK_PER_SHOP = 8                # piles per garage (mapgen._make_fence places exactly this many)
+JUNK_SIZE = 1.7                  # m square: a sofa, a fridge, forty tyres. Too big to drive through
+JUNK_CLEAR_TIME = 3.0            # s of hold-E per pile: shifting a fridge is a proper job
+JUNK_SCRAP = (5, 30)             # $ the scrapyard pays for each pile's worth of metal
+JUNK_PART_CHANCE = 0.3           # ...and sometimes there's a usable part in there. Knackered, but usable
+CLEANUP_PRICE = (0, 400, 900, 1800)   # $ to pay a crew instead (by shop index): cheaper than your time?
+CLEANUP_PILE_TIME = 5.0          # s per pile for the crew: 40 s for the lot. They're not rushing
+GARAGE_CRATE_GAP = 1.75          # m between the crates along a bought garage's back wall
+# ---- which mod-shop parts each shop's counter will sell (index = the shop's number - 1) --------
+# Anything not listed is sold everywhere, home counter included. Fitting parts you already have
+# works at any counter -- it's only BUYING new that's gated, because the fancy supplier only
+# delivers to the fancy address.
+PART_SHOP_TIER = {
+    # shop 2 (the first garage you buy): the street-tuner catalogue
+    "whl_tuned_light": 1, "bmp_tuned_aero": 1, "exh_tuned": 1, "hood_tuned_cf": 1, "seat_tuned_bkt": 1,
+    "ecu_tuned": 1, "spl_wing": 1, "spl_whale": 1, "eng_sc_1_6": 1, "eng_vtec_1_8": 1,
+    # shop 3: proper engines and the gearbox that goes with them
+    "eng_tuned_2_0t": 2, "trn_tuned_6mt": 2, "eng_rotary_13b": 2, "spl_shelf": 2,
+    # shop 4: the two engines people get murdered over
+    "eng_tt_3_0": 3, "eng_sc_6_2": 3,
+}
+EXTRA_SHOP_TIER = (1, 2, 0, 1)   # NOS, ejector seat, gnome mount, hydraulics (garage.EXTRA_*)
+# ---- Dave the auctioneer (the old sell bench) --------------------------------------------------
+# (label, price x value, chance somebody bids, s to the hammer). Ask more and you wait longer and
+# might get nothing: an unsold part goes back in the locker, an unsold car stays in the shop. The
+# expected payout falls off above FAIR -- greed is a bet, not a free upgrade -- but it's not a
+# stupid bet with a car you're happy to re-list.
+AUCTION_ASKS = (("QUICK SALE", 0.8, 1.0, 15.0),
+                ("FAIR", 1.0, 0.85, 30.0),
+                ("PUNCHY", 1.25, 0.55, 45.0),
+                ("GREEDY", 1.6, 0.25, 60.0))
+AUCTION_DEFAULT_ASK = 1          # what everyone starts on: FAIR
+AUCTION_MAX_LOTS = 8             # Dave only has so much patter
+AUCTION_CAR_TIME = 1.5           # cars take this much longer to hammer than parts (x the ask's time)
+# ---- papers, from the precinct's records hatch ------------------------------------------------
+PAPERS_RATE = 0.1                # a logbook costs this share of what the car would fetch...
+PAPERS_MIN = 100                 # ...but never less than this. The clerk has standards. Low ones.
+PAPERS_MAX_HEAT = 25.0           # above this the clerk recognises you from the wall behind her
+PAPERS_TIME = 1.5                # s of hold-E: filling in forms
+# ---- contacts: drop-off orders for parts, and buyers for the cars you auction -----------------
+CONTACT_COUNT = 8                # people round town who'll buy things off you, no questions asked
+CONTACT_HANDOVER_R = 7.0         # m: park a sold car this close to its buyer and it's delivered
+ORDER_SLOTS = 3                  # standing orders at once
+ORDER_RATE = 1.5                 # they pay this x the part's value (way better than Dave, but a drive)
+ORDER_BONUS_EACH = 60            # + this x the count when the whole order's filled
+ORDER_NEW_DELAY = 25.0           # s before a filled order's slot gets a new one
+ORDER_REP_PER_DAY = 2            # REP from drop-offs, capped: the daily jobs are still the main way up
+ORDER_HANDOVER_TIME = 0.8        # s of hold-E: "is it hot?" "no." "...it's warm."
+# ---- the dolly: Mo's upgrades ------------------------------------------------------------------
+# An engine's size class (parts.ENGINE_CLASS): 0 four-pots and smaller, 1 sixes, 2 V8s and the
+# diesel. The dolly you start with takes class 0. Each upgrade is a job from Mo: the REP to be
+# worth his time, a part he needs handing over at his counter, and his fee for the welding.
+# (REP, $ fee, category Mo wants, min engine class of it, the name)
+DOLLY_UPGRADES = ((4, 300, "trans", 0, "HEAVY-DUTY DOLLY"),
+                  (10, 900, "engine", 1, "ENGINE CRANE"))
 # (v0.9) inspecting a car you're looking at (Bryce: "i want to inspect the cars before hijacking /
 # breaking in to get a sense of their parts / value"): within this range, crosshair on it
 INSPECT_RANGE = 12.0             # m: across the street, not across town

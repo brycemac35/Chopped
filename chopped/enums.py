@@ -71,8 +71,9 @@ GUN_STATS = {
 }
 TRAP_SPIKES, TRAP_BLOCK, TRAP_BANANA, TRAP_DONUT, TRAP_GATE, TRAP_SMOKE = range(6)
 TRAP_CELL, TRAP_DOOR, TRAP_WHOOPEE = 6, 7, 8   # (v0.9) cell doors, the shop's roller door, whoopee cushions
-SOLID_TRAPS = (TRAP_BLOCK, TRAP_GATE, TRAP_CELL, TRAP_DOOR)   # (the doors only while shut: see Trap.solid)
-FIXTURES = (TRAP_GATE, TRAP_CELL, TRAP_DOOR)  # trap-shaped bits of the map: fixed ids, never towed
+TRAP_JUNK = 9   # (v0.14) the last tenant's rubbish, piled up in a garage you've just bought
+SOLID_TRAPS = (TRAP_BLOCK, TRAP_GATE, TRAP_CELL, TRAP_DOOR, TRAP_JUNK)   # (the doors only while shut: see Trap.solid)
+FIXTURES = (TRAP_GATE, TRAP_CELL, TRAP_DOOR, TRAP_JUNK)  # trap-shaped bits of the map: fixed ids, never towed
 INSP_RATTLE, INSP_HONK, INSP_OWNER = 1, 2, 4   # (v0.9) inspect card: trunk loot, clown car, owner nearby
 TRACER_TASER = 7                            # EV_SHOT "weapon" code for a taser's wires
 GEAR_OF_ARM = {ARM_SPIKES: 0, ARM_BLOCK: 1, ARM_BANANA: 2, ARM_DONUT: 3, ARM_WHOOPEE: 4}   # index into Player.gear

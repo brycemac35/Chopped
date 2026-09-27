@@ -93,11 +93,16 @@ class TestOfficers(unittest.TestCase):
         for _ in range(int(6 / DT)):
             w.heat = 30
             w.step(DT)
-            if p.state == S.CUFFED:
+            if p.arrests:
                 break
-        self.assertEqual(p.state, S.CUFFED, "stand there and you get cuffed")
-        self.assertEqual(p.arrests, 1)
-        step(w, C.CUFFED_TIME + 0.1)
+        self.assertEqual(p.arrests, 1, "stand there and you get cuffed")
+        # (v0.14) ...and he carries you to his car, and drives you there himself
+        self.assertEqual(p.state, S.CARRIED)
+        self.assertIsNotNone(p.escort)
+        for _ in range(int(C.ARREST_RIDE_MAX / DT)):
+            w.step(DT)
+            if p.jailed:
+                break
         self.assertTrue(p.jailed)
         self.assertTrue(w.map.in_precinct(p.x, p.y))
         self.assertTrue(any(n.kind == S.KEYGUARD for n in w.npcs.values()), "the lockup is staffed")

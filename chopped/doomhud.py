@@ -24,6 +24,8 @@ from .parts import PART_IDS, PART_DEFS, PART_INDEX, NO_PART, Part
 from . import vehicles as V
 from .quests import QUESTS, QUEST_ORDER, ACT_NAMES
 from . import story as ST
+from . import business as BIZ
+from .parts import ENGINE_CLASS_NAMES
 
 W, H = C.LOW_W, C.LOW_H
 BAR_H = 32
@@ -601,6 +603,15 @@ class DoomHud:
         pen.text(self.font, "%d" % spd, dx, dy + 6, P["white"], align="center")
         if tacho is not None:
             self._tacho(pen, dx - 44, dy - 2, 19, tacho, now)
+        if not driving and kind == S.COP:
+            # (v0.14) the back of a police car, from the wrong side of the cage: a steel grille
+            # between you and the officer, who is humming. Badly.
+            for gx in range(20, vw, 22):
+                pen.fill((20, 20, 26), (gx, 18, 3, vh - 58))
+            for gy in range(30, vh - 40, 26):
+                pen.fill((20, 20, 26), (0, gy, vw, 2))
+            pen.fill((40, 40, 50), (0, vh - 42, vw, 4))
+            return
         if not driving:
             return
         # steering wheel, turning with your inputs
@@ -776,6 +787,7 @@ class DoomHud:
                 self._car_compass(low, view, info, now)
                 self._crew_compass(low, view, info, now)
                 self._story_compass(low, view, info, now)
+                self._story_compass(low, view, info, now, "biz_target", 24, (90, 230, 120))
         self._law_overlay(low, snap, me, now, flash)
         if not info.get("paused") and not info.get("menu"):
             self._inspect_card(low, snap, now)
@@ -1008,6 +1020,7 @@ class DoomHud:
             yaw = info.get("yaw", 0.0)
             px, py = mx + me[4] * k, my + me[5] * k
             pygame.draw.line(low, P["white"], (px, py), (px + math.cos(yaw) * 7, py + math.sin(yaw) * 7))
+        self.last_cars = view.cars
         self._quest_panel(low, view.snap, W - 3, my + mh + 3)
 
     def _quest_panel(self, low, snap, x, y):
@@ -1027,6 +1040,7 @@ class DoomHud:
             done = bool(snap.quest_done & (1 << i))
             rows.append((("%s $%d" % (name, cash)) if not done else "%s DONE" % name,
                          P["money"] if done else P["white"]))
+        rows.extend(self._biz_rows(snap))
         width = max(f.width(t) for t, _ in rows) + 6
         low.blit(self._panel(width, 8 * len(rows) + 3, 150), (x - width + 2, y - 2))
         for t, col in rows:
@@ -1034,6 +1048,37 @@ class DoomHud:
                 f.draw(low, t, x, y, col, align="right")
             y += 8
         self.quest_bottom = y
+
+    def _biz_rows(self, snap):
+        """(v0.14) the business, under the daily jobs: Mo's dolly job, drop-off orders, what's
+        under Dave's hammer, and sold cars waiting to be driven over."""
+        rows = []
+        contacts = getattr(self, "contacts", ())
+        dolly = getattr(snap, "dolly", 0) or 0
+        lvl = dolly & 3
+        if dolly & 4 and lvl < len(C.DOLLY_UPGRADES):
+            rep, fee, cat, mc, name = C.DOLLY_UPGRADES[lvl]
+            want = ("A %s ENGINE" % ENGINE_CLASS_NAMES[mc]) if cat == "engine" else "A GEARBOX"
+            rows.append(("MO: %s + $%d = %s" % (want, fee, name), P["metal_l"]))
+        orders = getattr(snap, "orders", None) or ()
+        sales = getattr(snap, "sales", None) or ()
+        if orders or sales or getattr(snap, "lots", 0):
+            rows.append(("", None))
+        for (who, cat_i, got, need) in orders:
+            nm = contacts[who][0] if who < len(contacts) else "?"
+            if cat_i < len(BIZ.ORDER_CATS):
+                rows.append(("%s: %d/%d %s +$%d" % (nm, got, need, BIZ.order_label(cat_i, need),
+                                                    BIZ.order_bonus(cat_i, need)), P["gold"]))
+        cars = getattr(self, "last_cars", {})
+        for (cid, who, price) in sales:
+            nm = contacts[who][0] if who < len(contacts) else "?"
+            row = cars.get(cid)
+            what = V.model(row[15]).name.upper() if row is not None and len(row) > 15 else "CAR"
+            rows.append(("DRIVE THE %s TO %s: $%d" % (what, nm, price), (90, 230, 120)))
+        if getattr(snap, "lots", 0):
+            rows.append(("DAVE'S AUCTION: %d LOT%s, NEXT %dS" % (snap.lots, "S" if snap.lots > 1 else "", snap.hammer),
+                         P["money"]))
+        return rows
 
     def _story_rows(self, snap):
         """(v0.13) the main story, above the daily jobs: which chapter, and what to do about it
@@ -1136,9 +1181,10 @@ class DoomHud:
         live = sum(1 for t in self.toasts if now - t[2] <= C.TOAST_TIME)
         return 14 if live <= 1 else 3 + 8 * live + 3
 
-    def _story_compass(self, low, view, info, now):
-        """(v0.13) a gold arrow to whoever the story wants you to talk to next."""
-        tgt = info.get("story_target")
+    def _story_compass(self, low, view, info, now, key="story_target", dy=16, col=None):
+        """(v0.13) a gold arrow to whoever the story wants you to talk to next. (v0.14: also,
+        with key="biz_target", a green one to the buyer or the contact who ordered what you've got.)"""
+        tgt = info.get(key)
         me = view.me
         if tgt is None or me is None:
             return
@@ -1157,8 +1203,8 @@ class DoomHud:
         else:
             text = "%s %dM" % (label, dist)
         x = self._clear_of_radar(x, text)
-        y = self._compass_y(now) + 16
-        self.font.draw(low, text, int(x), y, P["gold"], align="center")
+        y = self._compass_y(now) + dy
+        self.font.draw(low, text, int(x), y, col or P["gold"], align="center")
 
     def _clear_of_radar(self, x, text):
         """(v0.12.1) the radar doubled in size and now owns the top-right corner: a centred
@@ -1291,13 +1337,18 @@ class DoomHud:
                    "PUNCH SOMEONE OR POINT A GUN AT THEM, THEN HOLD E TO ROB THEM. SOME PUNCH BACK.",
                    "TRAFFIC WON'T STOP: SPIKES, A ROADBLOCK OR A BANANA, THEN HOLD E TO CARJACK",
                    "X AT A LOCKED CAR: CUT THE WIRES (QUIET, IF YOU GUESS RIGHT). X ON FOOT: THE PROMPT'S OTHER OPTION")),
-        ("THE SHOP", ("PARK A STOLEN CAR INSIDE TO DELIVER IT. HOLD E ON IT TO STRIP PARTS, X SELLS IT WHOLE",
-                      "E AT THE TUNE-UP BENCH: MOD SHOP.  E AT THE BOOT OF A CAR: TRUNK.  ENGINES NEED THE DOLLY",
+        ("THE SHOP", ("PARK A STOLEN CAR INSIDE TO DELIVER IT. HOLD E ON IT TO STRIP PARTS. ENGINES NEED THE DOLLY",
+                      "E AT THE TUNE-UP COUNTER: MOD SHOP (X: TALK TO MO ABOUT A BIGGER DOLLY). E AT A BOOT: TRUNK",
                       "E AT A CRATE: THE BLACK MARKET.  RENT IS DUE AT MIDNIGHT.  F5: SAVE (HOST)")),
+        ("BUSINESS", ("DAVE AUCTIONS WHAT YOU BRING HIM: X SETS THE PRICE. THE MONEY COMES WHEN THE HAMMER FALLS",
+                      "SELL A CAR WHOLE: PAPERS FROM THE PRECINCT'S RECORDS HATCH, AUCTION IT, DRIVE IT TO THE BUYER",
+                      "CONTACTS ROUND TOWN WANT PARTS (GOLD MARKERS): HAND THEM OVER IN PERSON FOR BETTER MONEY",
+                      "BUY A GARAGE AT ITS SIGN, CLEAR THE JUNK (OR PAY A CREW): BETTER CRATES, A BETTER MOD SHOP")),
         ("STORY", ("THE STORY PANEL (UNDER THE RADAR) SAYS WHO TO TALK TO NEXT. WALK UP AND PRESS E.",
                    "DAILY JOBS EARN REP, AND REP OPENS THE NEXT CHAPTER.  ENTER: SKIP A LINE OF DIALOGUE")),
         ("THE LAW", ("OFFICERS CUFF YOU ON FOOT: PUNCH THEM OR MASH SPACE.  SHOOT AT COPS AND THEY SHOOT BACK",
-                     "BUSTED = A CELL: PICK THE LOCK OR PUNCH THE DOOR, THEN KNOCK OUT THE BIG GUARD FOR HIS KEYS",
+                     "BUSTED: HE CARRIES YOU TO HIS CAR AND DRIVES YOU IN. YOUR CREW CAN STOP THE CAR ON THE WAY",
+                     "THEN A CELL: PICK THE LOCK OR PUNCH THE DOOR, AND KNOCK OUT THE BIG GUARD FOR HIS KEYS",
                      "COP CARS CARJACK LIKE TRAFFIC: STOP ONE, HOLD E, DRAG THE OFFICER OUT (+30 HEAT)",
                      "THE IMPOUND BIKES OUTSIDE THE PRECINCT HAVE THE KEYS IN.  H: HORN (CONFUSES COPS)")),
         ("SILLY", ("V CHASE CAM   TAB MAP   T DANCE   M MUSIC   F8 FISHEYE   F9 BIG HEADS   F10 DISCO   C BOX",)),

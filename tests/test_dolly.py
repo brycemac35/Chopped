@@ -107,12 +107,14 @@ class TestDolly(unittest.TestCase):
         p.x, p.y = bx + bw / 2, by + bh + 1.2
         face(p, bx + bw / 2, by)
         cash0 = w.cash
+        p.ask = 0                                  # (v0.14) Dave's auction, QUICK SALE: always goes
         w.step(DT)
-        self.assertIn("SELL 1.6 ENGINE", p.prompt)
+        self.assertIn("AUCTION 1.6 ENGINE", p.prompt)
         press(p, S.B_USE)
         step(w, C.SELL_TIME + 0.1)
-        self.assertEqual(w.cash, cash0 + engine.value)
         self.assertIsNone(d.part)
+        step(w, C.AUCTION_ASKS[0][3] + 0.1)
+        self.assertEqual(w.cash, cash0 + int(round(engine.value * C.AUCTION_ASKS[0][1])))
 
     def test_dolly_engine_goes_in_the_locker_at_the_mod_shop(self):
         w = quiet_world()
@@ -125,7 +127,7 @@ class TestDolly(unittest.TestCase):
         face(p, tx + tw / 2, ty)
         w.step(DT)
         self.assertIn("MOD SHOP", p.prompt)
-        key, _, _, action = w._find_interaction(p)
+        key, _, _, action = w._find_interaction(p)[:4]
         action()
         self.assertTrue(p.menu)
         self.assertIn(turbo, w.stash, "the engine goes on the locker shelf")

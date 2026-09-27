@@ -157,6 +157,7 @@ class Quests:
         self.quest_progress = {q: {} for q in self.today_quests}
         self.quest_done_today = set()
         self._story_new_day()
+        self._business_new_day()        # (v0.14) fresh drop-off orders too
         if self.players:
             self.toast("TODAY'S JOBS: %s" % ", ".join(QUESTS[q][0] for q in self.today_quests), T_INFO)
 

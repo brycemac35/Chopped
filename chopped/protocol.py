@@ -15,7 +15,7 @@ from . import config as C
 from .parts import SLOTS, PART_INDEX, PART_IDS, NO_PART, engine_spec, gear_count
 from .drivetrain import engine_byte
 from .garage import encode_menu, decode_menu
-from .enums import ARSENAL_LEN, ARM_SMG, ARM_AR, ARM_SNIPER, ARM_GRENADE, ARM_RPG
+from .enums import ARSENAL_LEN, ARM_SMG, ARM_AR, ARM_SNIPER, ARM_GRENADE, ARM_RPG, TRAP_JUNK
 from .sim import (COP, TRAFFIC, TUMBLE, FOOT, DRIVER, PASSENGER, DEAD, OFFICER, GUARD, KEYGUARD, DOG,
                   TRAP_GATE, TRAP_SMOKE, TRAP_CELL, TRAP_DOOR)
 from .quests import QUEST_ORDER
@@ -41,6 +41,16 @@ SNAP_HDR = struct.Struct("<IIBiHHBBBBHBBIHIBHBBBBBBBBB")
 # (v0.12.1) shops owned bitmask (bit i = World.shop_owned[i]; 0 is always set) -- so a client can
 # tell an unbought fence's locked stall from one whose crates are live, (v0.13) the story:
 # chapter index into story.CHAPTERS, status (story.ST_*) and progress (a count, or which step)
+# (v0.14) ...and straight after it, the business: BIZ below.
+BIZ = struct.Struct("<BBBB")
+# Mo's dolly level (bits 0-1) | his job's on (bit 2) | your auction price tier (config.AUCTION_ASKS,
+# bits 3-4); lots under Dave's hammer; s to the next hammer; how many ORDER rows (low nibble) then
+# SALE rows (high nibble) follow:
+BIZ_ORDER = struct.Struct("<BBB")      # contact index, business.ORDER_CATS index, got << 4 | need
+BIZ_SALE = struct.Struct("<HBH")       # a sold car waiting to be driven over: car id, contact, price $
+# (an order's bonus is business.order_bonus() on both ends; a sold car's model is on its car row --
+# it's a civvy, and those are never culled.) The shops byte in SNAP_HDR became: bits 0-3 owned,
+# bits 4-7 open (bought AND cleared out).
 AL_LETHAL = 1                   # the police are shooting to kill
 AL_HELI = 2                     # (v0.10) a helicopter is up (heat >= config.HELI_HEAT)
 NO_QUEST = 255
@@ -224,8 +234,23 @@ def _trap_life(t):
         return max(0, min(255, int(math.ceil(255 * t.uses / C.CELL_DOOR_HP))))   # 0 = open
     if t.kind == TRAP_DOOR:
         return max(0, min(255, int(round(255 * t.open_t))))                     # 255 = all the way up
+    if t.kind == TRAP_JUNK:
+        return 255                                                              # (there, or not sent)
     life = C.SMOKE_SCREEN_LIFE if t.kind == TRAP_SMOKE else C.TRAP_LIFETIME
     return max(0, min(255, int(255 * (1 - t.age / life))))
+
+
+def encode_biz(world, me):
+    orders = [o for o in world.orders if o is not None][:15]
+    sales = world.sales()[:15]
+    ask = me.ask if me else C.AUCTION_DEFAULT_ASK
+    out = [BIZ.pack(world.mo_byte() | ((ask & 3) << 3), min(255, len(world.lots)),
+                    min(255, int(math.ceil(world.next_hammer()))), len(orders) | (len(sales) << 4))]
+    for o in orders:
+        out.append(BIZ_ORDER.pack(o["contact"], o["cat"], (min(15, o["got"]) << 4) | min(15, o["need"])))
+    for car, who, price in sales:
+        out.append(BIZ_SALE.pack(car.id & 0xFFFF, who, min(65535, price)))
+    return b"".join(out)
 
 
 def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
@@ -247,8 +272,9 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
         max(0, ack_input) & 0xFFFFFFFF, min(65535, world.day), min(0xFFFFFFFF, world.rent_due()),
         (AL_LETHAL if world.lethal_t > 0 else 0) | (AL_HELI if world.heat >= C.HELI_HEAT else 0),
         min(65535, world.story_points), world.act, q_idx[0], q_idx[1], q_idx[2], q_done,
-        sum(1 << i for i, owned in enumerate(world.shop_owned) if owned) & 0xFF,
+        world.shops_byte() & 0xFF,
         min(255, world.story_ch), world.story_status(), min(255, world.story_n))
+    head += encode_biz(world, me)
     prompt = encode_text(me.prompt if me else "") + encode_self(world, me)
 
     r2 = C.NET_CULL_RADIUS ** 2
@@ -376,15 +402,18 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
             # resent until acked anyway, and the client acks the newest one it got, so only
             # ever drop from the end
             n_ev //= 2
-        # too fat: shed the farthest loose parts/peds first; nobody misses them
-        n_pk = n_pk * 2 // 3
-        n_np = n_np * 2 // 3
+        # too fat: shed the farthest loose parts/peds first; nobody misses them. (v0.14: a fifth at
+        # a time, not a third -- the business block made the worst case ~40 bytes fatter, and a
+        # third at a time threw away twice as many parts as it had to)
+        n_pk -= max(1, n_pk // 5) if n_pk else 0
+        n_np -= max(1, n_np // 5) if n_np else 0
 
 
 class Snapshot:
     __slots__ = ("tick", "time", "echo_ms", "pid", "cash", "rent", "debt", "heat", "witness",
                  "cooling", "cops", "gameover", "run", "hold", "nplayers", "prompt", "ack_input", "day",
                  "rent_due", "alert", "story_points", "act", "today_quests", "quest_done", "shops", "story_ch", "story_st", "story_n",
+                 "dolly", "ask", "lots", "hammer", "orders", "sales",
                  "me", "me2", "arsenal", "trunk", "menu", "inspect", "cars", "players", "npcs", "pickups", "dollies", "traps", "events", "arrival")
 
 
@@ -405,6 +434,17 @@ def decode_snapshot(payload):
     s.witness, s.cooling = wit & 127, bool(wit & 128)
     s.hold = hold / 255.0
     off = SNAP_HDR.size
+    d, s.lots, s.hammer, n = BIZ.unpack_from(data, off)
+    off += BIZ.size
+    s.dolly, s.ask, n_o, n_s = d & 7, (d >> 3) & 3, n & 15, n >> 4
+    s.orders, s.sales = [], []
+    for _ in range(n_o):                       # (contact, category, got, need)
+        who, cat, prog = BIZ_ORDER.unpack_from(data, off)
+        off += BIZ_ORDER.size
+        s.orders.append((who, cat, prog >> 4, prog & 15))
+    for _ in range(n_s):                       # (car id, contact, price)
+        s.sales.append(BIZ_SALE.unpack_from(data, off))
+        off += BIZ_SALE.size
     s.prompt, off = _text(data, off)
     # (mode, walk_load, car_id, x, y, vx, vy, ang, w, stamina, regen, speed_mult, power, pull, flags)
     s.me = SELF_MOTION.unpack_from(data, off)

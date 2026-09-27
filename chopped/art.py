@@ -606,7 +606,7 @@ def _render_garage(surf, cmap):
     surf.fill(P["wood_d"], (x, y + h - 2, w, 2))
     surf.fill(P["metal"], (x + w - 9, y + 1, 7, 5))
     surf.fill(P["green"], (x + w - 8, y + 2, 5, 2))
-    font.draw(surf, "$ SELL $", x + w // 2 - 4, y + h + 3, P["money"], (0, 0, 0), align="center")
+    font.draw(surf, "$ AUCTION $", x + w // 2 - 4, y + h + 3, P["money"], (0, 0, 0), align="center")
     # tune-up bench: steel with a red toolbox
     x, y, w, h = [int(v * S) for v in cmap.tune_bench]
     surf.fill((0, 0, 0), (x + 2, y + 2, w, h))
@@ -616,16 +616,29 @@ def _render_garage(surf, cmap):
     surf.fill(P["red_d"], (x + 2, y + 4, 8, 1))
     surf.fill(P["chrome"], (x + 14, y + 3, 9, 1))
     font.draw(surf, "TUNE-UP", x + w // 2, y + h + 3, P["gold"], (0, 0, 0), align="center")
-    # (v0.12.1) the fence shops: a crate row and a label, so the automap shows where they are
+    # (v0.12.1) the fence shops: a label, so the automap shows where they are. (v0.14: they're
+    # walled garages now, with their own tune-up counter; the crates are drawn live, once the
+    # place is bought and cleared out -- see render._traps_and_crates)
     for i, fs in enumerate(getattr(cmap, "fence_shops", ())):
-        for (mx, my, _item) in fs["market"]:
-            surf.fill(P["wood"], (int(mx * S) - 3, int(my * S) - 3, 6, 6))
-            surf.fill(P["wood_d"], (int(mx * S) - 3, int(my * S) + 2, 6, 1))
+        if fs.get("bench") is not None:
+            x, y, w, h = [int(v * S) for v in fs["bench"]]
+            surf.fill((0, 0, 0), (x + 2, y + 2, w, h))
+            surf.fill(P["metal_l"], (x, y, w, h))
+            surf.fill(P["red"], (x + 1, y + 2, 5, 8))
+        if fs.get("rect") is not None:
+            fx, fy, fw, fh = fs["rect"]
+            font.draw(surf, "SHOP %d" % (i + 2), int((fx + fw / 2) * S), int((fy + fh / 2) * S) - 4,
+                      shade(P["concrete"], 0.8), None, scale=2, align="center")
         sx, sy = fs["sign"]
         font.draw(surf, "SHOP %d" % (i + 2), int(sx * S), int(sy * S) - 12, P["gold"], (0, 0, 0), scale=2,
                   align="center")
         font.draw(surf, "$" + "{:,}".format(C.SHOP_PRICE[i + 1]), int(sx * S), int(sy * S) + 2, P["white"],
                   (0, 0, 0), align="center")
+    # (v0.14) the precinct's records hatch: papers for the cars you sell whole
+    rec = getattr(cmap, "records", None)
+    if rec is not None:
+        surf.fill((40, 60, 150), (int(rec[0] * S) - 4, int(rec[1] * S) - 3, 8, 6))
+        font.draw(surf, "RECORDS", int(rec[0] * S), int(rec[1] * S) + 5, P["white"], (0, 0, 0), align="center")
 
 
 def render_minimap(cmap, scale_div=2):

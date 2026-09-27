@@ -65,7 +65,8 @@ class Car:
                  "overtake_t", "hits", "model", "hl", "hw", "bound", "delta", "trunk", "livery", "horn_type",
                  "glow", "nos", "nos_fuel", "boosting", "ejector", "gnome", "grip", "top_mult", "spin_t",
                  "donut_t", "patrol", "beat", "gun_cd", "burnout", "wheelspin", "hydraulics", "hop_t",
-                 "smoke_t", "officer", "copcar", "cash_hits", "burst", "air_t", "bay", "owner")
+                 "smoke_t", "officer", "copcar", "cash_hits", "burst", "air_t", "bay", "owner",
+                 "papers", "lot", "sale", "prisoner", "ride_t")
 
     def __init__(self, cid, kind, x, y, ang, parts, color=0, model=None):
         self.id = cid
@@ -146,6 +147,11 @@ class Car:
         self.air_t = 0.0              # (v0.9) off a stunt ramp: seconds of BIG AIR left (cosmetic)
         self.bay = 0                  # (v0.10) PERSONAL only: which of the shop's bays is home
         self.owner = None              # (v0.10) PERSONAL only: whose car this is (a player id)
+        self.papers = False           # (v0.14) logbook bought at the precinct: it can go to auction whole
+        self.lot = False              # (v0.14) up for auction right now (no stripping it mid-bid)
+        self.sale = None              # (v0.14) sold at auction: (contact index, price, value when sold)
+        self.prisoner = None          # (v0.14) cops: the player id cuffed in the back, off to the precinct
+        self.ride_t = 0.0             # (v0.14) ...and how long this ride's been going (a stuck one gives up)
         self.refresh()
 
     def refresh(self):
@@ -211,7 +217,8 @@ class Player:
                  "charge_t", "dancing", "chute", "banner", "banner_t", "robbed_from", "menu", "menu_ack",
                  "trunk_view", "jailed", "keys", "jumpsuit", "head_start_t", "pants_t", "tased_t", "dead_t", "cuffer",
                  "cuff_prog", "arrests", "rap", "prev_hop", "slide_t", "prev_alt", "prev_horn", "boxed", "has_box",
-                 "grace_t", "inspect", "prev_box", "still_t", "health", "hurt_t", "sneak", "prev_nos")
+                 "grace_t", "inspect", "prev_box", "still_t", "health", "hurt_t", "sneak", "prev_nos",
+                 "escort", "ask", "menu_tier")
 
     def __init__(self, pid, name, color):
         self.id = pid
@@ -290,6 +297,9 @@ class Player:
         self.hurt_t = 0.0              # > 0: regen is on hold, you were shot too recently
         self.inspect = None           # the car you're sizing up (id), for the inspection card
         self.sneak = False            # (v0.10) X at a locked car: cut the wires instead of smashing in
+        self.escort = None            # (v0.14) CARRIED by an officer (his npc id), on the way to his car
+        self.ask = C.AUCTION_DEFAULT_ASK   # (v0.14) the price you list things at, Dave's AUCTION_ASKS
+        self.menu_tier = 0            # (v0.14) which shop's counter your mod-shop menu came from
 
     def hands_used(self):
         if self.dolly is not None or self.carrying is not None:
@@ -409,7 +419,7 @@ class Trap:
             return self.uses > 0                   # (uses = punches it can still take)
         if self.kind == TRAP_DOOR:
             return self.open_t < C.DOOR_PASSABLE   # (open_t = how far up the roller door is, 0..1)
-        return self.kind == TRAP_BLOCK or (self.kind == TRAP_GATE and self.open_t <= 0)
+        return self.kind in (TRAP_BLOCK, TRAP_JUNK) or (self.kind == TRAP_GATE and self.open_t <= 0)
 
     def rect(self):
         """Axis-aligned (x, y, w, h): traps only ever go down square to the street grid."""
@@ -421,6 +431,9 @@ class Trap:
             return (self.x - r, self.y - r, 2 * r, 2 * r)
         if self.kind == TRAP_WHOOPEE:
             r = C.WHOOPEE_R
+            return (self.x - r, self.y - r, 2 * r, 2 * r)
+        if self.kind == TRAP_JUNK:
+            r = C.JUNK_SIZE / 2
             return (self.x - r, self.y - r, 2 * r, 2 * r)
         long_, short = ((C.SPIKE_LEN, C.SPIKE_WID) if self.kind == TRAP_SPIKES
                         else (C.CELL_DOOR_W, C.CELL_BAR_T) if self.kind == TRAP_CELL

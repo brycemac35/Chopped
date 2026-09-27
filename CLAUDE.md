@@ -11,6 +11,64 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
 
 ## 1. Status and your tasks, in order
 
+### Where things stand (Sept 27, 2026, session 2, RELEASE 0.14.0: the business end + the arrest ride)
+- **v0.14** (Bryce: "instead of the other shops you can buy being a shop in the open, make it so they
+  are other garages that you have to clean out when you buy them (or pay someone to) and then its
+  upgraded shops (mod shop too). gate some car components from the mod shop behind the shop you are
+  in. also make it so the dolly needs to be upgraded via the REP points + upgrade quest to pick up
+  bigger motor. Also please add drop off quests for parts. make the parts seller an auctioneer, so
+  that the money doesn't come instantly, and you have to price your cars / deliver them after going
+  to the precinct and buying papers for the car", then "also make the cop pick you up and take you
+  to his car and drive you to jail"). All in **`chopped/business.py`** (new, no pygame, `Business`
+  mixin on `World`) except the arrest ride (`police.py`):
+  - **Garages** (`mapgen._make_fence` rewritten; still burns `_make_buildings`' rng draws): shops 2-4
+    are walled, roofed 20x20 m workshops with a 12 m opening to the south, crates on the back wall and
+    their own tune-up counter (`fs["bench"]`). `JUNK_PER_SHOP` (8) solid piles (`TRAP_JUNK` fixtures,
+    ids from `JUNK_ID_BASE`, sent as trap rows, predicted as solid) until cleared: hold E on each
+    (`_clear_junk`: a little scrap, sometimes a knackered part) or pay a crew at the sign
+    (`_hire_cleanup`, `CLEANUP_PRICE` scaled by piles left, one pile per `CLEANUP_PILE_TIME`).
+    `shop_ready(i)` = owned AND clean: crates, counter, deliveries (`World.in_shop`) only then.
+    Wire: `SNAP_HDR`'s shops byte is now bits 0-3 owned, 4-7 open. SHOP SEIZED refills them.
+    Client: `fp.py` roofs every garage (`self.roofs`, `_one_roof` with a view-cone skip), a lintel
+    over the opening (`fence_gap`), "SHOP N" parapet signs (`fsign`), junk sprites
+    (`fpart.junk_boxes`); `render.py` draws junk and live crates.
+  - **Tiered mod shop**: `config.PART_SHOP_TIER` / `EXTRA_SHOP_TIER`; `garage._open_modshop(p, tier)`
+    sets `Player.menu_tier` (a byte in the menu block); `_ms_buy`/`_ms_extra` refuse higher tiers;
+    `modshop.py` greys them out "SHOP N ONLY". Fitting from the locker works at any counter.
+  - **Dave's auction** (the sell bench): `_auction_interaction`, `Lot`, `_list_part`/`_list_car`,
+    `_auction_tick`. X cycles `Player.ask` through `AUCTION_ASKS` (QUICK SALE / FAIR / PUNCHY /
+    GREEDY: price x, bid chance, seconds). Unsold parts go to the locker. The mod shop's locker SELL
+    and the dolly both list at auction (FAIR for the locker). The tip jar fires on listing.
+  - **Papers + buyers**: the precinct's records hatch (`mapgen.records`, `_records_interaction`,
+    `PAPERS_RATE`/`PAPERS_MIN`, refused over `PAPERS_MAX_HEAT` or in the jumpsuit) sets `Car.papers`;
+    a papered delivered car's prompt is "AUCTION IT WHOLE" (X: price); sold -> `Car.sale = (contact,
+    price, value)`, RUNNING, not stolen; park it within `CONTACT_HANDOVER_R` of the buyer
+    (`_sale_deliveries`/`_hand_over`, docked for missing bits). `WHOLE_SALE_RATE` 0.7 -> 0.85 (flagged).
+  - **Drop-off orders**: `mapgen.contacts` (8 people on plain blocks' pavements, own rng stream,
+    `lines.CONTACT_NAMES`), `ORDER_CATS`, `ORDER_SLOTS` (3) orders re-rolled each midnight; hand the
+    part over in person (`_fill_order`, `ORDER_RATE` x value + a bonus for the set, +1 REP up to
+    `ORDER_REP_PER_DAY`). Gold markers over contacts with orders, green over buyers; HUD rows and a
+    green compass (`game._biz_target`).
+  - **Mo's dolly**: `parts.ENGINE_CLASS` (four-pot / six / V8); `World.dolly_level`, `dolly_fits`
+    gates loading, stripping and bed-unloading engines. X at Mo's counter (`_mo_alt`): his job needs
+    the REP, the part (`DOLLY_UPGRADES`: a gearbox, then a six on the dolly) and his fee. Art:
+    `fpart.dolly_boxes(level)` (yellow heavy-duty, then an engine crane).
+  - **Arrest ride** (`police._start_escort`/`_escort`/`_escorted`/`_transport`/`_drop_off_prisoner`):
+    cuffed -> CARRIED over the officer's shoulder (`Player.escort`, officer mode 5) -> PASSENGER in the
+    back (`Car.prisoner`, no exit, a cage over the dash) -> the traffic lanes toward the precinct
+    (`sim._traffic_plan` steers every junction there; `_join_grid`, `_node_near`), then pull in to
+    the kerb (`sim._cop_drive`, split out of `_cop_ai`) -> `_jail`. Ways out: knock the officer down,
+    crash the car hard, carjack it (the prisoner's then just a passenger). No car / carless officer:
+    the old kerb-and-van. Prisoner cars never despawn.
+  - Save files keep `dolly_level`/`dolly_job`/`junk_left` (pre-v0.14 saves: bought lots come back
+    clean); lots under the hammer go back on the shelf. Packet shedding is a fifth at a time now.
+  - **Protocol VERSION 15, RELEASE 0.14.0.** Tests: `tests/test_v014.py` (27). **323 total, all OK.**
+- **Decisions flagged for Bryce:**
+  - Selling whole pays 85% of the parts now (was 70%): it costs papers, a wait and a drive.
+  - Drop-offs give a little REP (2 a day max) so they don't replace the daily jobs.
+  - The auction always sells a QUICK SALE; FAIR 85%, PUNCHY 55%, GREEDY 25% of the time.
+  - Fence garages have no roller door or bays: still just the home shop's thing.
+
 ### Where things stand (Sept 26, 2026, session 2, RELEASE 0.13.1: carjackable cop cars)
 - **v0.13.1** (Bryce: "i cant seem to steal cop cars, can you make them a regular vehicle i can
   carjack?"). Why it didn't work: `_copcar_stealable` needed the officer OUT of the car (he'd jumped
@@ -521,7 +579,7 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
 ## 2. Hard rules
 - **Networking stays stdlib UDP.** No networking libraries; this keeps PyInstaller packaging trivial. `miniupnpc` is optional and must stay an optional import.
 - **No asset files.** All sprites, textures, the pixel font, sounds and the music are generated in code (`art.py`, `fpart.py`, `audio.py`, `music.py`). Keep it that way unless Bryce says otherwise.
-- **The sim modules must not import pygame:** `sim.py`, `physics.py`, `brawl.py`, `garage.py`, `police.py`, `sillies.py`, `quests.py`, `story.py`, `entities.py`, `enums.py`, `vehicles.py`, `parts.py`, `lines.py` (and the client-side pure modules `drivetrain.py`, `enginesynth.py`). They're the authoritative, testable simulation. (`tests/test_v09.py` checks this.)
+- **The sim modules must not import pygame:** `sim.py`, `physics.py`, `brawl.py`, `garage.py`, `police.py`, `sillies.py`, `quests.py`, `story.py`, `business.py`, `entities.py`, `enums.py`, `vehicles.py`, `parts.py`, `lines.py` (and the client-side pure modules `drivetrain.py`, `enginesynth.py`). They're the authoritative, testable simulation. (`tests/test_v09.py` checks this.)
 - **All tuning numbers live in `chopped/config.py`**, each with a comment explaining why.
 - **Bump `config.VERSION`** whenever the wire protocol changes. Clients with a different version get rejected politely.
 - **Keep packets under `MAX_PACKET` (1200 bytes).** `tests/test_misc.py` checks a worst-case snapshot, rush-hour traffic included.
@@ -530,11 +588,11 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
   ```
   set SDL_VIDEODRIVER=dummy & set SDL_AUDIODRIVER=dummy & python -m unittest discover -s tests -v
   ```
-  (On Linux/macOS: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests -v`.) At handoff (session 2, RELEASE 0.13.1): **296 tests, all OK**, and the game-loop selftest ran at about 42-50 fps.
+  (On Linux/macOS: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests -v`.) At handoff (session 2, RELEASE 0.14.0): **323 tests, all OK**, and the game-loop selftest ran at about 42-50 fps.
 
 ## 3. Architecture (details in README.md)
 - `main.py` is the command line: `--host`, `--join IP[:PORT]`, `--server` (headless), `--selftest`, `--port`, `--name`, `--mute`, `--no-upnp`, `--log FILE`, `--fake-lag MS`, `--no-predict`.
-- **Networking model (protocol VERSION 14):**
+- **Networking model (protocol VERSION 15):**
   - The host runs the simulation at 60 Hz in-process.
   - Clients send one input per 60 Hz tick. One-shot keys are sent as counters, so a lost packet can't eat a tap.
   - The server sends each client its own zlib snapshot at 20 Hz. Far-away peds, pickups and traffic are culled beyond 95 m.

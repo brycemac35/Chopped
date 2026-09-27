@@ -47,18 +47,18 @@ def menu(p, op, a=0, b=0):
                            (i.menu_seq + 1) & 255, op, a, b)
 
 
-def in_shop(w, p):
+def in_shop(w, p, tier=0):
     tx, ty, tw, th = w.map.tune_bench
     p.x, p.y = tx + tw / 2, ty + th + 1.0
     face(p, tx + tw / 2, ty)
-    w._open_modshop(p)
+    w._open_modshop(p, tier)          # (v0.14: tier = which shop's counter -- what's for sale new)
 
 
 class TestModShop(unittest.TestCase):
     def test_buy_a_styled_part_off_the_catalogue(self):
         w = quiet_world()
         p = w.add_player("BRYCE")
-        in_shop(w, p)
+        in_shop(w, p, tier=1)             # (v0.14: lightweight wheels come from shop 2's counter)
         w.cash = 5000
         car = w.cars[w.personal_id]
         old = car.parts["WheelFL"]
@@ -116,12 +116,16 @@ class TestModShop(unittest.TestCase):
         menu(p, G.OP_INSTALL, 0, SLOTS.index("Engine"))
         w.step(DT)
         self.assertEqual(car.parts["Engine"].category, "engine")
-        # sell it from the locker
+        # sell it from the locker: (v0.14) that's Dave's auction, at a fair price
         cash0, value = w.cash, w.stash[0].value
         menu(p, G.OP_SELL, 0, PART_INDEX["spl_wing"])
         w.step(DT)
-        self.assertEqual(w.cash, cash0 + value)
         self.assertEqual(w.stash, [])
+        self.assertEqual(len(w.lots), 1)
+        self.assertEqual(w.lots[0].ask, value)
+        w.lots[0].tier, w.lots[0].t = 0, 0.0      # (a sure thing, right now)
+        w.step(DT)
+        self.assertEqual(w.cash, cash0 + value)
         # take one out: menu closes, part in hand
         w.stash.append(Part("ecu_tuned"))
         menu(p, G.OP_TAKE, 0, PART_INDEX["ecu_tuned"])
@@ -132,7 +136,7 @@ class TestModShop(unittest.TestCase):
     def test_paint_livery_horn_glow_extras(self):
         w = quiet_world()
         p = w.add_player("BRYCE")
-        in_shop(w, p)
+        in_shop(w, p, tier=3)             # (v0.14: NOS and the ejector seat are fancier shops' work)
         w.cash = 10000
         car = w.cars[w.personal_id]
         for op, a, b in ((G.OP_LIVERY, V.LIV_FLAMES, 5), (G.OP_HORN, V.HORN_GOAT, 0), (G.OP_GLOW, 3, 0),

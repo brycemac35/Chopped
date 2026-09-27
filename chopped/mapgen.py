@@ -13,6 +13,7 @@ import random
 from collections import deque
 
 from . import config as C
+from .lines import CONTACT_NAMES
 
 ROAD, SIDEWALK, BUILDING, GRASS, TREE, WALL, GARAGE, LOT, PRECINCT = range(9)
 SOLID_TYPES = (BUILDING, TREE, WALL)
@@ -41,6 +42,11 @@ class CityMap:
         self.jail_spawns, self.guard_posts = [], []
         self.cells, self.cell_doors, self.cell_bars = [], [], []
         self.fence_shops = []    # (v0.12) shops 2-4: {"tier", "center", "sign", "market"}, buyable
+        #                          (v0.14: + "rect" the covered floor, "bench" its tune-up counter,
+        #                          "junk" where the previous tenant's rubbish is piled)
+        self.contacts = []       # (v0.14) (name, x, y, facing): drop-off contacts and car buyers
+        self.records = None      # (v0.14) (x, y): the precinct's records hatch, where papers are sold
+        plain = []               # (v0.14) ordinary building blocks: somewhere for the contacts to stand
         self.staff = []          # (v0.12.1) the people behind the counters (see _make_shop)
         self.story_npcs = []     # (v0.12.1) Paige, the Fixer, Tommy, the Kingpin
 
@@ -78,6 +84,7 @@ class CityMap:
                     self._make_lot(rng, ox, oy)
                 else:
                     self._make_buildings(rng, ox, oy)
+                    plain.append((ox, oy))
 
         # (v0.12.1 fix) fence_shops[i] is "shop i+2" everywhere (World.shop_owned[i+1], its price,
         # its rent), so it has to be in tier order -- the block loop builds them in whatever order
@@ -92,6 +99,7 @@ class CityMap:
         for (_k, _n, x, y, _f, _o) in self.story_npcs:
             r = C.STORY_NPC_R
             self.static_rects.append((x - r, y - r, 2 * r, 2 * r))
+        self._make_contacts(plain)
         self._make_parking(rng, shop)
         self._make_ramps()
         self._make_cameras(rng)
@@ -190,31 +198,87 @@ class CityMap:
             self.parking.append((x, by + span - 3.0, -math.pi / 2))
 
     def _make_fence(self, rng, ox, oy, tier):
-        """(v0.12, Bryce: "make multiple garages, make them available for purchase") shops
-        2-4: an open lot, not a real building -- buy it and its market crates come alive. No
-        bays, no roller door of its own: a second full garage/door/raycaster system was a lot
-        of plumbing for "the black market has more stuff now" (see CLAUDE.md's build notes).
-        It deliberately isn't added to self.lots, so it gets no parking-space paint, no stunt
-        ramp, and no civilian cars trying to park on top of the crates.
+        """(v0.12, Bryce: "make multiple garages, make them available for purchase") shops 2-4.
+        (v0.14, Bryce: "instead of the other shops you can buy being a shop in the open, make it
+        so they are other garages that you have to clean out when you buy them") a proper walled,
+        roofed workshop now, same brick as the home shop: 20 x 20 m of floor behind a 12 m roller-
+        door opening onto the south street, a crate row round the back, its own tune-up counter
+        on the east wall -- and, until somebody deals with it, the last tenant's junk everywhere
+        (fs["junk"]: the World turns those into solid piles you clear by hand, or pay to have
+        cleared). No roller door or bays of its own: that's still the home shop's thing.
 
         Calls _make_buildings first purely to burn the same rng draws an ordinary block would
         have, then throws away the tiles and buildings it made -- the same trick _make_ramps
         uses its own rng stream for. Without this, buying (or not buying) fence shops would
         reshuffle every random choice made for the rest of the city after them: traffic
-        models, camera spots, ped spawns, all of it, for a feature that's supposed to just
-        add some crates in an empty lot. A real, reproducible case of this cost us a very
-        rare pre-existing traffic pathing edge case surfacing in testing before this fix."""
+        models, camera spots, ped spawns, all of it. A real, reproducible case of this cost us a
+        very rare pre-existing traffic pathing edge case surfacing in testing before this fix."""
         nb = len(self.buildings)
         self._make_buildings(rng, ox, oy)
         del self.buildings[nb:]
-        inner = C.BLOCK_TILES - 2
-        self._fill(ox + 1, oy + 1, inner, inner, LOT)
-        cx = (ox + 1 + inner / 2) * C.TILE_M
-        cy = (oy + 1 + inner / 2) * C.TILE_M
+        T = C.TILE_M
+        b = C.BLOCK_TILES
+        self._ring(ox, oy)
+        x0, y0, inner = ox + 1, oy + 1, b - 2
+        self._fill(x0, y0, inner, inner, WALL)
+        self._fill(x0 + 1, y0 + 1, inner - 2, inner - 2, GARAGE)
+        for k in range(2, inner - 2):                   # the opening: the middle three tiles of the south wall
+            self._set(x0 + k, y0 + inner - 1, GARAGE)
+        fx, fy, fw, fh = (x0 + 1) * T, (y0 + 1) * T, (inner - 2) * T, (inner - 2) * T
         items = C.SHOP_MARKET[tier]
-        x0 = cx - 1.75 * (len(items) - 1) / 2
-        market = [(x0 + k * 1.75, cy + 2.0, item) for k, item in enumerate(items)]
-        self.fence_shops.append({"tier": tier, "center": (cx, cy), "sign": (cx, cy - 3.0), "market": market})
+        # crates round the back wall, spilling down the west wall when a big market runs out of room
+        market = []
+        per_row = int((fw - 2.0) // C.GARAGE_CRATE_GAP) + 1
+        for k, item in enumerate(items):
+            if k < per_row:
+                market.append((fx + 1.2 + k * C.GARAGE_CRATE_GAP, fy + 1.0, item))
+            else:
+                market.append((fx + 1.0, fy + 2.9 + (k - per_row) * C.GARAGE_CRATE_GAP, item))
+        # the tune-up counter against the east wall, long side facing the room
+        bench = (fx + fw - 1.9, fy + 6.0, 1.6, 6.0)
+        self.static_rects.append((bench[0], bench[1], fw - (bench[0] - fx), bench[3]))
+        # the rubbish: fixed spots, so every client agrees where it is without being told
+        junk = [(fx + 6.0, fy + 5.5), (fx + 11.0, fy + 5.0), (fx + 14.0, fy + 9.0), (fx + 4.5, fy + 10.5),
+                (fx + 9.5, fy + 11.0), (fx + 13.5, fy + 14.0), (fx + 6.5, fy + 16.0), (fx + 11.0, fy + 17.0)]
+        sign = (fx - 1.6, (y0 + inner) * T + 1.4)       # on the pavement, west of the opening
+        self.fence_shops.append({"tier": tier, "center": (fx + fw / 2, fy + fh / 2), "sign": sign,
+                                 "market": market, "rect": (fx, fy, fw, fh), "bench": bench, "junk": junk,
+                                 "tiles": (x0, y0, inner, inner)})
+
+    def _make_contacts(self, plain):
+        """(v0.14) the people who buy parts off you (drop-off orders) and cars off the auction:
+        one standing on the pavement of each of a handful of ordinary blocks, round the side
+        away from the alley. Their own rng stream, so they never reshuffle the city."""
+        crng = random.Random(self.seed * 7919 + 17)
+        T = C.TILE_M
+        blocks = list(plain)
+        crng.shuffle(blocks)
+        names = list(CONTACT_NAMES)
+        crng.shuffle(names)
+        for k, (ox, oy) in enumerate(blocks[:min(C.CONTACT_COUNT, len(names))]):
+            side = crng.randrange(4)
+            b = C.BLOCK_TILES
+            along = 2.5                                  # tiles from the corner: clear of the middle alley
+            if side == 0:                                # north pavement, facing the road
+                x, y, f = (ox + along) * T, (oy + 0.75) * T, -math.pi / 2
+            elif side == 1:                              # south
+                x, y, f = (ox + b - along) * T, (oy + b - 0.75) * T, math.pi / 2
+            elif side == 2:                              # west
+                x, y, f = (ox + 0.75) * T, (oy + b - along) * T, math.pi
+            else:                                        # east
+                x, y, f = (ox + b - 0.75) * T, (oy + along) * T, 0.0
+            self.contacts.append((names[k], x, y, f))
+            r = C.STORY_NPC_R
+            self.static_rects.append((x - r, y - r, 2 * r, 2 * r))
+
+    def in_workshop(self, x, y):
+        """(v0.14) which bought-or-not fence garage's floor this point is on: its index into
+        fence_shops, or -1."""
+        for i, fs in enumerate(self.fence_shops):
+            fx, fy, fw, fh = fs["rect"]
+            if fx <= x <= fx + fw and fy <= y <= fy + fh:
+                return i
+        return -1
 
     def _make_shop(self, ox, oy):
         """The chop shop: open-fronted garage facing south onto the road."""
@@ -318,6 +382,13 @@ class CityMap:
         self.bail_desk = (px + pw / 2 - 2.25, py + 1.0, 4.5, 1.4)     # in the hall, between the cells
         self.static_rects.append(self.bail_desk)
         self.precinct_exit = ((door + 0.5) * T, (y0 + inner + 0.6) * T)   # the street, just outside
+        # (v0.14) the records hatch, just right of the gate: papers for the cars you sell whole.
+        # (The police selling you paperwork for a car you stole is the whole joke. Just go with it.)
+        # records = the desk you talk to; the clerk stands between it and the wall, and the pair of
+        # them are solid from the brickwork out to the desk's front edge
+        wall = (y0 + inner) * T
+        self.records = ((door + 0.5) * T + 3.2, wall + 1.3)
+        self.static_rects.append((self.records[0] - 0.8, wall, 1.6, 1.7))
         # (v0.13) the impound: bikes parked along the outside of the walls, keys in, for the
         # solo escapee. Two either side of the gate, one round each side wall, all tucked in
         # against the brickwork (the lamps are on the kerb side of the pavement). No rng: this

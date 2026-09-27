@@ -16,8 +16,9 @@ from . import sim as S
 from . import protocol as PR
 from . import vehicles as V
 from . import story as STORY
+from . import business as BIZ
 from . import drivetrain as DT
-from .parts import ASP_TURBO, ASP_SC, V_I6, V_DIESEL, SLOT_INDEX
+from .parts import ASP_TURBO, ASP_SC, V_I6, V_DIESEL, SLOT_INDEX, PART_IDS, PART_DEFS, NO_PART
 from . import art
 from .art import P, PixelFont
 from .audio import Audio
@@ -238,6 +239,7 @@ class App:
         self.renderer = Renderer(cm, surf)
         self.fp = FPRenderer(cm, self.renderer.map_surf, W, VIEW_H)
         self.hud = DoomHud(self.font, self.renderer.bank, self.renderer.minimap)
+        self.hud.contacts = getattr(cm, "contacts", ())      # (v0.14) names for the order/sale rows
         me = self.client.latest.players.get(self.client.pid) if self.client.latest else None
         if me is not None:
             self.yaw = self._facing_shop(me[4], me[5])
@@ -575,7 +577,7 @@ class App:
                 "menu": self.modshop.open,
                 "fp": self.fp_mode, "yaw": self.yaw, "garage": self.client.map.garage_center,
                 "in_garage": self.client.map.in_garage(me[4], me[5]), "weapon": self._held_weapon(),
-                "story_target": self._story_target(view.snap)}
+                "story_target": self._story_target(view.snap), "biz_target": self._biz_target(view)}
         if not self.modshop.open:
             self.ms_backdrop = None
         if self.ms_backdrop is not None:
@@ -731,6 +733,34 @@ class App:
         a.set_loop("jingle", jingle * 0.5)
         mine = view.my_car
         a.set_loop("nos", 0.6 if (mine is not None and me[2] == S.DRIVER and mine[17] & 8) else 0.0)
+
+    def _biz_target(self, view):
+        """(v0.14) where the green arrow points: the buyer for the sold car you're driving, or
+        the nearest contact who's ordered something you're carrying."""
+        snap, me = view.snap, view.me
+        cm = self.client.map
+        contacts = getattr(cm, "contacts", ())
+        if me is None or not contacts:
+            return None
+        if me[2] == S.DRIVER:
+            for (cid, who, price) in (getattr(snap, "sales", None) or ()):
+                if cid == me[12] and who < len(contacts):
+                    nm, x, y, _f = contacts[who]
+                    return x, y, "BUYER: %s $%d" % (nm, price)
+            return None
+        held = [PART_IDS[h] for h in (me[9], me[10]) if h != NO_PART]
+        for d in view.dollies.values():
+            if d[5] == me[0] and d[4] != 255:
+                held.append(PART_IDS[d[4]])
+        cats = {PART_DEFS[t][1] for t in held}
+        best = None
+        for (who, cat_i, _got, _need) in (getattr(snap, "orders", None) or ()):
+            if cat_i < len(BIZ.ORDER_CATS) and BIZ.ORDER_CATS[cat_i][0] in cats and who < len(contacts):
+                nm, x, y, _f = contacts[who]
+                d = math.hypot(x - me[4], y - me[5])
+                if best is None or d < best[0]:
+                    best = (d, x, y, nm)
+        return (best[1], best[2], "ORDER: %s" % best[3]) if best else None
 
     def _story_target(self, snap):
         """(v0.13) where the story's gold arrow points: whoever you need to talk to next."""

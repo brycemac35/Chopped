@@ -837,7 +837,13 @@ OUTFITS = {
     "fixer": ((72, 70, 78), (40, 40, 46), (34, 32, 36)),       # the Fixer: grey coat, flat grey cap
     "tommy": ((240, 200, 40), (240, 200, 40), None),           # Tommy: a yellow tracksuit. Of course
     "kingpin": ((236, 232, 222), (236, 232, 222), (24, 24, 28)),  # the Kingpin: white suit, black hat
+    # (v0.14) the contacts round town, and the clerk at the precinct's records hatch
+    "coat": ((112, 84, 52), (44, 40, 38), None),               # a trench coat, collar up, obviously
+    "velour": ((112, 52, 140), (112, 52, 140), None),          # a purple velour tracksuit
+    "shades": ((34, 36, 44), (34, 36, 44), (20, 20, 22)),      # all black, a trilby, sunglasses indoors
+    "records": ((150, 170, 200), (40, 44, 70), None),          # the civilian clerk: pale blue shirt, lanyard
 }
+CONTACT_OUTFITS = ("coat", "velour", "shades")
 BOXER_WHITE, BOXER_HEART = (240, 236, 240), (220, 50, 80)
 
 
@@ -1290,11 +1296,81 @@ def crate_boxes(item):
     return b
 
 
-def dolly_boxes():
+def dolly_boxes(level=0):
+    """The hand truck -- and (v0.14) Mo's upgrades: level 1 the heavy-duty one (a bigger plate,
+    yellow paint, fat tyres), level 2 the engine crane (an A-frame hoist on castors, with a chain)."""
+    if level >= 2:
+        y = (250, 200, 40)
+        return [(-0.9, 0.5, -0.55, -0.45, 0.05, 0.15, y), (-0.9, 0.5, 0.45, 0.55, 0.05, 0.15, y),
+                (-0.9, -0.8, -0.55, 0.55, 0.05, 0.15, y),
+                (-0.9, -0.78, -0.08, 0.08, 0.15, 2.0, y),                       # the mast
+                (-0.9, 0.7, -0.07, 0.07, 1.95, 2.1, y),                         # the boom
+                (0.62, 0.66, -0.02, 0.02, 1.2, 1.95, P["metal"]),               # the chain
+                (0.55, 0.73, -0.08, 0.08, 1.1, 1.2, P["chrome"]),               # the hook
+                (0.35, 0.55, -0.6, -0.4, 0.0, 0.1, P["tire"]), (0.35, 0.55, 0.4, 0.6, 0.0, 0.1, P["tire"]),
+                (-0.95, -0.75, -0.6, -0.4, 0.0, 0.1, P["tire"]), (-0.95, -0.75, 0.4, 0.6, 0.0, 0.1, P["tire"]),
+                (-1.2, -0.9, -0.05, 0.05, 0.9, 1.0, P["red"])]
+    if level == 1:
+        y = (240, 190, 30)
+        return [(-0.5, 0.5, -0.4, -0.3, 0.1, 1.1, y), (-0.5, 0.5, 0.3, 0.4, 0.1, 1.1, y),
+                (-0.5, 0.5, -0.4, 0.4, 0.1, 0.2, P["metal"]), (0.5, 0.75, -0.42, 0.42, 0.0, 0.1, P["chrome"]),
+                (-0.15, 0.25, -0.5, -0.4, 0.0, 0.35, P["tire"]), (-0.15, 0.25, 0.4, 0.5, 0.0, 0.35, P["tire"]),
+                (-0.58, -0.45, -0.4, 0.4, 1.0, 1.12, P["red"])]
     return [(-0.45, 0.45, -0.3, -0.24, 0.1, 1.0, P["metal_l"]), (-0.45, 0.45, 0.24, 0.3, 0.1, 1.0, P["metal_l"]),
             (-0.45, 0.45, -0.3, 0.3, 0.1, 0.16, P["metal"]), (0.45, 0.6, -0.3, 0.3, 0.0, 0.08, P["chrome"]),
             (-0.1, 0.2, -0.38, -0.3, 0.0, 0.25, P["tire"]), (-0.1, 0.2, 0.3, 0.38, 0.0, 0.25, P["tire"]),
             (-0.5, -0.4, -0.3, 0.3, 0.95, 1.05, P["red"])]
+
+
+def junk_boxes(k):
+    """(v0.14) the last tenant's rubbish, one of eight piles (lines.JUNK_LINES, same order)."""
+    k %= 8
+    if k == 0:                                           # a sofa with a smell
+        c = (120, 90, 60)
+        return [(-0.8, 0.8, -0.4, 0.4, 0.0, 0.45, c), (-0.8, 0.8, 0.25, 0.45, 0.45, 0.95, shade(c, 0.85)),
+                (-0.85, -0.65, -0.4, 0.45, 0.45, 0.7, c), (0.65, 0.85, -0.4, 0.45, 0.45, 0.7, c),
+                (-0.3, 0.1, -0.2, 0.1, 0.45, 0.5, (90, 110, 40))]
+    if k == 1:                                           # forty bald tyres
+        b = []
+        for i, (x, y) in enumerate(((-0.4, -0.35), (0.4, -0.3), (-0.3, 0.4), (0.35, 0.35))):
+            for j in range(3 - i % 2):
+                b.append((x - 0.33, x + 0.33, y - 0.33, y + 0.33, j * 0.24, j * 0.24 + 0.22, P["tire"]))
+                b.append((x - 0.12, x + 0.12, y - 0.12, y + 0.12, j * 0.24 + 0.22, j * 0.24 + 0.23, P["ink"]))
+        return b
+    if k == 2:                                           # a fridge (don't open it)
+        return [(-0.35, 0.35, -0.35, 0.35, 0.0, 1.75, {"*": (228, 226, 216), "+z": (240, 238, 230)}),
+                (0.35, 0.37, -0.3, -0.26, 0.9, 1.5, P["metal"]),
+                (-0.9, 0.2, -0.8, -0.4, 0.0, 0.3, (70, 70, 74))]
+    if k == 3:                                           # a tower of paint tins
+        b = []
+        cols = ((200, 60, 50), (60, 120, 200), (230, 210, 60), (90, 170, 90))
+        for i in range(4):
+            for j in range(3 if i < 2 else 2):
+                x, y = -0.4 + (i % 2) * 0.45, -0.3 + (i // 2) * 0.45
+                b.append((x - 0.18, x + 0.18, y - 0.18, y + 0.18, j * 0.34, j * 0.34 + 0.32, cols[(i + j) % 4]))
+        return b
+    if k == 4:                                           # somebody's drum kit
+        return [(-0.3, 0.3, -0.3, 0.3, 0.0, 0.5, (180, 30, 40)), (-0.28, 0.28, -0.28, 0.28, 0.5, 0.52, P["white"]),
+                (0.4, 0.75, -0.6, -0.25, 0.3, 0.55, (180, 30, 40)), (0.4, 0.75, 0.25, 0.6, 0.3, 0.55, (180, 30, 40)),
+                (-0.7, -0.66, 0.4, 0.44, 0.0, 1.1, P["chrome"]), (-0.95, -0.4, 0.15, 0.7, 1.1, 1.13, P["gold"])]
+    if k == 5:                                           # a pile of wet cardboard
+        c = (150, 118, 76)
+        return [(-0.7, 0.6, -0.6, 0.5, 0.0, 0.35, c), (-0.5, 0.4, -0.4, 0.4, 0.35, 0.7, shade(c, 0.85)),
+                (-0.2, 0.5, -0.2, 0.3, 0.7, 0.95, c)]
+    if k == 6:                                           # an engine block full of concrete
+        return [(-0.55, 0.55, -0.35, 0.35, 0.0, 0.7, (90, 92, 96)), (-0.5, 0.5, -0.3, 0.3, 0.7, 0.8, (170, 168, 160)),
+                (-0.7, -0.55, -0.2, 0.2, 0.2, 0.5, P["metal"])]
+    return [(-0.12, 0.12, -0.2, 0.2, 0.0, 0.9, (228, 200, 170)),     # a mannequin (why)
+            (-0.14, 0.14, -0.25, 0.25, 0.9, 1.45, (228, 200, 170)),
+            (-0.1, 0.1, -0.1, 0.1, 1.45, 1.75, (228, 200, 170)),
+            (-0.6, 0.6, -0.5, 0.5, 0.0, 0.05, (60, 60, 64))]
+
+
+def records_desk_boxes():
+    """(v0.14) the precinct's records hatch: a little counter on the pavement with a bell."""
+    return [(-0.4, 0.4, -0.8, 0.8, 0.0, 1.0, {"*": (150, 150, 160), "+z": (190, 190, 200)}),
+            (-0.1, 0.1, 0.3, 0.5, 1.0, 1.08, P["gold"]),
+            (-0.45, 0.45, -0.85, 0.85, 0.98, 1.02, (40, 44, 70))]
 
 
 def trunk_lid_boxes(stage):

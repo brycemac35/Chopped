@@ -22,6 +22,7 @@ from .sillies import Sillies
 from .police import Police
 from .quests import Quests
 from .story import Story
+from .business import Business
 from .enums import *  # noqa: F401,F403
 from .lines import *  # noqa: F401,F403
 from .entities import *  # noqa: F401,F403
@@ -31,7 +32,7 @@ DIRS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 _REEXPORTS = (kei_loadout,)   # tests (and old habits) reach for S.kei_loadout
 
 
-class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests, Story):
+class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests, Story, Business):
     def __init__(self, map_seed=None, rng_seed=None):
         if map_seed is None:
             map_seed = random.randrange(1, 2 ** 31)
@@ -106,6 +107,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         self.impound_rng = random.Random((rng_seed if rng_seed is not None else map_seed) * 7919 + 13)
         for k, (x, y, a) in enumerate(self.map.bike_spots):
             self._spawn_impound_bike(k, x, y, a)
+        self._init_business()        # (v0.14; before the quests too: a new day re-rolls the orders)
         self._init_story()           # (v0.13; before the quests: their first rotation pokes it)
         self._init_quests()
 
@@ -391,7 +393,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         self._release_dolly(p)        # it'd never fit in a Kei anyway
         self._drop_carry(p, throw=False)   # (they would, but that's a different game)
         p.z = p.vz = 0.0
-        if seat == DRIVER and car.kind == CIV and not car.stolen and car.state == RUNNING:
+        if seat == DRIVER and car.kind == CIV and not car.stolen and car.state == RUNNING and car.sale is None:
             # a car whose driver bailed, engine still running: finders keepers, says nobody
             car.stolen = True
             self._crime(C.HEAT_BREAKIN)
@@ -511,6 +513,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         self._update_pickups(dt)
         self._fires(dt)
         self._deliveries()
+        self._business_tick(dt)
         self._heat(dt)
         self._cops_lifecycle(dt)
         self._police(dt)
@@ -576,6 +579,8 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         # SHOP SEIZED, same "the new run resets everything except your personal car" rule as
         # the locker and the city's civilian cars.
         self.shop_owned = [True] + [False] * (len(C.SHOP_PRICE) - 1)
+        self.lots = []                    # (v0.14) Dave's book is torn up; the garages fill back up with junk
+        self._reset_workshops()
         # (v0.10) every player's own personal car keeps its mods, back in its own bay --
         # not just bay 0's any more. A car nobody's claimed (kind == PERSONAL but no owner
         # yet, or the shared bay-0 one at first launch) survives the reset too.
@@ -624,6 +629,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             # after a SHOP SEIZED picking the cushion crashed the host with an IndexError)
             p.arms, p.ammo, p.gear, p.weapon = 1 << ARM_FISTS, [0] * ARM_COUNT, [0] * len(GEAR_OF_ARM), ARM_FISTS
             p.jailed = p.keys = p.jumpsuit = False
+            p.escort = None
             p.head_start_t = 0.0
             p.pants_t = p.tased_t = p.dead_t = p.cuff_prog = 0.0
             p.arrests = 0
@@ -668,6 +674,11 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         else:
             p.still_t = 0.0
 
+        if p.escort is not None and p.state != CARRIED:
+            p.escort = None                   # (shot, tased, dead: whatever it was, he's not carrying you now)
+        if p.state == CARRIED and p.escort is not None:
+            self._escorted(p)                 # (v0.14) over an officer's shoulder, on the way to his car
+            return
         if p.state == CARRIED:
             p.prompt = "YOU'RE BEING CARRIED. MASH SPACE TO WRIGGLE FREE (%d/%d)" % (p.wriggle, C.WRIGGLE_PRESSES)
             if jump_tap:
@@ -692,6 +703,12 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             car = self.cars.get(p.car_id)
             if car is None:
                 p.state, p.car_id = FOOT, None
+                return
+            if car.prisoner == p.id:
+                # (v0.14) cuffed in the back of a cop car. No door handles on the inside.
+                ex, ey = self.map.precinct_exit
+                p.prompt = "IN THE BACK OF A COP CAR, %dM FROM THE PRECINCT. CREW: STOP THIS CAR!" % (
+                    math.hypot(ex - car.x, ey - car.y))
                 return
             if exit_tap and p.state == DRIVER and car.ejector and car.speed() >= C.EJECT_MIN_SPEED:
                 self._eject_seat(p, car)
@@ -726,7 +743,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         # ---- on foot --------------------------------------------------------
         p.trunk_view = None
         if p.menu:
-            if p.state != FOOT or not self.map.in_garage(p.x, p.y):
+            if p.state != FOOT or not self.in_shop(p.x, p.y):
                 p.menu = False
             else:
                 self._modshop_input(p, inp)
@@ -839,6 +856,12 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         talk = self._talk_interaction(p, ax, ay)
         if talk is not None:
             return talk
+        # (v0.14) the city's contacts (drop-off orders, car buyers), the precinct's records hatch
+        # (papers), and the junk in a garage you've just bought
+        biz = self._contact_interaction(p, ax, ay) or self._records_interaction(p, ax, ay) or \
+            self._junk_interaction(p, ax, ay)
+        if biz is not None:
+            return biz
         # benches
         for bench, is_sell in ((m.sell_bench, True), (m.tune_bench, False)):
             bx, by, bw, bh = bench
@@ -846,17 +869,17 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             cy = clamp(ay, by, by + bh)
             if math.hypot(ax - cx, ay - cy) < C.INTERACT_RANGE_BENCH:
                 if not is_sell:
-                    # the mod shop. Anything you're holding goes in the locker on the way in.
+                    # the mod shop. Anything you're holding goes in the locker on the way in --
+                    # except (v0.14) whatever Mo asked for: X hands that over instead
                     held = p.hands or (p.dolly is not None and p.dolly.part is not None)
-                    return (("modshop",), "E: MOD SHOP" + (" (WHAT YOU'RE HOLDING GOES IN THE LOCKER)" if held else ""),
-                            0, lambda: self._open_modshop(p))
-                if p.dolly is not None:
-                    return self._dolly_bench(p, p.dolly, is_sell)
-                if not p.hands:
-                    return (None, "SELL BENCH: BRING PARTS HERE (OR SELL FROM THE LOCKER IN THE MOD SHOP)", 0, None)
-                part = p.hands[-1]
-                return (("sell", id(part)), "HOLD E: SELL %s FOR $%d" % (part.name.upper(), part.value),
-                        C.SELL_TIME, lambda: self._sell(p))
+                    hint = self.mo_hint(p)
+                    return (("modshop",), "E: MOD SHOP" + (" (HOLDING: INTO THE LOCKER)" if held else "") + hint,
+                            0, lambda: self._open_modshop(p), (lambda: self._mo_alt(p)) if hint else None)
+                # (v0.14) the sell bench is Dave's auction now
+                return self._auction_interaction(p)
+        shop = self._workshop_bench(p, ax, ay)
+        if shop is not None:
+            return shop
         market = self._market_interaction(p, ax, ay)
         if market is not None:
             return market
@@ -947,11 +970,11 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
                 return (("shot", car.id), "E: HOP ON THE BACK" if bike else "E: RIDE SHOTGUN", 0,
                         lambda: self._enter_car(p, car, PASSENGER))
             return (None, "BIKE IS FULL" if bike else "CAR IS FULL", 0, None)
-        # delivered: strip or crush -- or (v0.9) X: sell the whole thing to a man called Dave
-        res = self._strip_interaction(p, car)
-        whole = self.whole_price(car)
-        label = res[1] + "   " if res[1] else ""
-        return (res[0], label + "X: SELL IT WHOLE $%d" % whole, res[2], res[3], lambda: self._sell_whole(p, car))
+        # delivered: strip or crush -- or (v0.9) sell the whole thing to a man called Dave, which
+        # (v0.14) means papers from the precinct first, then his auction
+        if car.kind != CIV:
+            return (None, "", 0, None)
+        return self._delivered_car_prompt(p, car, self._strip_interaction(p, car))
 
     @staticmethod
     def _aim(p):
@@ -1096,19 +1119,6 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
                 self.sfx(S_GNOME, p.x, p.y)
                 self.toast("%s STOLE A GARDEN GNOME. +%d HEAT. MONSTER." % (p.name, C.GNOME_HEAT), T_BAD)
 
-    def _sell(self, p):
-        if not p.hands:
-            return
-        part = p.hands.pop()
-        self._earn(part.value, 1)
-        self.sfx(S_SELL, p.x, p.y)
-        tip = self._tip_jar()
-        if tip:
-            self.toast("SOLD %s: +$%d (+$%d TIP FROM A PASSERBY WHO LIKES YOUR HUSTLE)" %
-                       (part.name.upper(), part.value, tip), T_MONEY)
-        else:
-            self.toast("SOLD %s: +$%d" % (part.name.upper(), part.value), T_MONEY)
-
     def _tip_jar(self):
         """(v0.12) selling at the bench, once in a while somebody walking past chips in.
         Doesn't apply to selling from the mod shop locker -- you're not visibly hustling in
@@ -1159,6 +1169,8 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
                     dist = min(math.hypot(pk.x - d.x, pk.y - d.y), math.hypot(pk.x - p.x, pk.y - p.y))
                     if dist < bd:
                         best, bd = pk, dist
+            if best is not None and not self.dolly_fits(best.part):
+                return (None, self.dolly_refusal(best.part), 0, None)
             if best is not None:
                 return (("dload", best.id), "HOLD E: LOAD %s ONTO THE DOLLY ($%d)" % (
                     best.part.name.upper(), best.part.value), C.DOLLY_LOAD_TIME, lambda: self._dolly_load(p, best))
@@ -1168,10 +1180,12 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
                     return (None, "HOOD'S STILL ON - LET GO (G) AND STRIP IT FIRST", 0, None)
                 if engine_near:
                     part = car.parts["Engine"]
+                    if not self.dolly_fits(part):
+                        return (None, self.dolly_refusal(part), 0, None)
                     return (("dstrip", car.id), "HOLD E: STRIP %s ONTO THE DOLLY - $%d" % (
                         part.name.upper(), part.value), STRIP_TIME["engine"], lambda: self._dolly_strip(p, car))
             return (None, "PUSHING THE DOLLY.  G: LET GO", 0, None)
-        return (None, "DOLLY: %s ($%d) - TAKE IT TO SELL OR TUNE-UP.  G: LET GO" % (
+        return (None, "DOLLY: %s ($%d) - TO DAVE'S AUCTION, OR THE TUNE-UP.  G: LET GO" % (
             d.part.name.upper(), d.part.value), 0, None)
 
     def _engine_car_near(self, p, d):
@@ -1186,16 +1200,9 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             return car, reach < C.INTERACT_RANGE_SLOT + 1.2
         return None, False
 
-    def _dolly_bench(self, p, d, is_sell):
-        if d.part is None:
-            return (None, "THE DOLLY'S EMPTY.  G: LET GO", 0, None)
-        part = d.part
-        return (("dsell", id(part)), "HOLD E: SELL %s FOR $%d" % (part.name.upper(), part.value),
-                C.SELL_TIME, lambda: self._dolly_sell(p, d))
-
     def _dolly_load(self, p, pk):
         d = p.dolly
-        if d is not None and d.part is None and pk.id in self.pickups:
+        if d is not None and d.part is None and pk.id in self.pickups and self.dolly_fits(pk.part):
             d.part = pk.part
             del self.pickups[pk.id]
             self.sfx(S_PICKUP, d.x, d.y)
@@ -1203,21 +1210,12 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
     def _dolly_strip(self, p, car):
         d = p.dolly
         part = car.parts.get("Engine")
-        if d is not None and d.part is None and part is not None:
+        if d is not None and d.part is None and part is not None and self.dolly_fits(part):
             car.parts["Engine"] = None
             d.part = part
             self.sfx(S_STRIP, car.x, car.y)
             self.toast("%s WINCHED OUT THE %s" % (p.name, part.name.upper()), T_INFO)
             self._quest_on_dolly_engine(p, car)
-
-    def _dolly_sell(self, p, d):
-        part = d.part
-        if part is None:
-            return
-        d.part = None
-        self._earn(part.value, 1)
-        self.sfx(S_SELL, p.x, p.y)
-        self.toast("SOLD %s: +$%d" % (part.name.upper(), part.value), T_MONEY)
 
     def _update_dollies(self, dt):
         for d in self.dollies.values():
@@ -1234,7 +1232,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
                 if p is not None and p.dolly is d:
                     p.dolly = None
                 d.holder = None
-            if self.map.in_garage(d.x, d.y):
+            if self.in_shop(d.x, d.y):
                 d.idle_t = 0.0
             else:
                 d.idle_t += dt
@@ -1608,37 +1606,9 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         see the "BUY THIS SHOP" sign there instead (_fence_interaction), not empty shelves."""
         crates = list(self.map.market)
         for i, fs in enumerate(self.map.fence_shops):
-            if self.shop_owned[i + 1]:
+            if self.shop_ready(i + 1):          # (v0.14: bought AND cleared out)
                 crates.extend(fs["market"])
         return crates
-
-    def _fence_interaction(self, p, ax, ay):
-        """(v0.12, Bryce: "make multiple garages, make them available for purchase") the
-        plaque outside an unbought fence shop. Bought shops don't show up here again -- the
-        market crates they unlock take over instead (_market_crates)."""
-        for i, fs in enumerate(self.map.fence_shops):
-            idx = i + 1
-            if self.shop_owned[idx]:
-                continue
-            sx, sy = fs["sign"]
-            if math.hypot(ax - sx, ay - sy) >= C.INTERACT_RANGE_BENCH:
-                continue
-            price = C.SHOP_PRICE[idx]
-            if self.cash < price:
-                return (None, "SHOP %d: $%d TO BUY - CAN'T AFFORD IT YET" % (idx + 1, price), 0, None)
-            return (("buyshop", idx), "HOLD E: BUY SHOP %d - $%d (+$%d/DAY RENT)" % (idx + 1, price, C.SHOP_RENT[idx]),
-                    C.BUY_TIME, lambda: self._buy_shop(idx))
-        return None
-
-    def _buy_shop(self, idx):
-        if self.shop_owned[idx] or self.cash < C.SHOP_PRICE[idx]:
-            return
-        self.cash -= C.SHOP_PRICE[idx]
-        self.shop_owned[idx] = True
-        cx, cy = self.map.fence_shops[idx - 1]["center"]
-        self.sfx(S_CASH, cx, cy)
-        self.toast("SHOP %d IS YOURS. RENT'S UP TO $%d/DAY." % (idx + 1, self.rent_due()), T_MONEY)
-        self._story_event("buy")
 
     def _market_interaction(self, p, ax, ay):
         best, bd = None, 1.7            # crates are 1.75 m apart (v0.9: ten of them): nearest wins
@@ -1788,6 +1758,10 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             self.npcs[n.id] = n
             self.sfx(S_PUNCH, x, y)
             self.toast(self.rng.choice(COPJACK_LINES) % p.name, T_COP)
+        q = self.players.get(car.prisoner) if car.prisoner is not None else None
+        if q is not None and q.car_id == car.id:
+            self.toast("%s IS FREE! (STILL IN THE BACK SEAT, BUT FREE)" % q.name, T_MONEY)
+        car.prisoner = None
         car.kind = CIV
         car.copcar = True
         car.officer = None
@@ -1862,6 +1836,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             out.append(g)
         out.extend(getattr(self, "cell_traps", ()))
         out.extend(getattr(self, "shop_doors", ()))
+        out.extend(self._business_fixtures())     # (v0.14) junk in the garages you haven't cleared yet
         return out
 
     def _rebuild_trap_rects(self):
@@ -2040,6 +2015,9 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
                 vf = cop.vx * math.cos(cop.ang) + cop.vy * math.sin(cop.ang)
                 cop.throttle, cop.steer, cop.handbrake = (-1.0 if vf > 0.5 else 0.0), 0.0, True
                 return
+        if cop.prisoner is not None:
+            self._transport(cop, dt)             # (v0.14) somebody in the back: straight to the station
+            return
         spd = cop.speed()
         box = self._donut_for(cop)
         if box is not None:
@@ -2094,6 +2072,13 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
                 cop.throttle, cop.steer, cop.handbrake = 0.0, 0.0, False
                 return
             tx, ty, tvx, tvy, is_car = cop.last_target[0], cop.last_target[1], 0.0, 0.0, True
+        self._cop_drive(cop, dt, tx, ty, tvx, tvy, is_car)
+
+    def _cop_drive(self, cop, dt, tx, ty, tvx, tvy, is_car):
+        """Drive at (tx, ty): straight at it when it's close and in sight, otherwise down the
+        map's flow field. (v0.14: split out of _cop_ai so a cop with somebody cuffed in the back
+        can use the same driving to get to the precinct.)"""
+        spd = cop.speed()
         # stuck? back up with opposite lock, like a confused shopping trolley
         if cop.rev_t > 0:
             cop.rev_t -= dt
@@ -2181,7 +2166,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         beat = [c for c in self.cars.values() if c.kind == COP and c.beat]
         if self.players:
             for car in beat:
-                if car.patrol and min(math.hypot(p.x - car.x, p.y - car.y)
+                if car.patrol and car.prisoner is None and min(math.hypot(p.x - car.x, p.y - car.y)
                                       for p in self.players.values()) > C.PATROL_RECYCLE_DIST:
                     del self.cars[car.id]
                     beat.remove(car)
@@ -2199,6 +2184,17 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         """Heat's gone: a patrol unit rejoins the grid wherever it happens to be."""
         car.patrol = True
         car.last_target = None
+        self._join_grid(car)
+
+    def _node_near(self, x, y):
+        T = C.TILE_M
+        i = int(round((x / T - C.ROAD_TILES / 2.0) / C.PITCH))
+        j = int(round((y / T - C.ROAD_TILES / 2.0) / C.PITCH))
+        return max(0, min(C.BLOCKS, i)), max(0, min(C.BLOCKS, j))
+
+    def _join_grid(self, car):
+        """Put a car on the traffic grid's lanes from wherever it is (the traffic AI drives it
+        from there). (v0.14: split out of _back_on_patrol for the ride to the precinct.)"""
         T = C.TILE_M
         i = int(round((car.x / T - C.ROAD_TILES / 2.0) / C.PITCH))
         j = int(round((car.y / T - C.ROAD_TILES / 2.0) / C.PITCH))
@@ -2619,7 +2615,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
                 continue
             if car.speed() >= C.DELIVER_MAX_SPEED:
                 continue
-            if all(self.map.in_garage(x, y) for x, y in car.corners()):
+            if all(self.in_shop(x, y) for x, y in car.corners()):     # (v0.14: any shop you've opened)
                 self._deliver(car)
 
     def _deliver(self, car):
@@ -2650,7 +2646,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
                 t.append((car.x, car.y, car.vx, car.vy, True, car))
         for p in self.players.values():
             wanted = self.heat > 0 or (p.jumpsuit and C.JUMPSUIT_WITNESS)   # (orange: wanted on sight)
-            if wanted and p.state in (FOOT, TUMBLE) and not p.jailed and not self.map.in_garage(p.x, p.y) \
+            if wanted and p.state in (FOOT, TUMBLE) and not p.jailed and not self.in_shop(p.x, p.y) \
                     and not p.hidden():                                   # (v0.9) it's just a box
                 t.append((p.x, p.y, p.vx, p.vy, False, p))
         return t
@@ -2815,7 +2811,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
                 self.toast("DISPATCH IS OUT OF CARS FOR TODAY. YOU'RE ON YOUR OWN, OFFICERS.", T_COP)
         if self.heat <= 0:
             self.heat_zero_t += dt
-            calm = [c for c in cops if c.fire_t <= 0 and not c.patrol]
+            calm = [c for c in cops if c.fire_t <= 0 and not c.patrol and c.prisoner is None]
             if self.heat_zero_t >= C.COP_DESPAWN_AT_ZERO and calm:
                 for c in calm:
                     if c.beat:
@@ -2826,9 +2822,10 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         else:
             self.heat_zero_t = 0.0
 
-    def arrest(self, p):
+    def arrest(self, p, officer=None):
         """Cuffed (v0.8: by an officer on foot). A few seconds on the kerb for the
-        mugshot, then the precinct lockup (see police.py)."""
+        mugshot, then the precinct lockup (see police.py). (v0.14) With an officer who's
+        got a car nearby: he carries you to it and drives you there himself."""
         if p.state == CARRIED:
             self._free_carried_player(p)
         self._drop_carry(p, throw=False)
@@ -2853,6 +2850,8 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         self.toast("%s GOT BUSTED! PARTS DROPPED AT THE SCENE." % p.name, T_COP)
         self._mugshot(p)
         self._quest_on_arrest(p)
+        if officer is not None:
+            self._start_escort(p, officer)
 
 
     # ------------------------------------------------------------------ panicking pedestrians
@@ -2972,6 +2971,14 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
                 if d2 != (-d[0], -d[1]) and self.map.node_ok(i + d2[0], j + d2[1])]
         if not opts:
             opts = [((-d[0], -d[1]), 1)]
+        if car.prisoner is not None and self.map.precinct_exit is not None:
+            # (v0.14) somebody cuffed in the back: no wandering, every turn heads for the station
+            ti, tj = self._node_near(*self.map.precinct_exit)
+            if (i, j) == (ti, tj):
+                opts = [(d2, 1) for d2, _ in opts]
+            else:
+                best = min(abs(i + d2[0] - ti) + abs(j + d2[1] - tj) for d2, _ in opts)
+                opts = [(d2, wt) for d2, wt in opts if abs(i + d2[0] - ti) + abs(j + d2[1] - tj) == best]
         total = sum(wt for _, wt in opts)
         r = self.rng.random() * total
         d2 = opts[-1][0]
@@ -3255,7 +3262,8 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
 
     # ------------------------------------------------------------------ parked civilian cars
     def _traffic(self, dt):
-        civs = [c for c in self.cars.values() if c.kind == CIV and c.state != DELIVERED and c.special != "impound"]
+        civs = [c for c in self.cars.values() if c.kind == CIV and c.state != DELIVERED and c.special != "impound"
+                and c.sale is None]
         self._impound_bikes(dt)
         # tow abandoned stolen cars so the city doesn't run dry
         for car in civs:
