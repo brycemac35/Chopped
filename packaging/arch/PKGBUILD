@@ -1,0 +1,33 @@
+# Maintainer: Bryce MacKenzie
+#
+# Arch Linux (and Manjaro, EndeavourOS, Garuda...) package for Chopped. It wraps the same
+# single-file PyInstaller build the Windows exe comes from -- Python, pygame-ce and SDL are all
+# inside it, so there's nothing to depend on but the C library. CI (.github/workflows/build.yml,
+# the "Arch package" job) copies the built dist/Chopped and the generated icon in next to this
+# file, sets pkgver from config.RELEASE, and runs makepkg. To build one yourself:
+#
+#   ./build_linux.sh                                  # -> dist/Chopped, build/gen/chopped_256.png
+#   cp dist/Chopped build/gen/chopped_256.png packaging/arch/
+#   cd packaging/arch && makepkg -f && sudo pacman -U chopped-*.pkg.tar.zst
+pkgname=chopped
+pkgver=0.13.1
+pkgrel=1
+pkgdesc="Co-op car-theft chop-shop game for 1-4 crooks: Doom-style pixel art, LAN and online"
+arch=('x86_64')
+url="https://github.com/brycemac35/chopped"
+license=('LicenseRef-custom')
+depends=('glibc' 'zlib')
+optdepends=('pipewire-pulse: sound, if you run PipeWire (PulseAudio or ALSA work too)')
+# A PyInstaller one-file binary carries its Python archive tacked onto the end of the ELF:
+# strip it and it's just a bootloader that can't find its own game. Hence no strip, no debug.
+options=('!strip' '!debug')
+source=("Chopped" "chopped_256.png" "chopped.desktop")
+sha256sums=('SKIP' 'SKIP' 'SKIP')
+
+package() {
+    install -Dm755 Chopped "$pkgdir/opt/chopped/Chopped"
+    install -dm755 "$pkgdir/usr/bin"
+    ln -s /opt/chopped/Chopped "$pkgdir/usr/bin/chopped"
+    install -Dm644 chopped.desktop "$pkgdir/usr/share/applications/chopped.desktop"
+    install -Dm644 chopped_256.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/chopped.png"
+}

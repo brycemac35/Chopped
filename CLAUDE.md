@@ -480,6 +480,12 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
 - **Music** (Bryce asked for "pouya / suicide boys type beat"): `music.py` renders an original dark trap / Memphis beat at startup, with no files. Layers switch at loop boundaries depending on heat. M toggles it; `--no-music` turns it off.
 - **Protocol VERSION 5:** inputs carry the view yaw; snapshots carry the day number and rent due.
 - **Windows exe:** built by GitHub Actions (`.github/workflows/build.yml`) on every push, and smoke-tested as an exe. Build #1 (v0.4) was green on Windows. Check the Actions tab for the latest run.
+- **Linux + Arch (Sept 27, 2026, Bryce: "make a package for arch based linux systems as well"):** the same
+  workflow's `linux-bin` job builds the one-file binary on ubuntu-22.04 (old glibc on purpose, so it runs on
+  anything newer) and smoke-tests it; `arch-package` wraps it with `packaging/arch/PKGBUILD` (+ desktop
+  entry, generated icon) via `makepkg` in an `archlinux:base-devel` container, `pacman -U`s it and runs
+  the selftest from `/usr/bin/chopped`. Artifacts: **Chopped-linux**, **Chopped-arch**. The PKGBUILD must
+  keep `options=('!strip')`: stripping a PyInstaller one-file binary cuts off its bundled Python.
 - The beat takes about 0.8 s to render in a background thread at startup, while you're in the menu.
 
 ### Task 1: Play the exe on a real Windows PC

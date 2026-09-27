@@ -38,7 +38,9 @@ GitHub builds it for you on every push, on a real Windows machine:
 
 The run also tests the game on Windows and Linux and smoke-tests the exe itself: a headless bot session, then a host exe and a client exe playing together over UDP. If any of that fails, the run goes red and no exe is uploaded.
 
-To get a public download link, push a version tag (`git tag v0.8.0 && git push origin v0.8.0`). The workflow then publishes `Chopped.exe` as a **GitHub Release**.
+**Linux:** the same run also builds a one-file Linux binary (**Chopped-linux**: a `.tar.gz` with `Chopped`, an icon and a desktop entry; runs on Ubuntu 22.04 / Debian 12 and anything newer) and an **Arch package** (**Chopped-arch**: `sudo pacman -U chopped-*.pkg.tar.zst`, for Arch, Manjaro, EndeavourOS and friends; it installs to `/opt/chopped` with a `chopped` command and an app-menu entry). The Arch job builds it with `makepkg` in a real Arch container, installs it with `pacman`, and runs the game's selftest from the installed package before uploading it.
+
+To get a public download link, push a version tag (`git tag v0.8.0 && git push origin v0.8.0`). The workflow then publishes `Chopped.exe`, the Linux tarball and the Arch package as a **GitHub Release**.
 
 > **SmartScreen:** the exe isn't code-signed, so Windows may say "Windows protected your PC". Click **More info**, then **Run anyway**.
 
@@ -424,6 +426,16 @@ It creates `.venv`, installs `requirements.txt` plus `pyinstaller==6.22.3`, and 
 
 ```bash
 ./build_linux.sh
+```
+
+### Arch package (`chopped-<version>-1-x86_64.pkg.tar.zst`)
+
+`packaging/arch/PKGBUILD` wraps that same binary (no strip: stripping a PyInstaller one-file binary cuts off its bundled Python):
+
+```bash
+./build_linux.sh
+cp dist/Chopped build/gen/chopped_256.png packaging/arch/
+cd packaging/arch && makepkg -f && sudo pacman -U chopped-*.pkg.tar.zst
 ```
 
 ---

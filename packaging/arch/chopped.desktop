@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Chopped
+GenericName=Co-op car theft
+Comment=Steal cars, strip them, pay the rent. 1-4 crooks, LAN or online.
+Exec=chopped
+Icon=chopped
+Terminal=false
+Categories=Game;ActionGame;
+Keywords=cars;heist;coop;multiplayer;

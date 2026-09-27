@@ -1,6 +1,7 @@
 # Builds and tests Chopped on every push. The Windows job produces the
-# double-clickable Chopped.exe as a downloadable artifact; pushing a tag like
-# v0.4.0 also publishes it as a GitHub Release (a public download link).
+# double-clickable Chopped.exe as a downloadable artifact, the Linux jobs a
+# one-file Linux binary and an Arch package; pushing a tag like v0.4.0 also
+# publishes all three as a GitHub Release (a public download link).
 name: Build
 
 on:
@@ -94,10 +95,117 @@ jobs:
           path: dist/smoke-logs/
           if-no-files-found: ignore
 
+  # The Linux build: the same one-file PyInstaller recipe (Chopped.spec) as the exe. Built on
+  # Ubuntu 22.04 on purpose -- a binary only runs on a glibc at least as new as the one it was
+  # built against, and 22.04's is old enough for Debian 12, Mint, Fedora, Arch and friends.
+  linux-bin:
+    name: Linux binary
+    needs: tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install pygame-ce==2.5.8 pyinstaller==6.22.3
+          python -m pip install miniupnpc==2.3.3 || echo "::warning::miniupnpc didn't install: building without UPnP"
+      - name: Draw the icon (generated from the game's sprite code)
+        run: python tools/make_icon.py
+      - name: Build Chopped
+        run: python -m PyInstaller --noconfirm --clean Chopped.spec
+      - name: Smoke test the binary (selftest + host/client over UDP)
+        run: python tools/smoke_exe.py dist/Chopped
+      - name: Package
+        run: |
+          mkdir -p package
+          cp dist/Chopped build/gen/chopped_256.png packaging/arch/chopped.desktop package/
+          chmod +x package/Chopped
+          cat > package/README.txt <<'EOF2'
+          CHOPPED - co-op car theft for 1-4 crooks (Linux x86_64)
+          =======================================================
+
+          ./Chopped            (or double-click it; it's one file, Python and all)
+
+          If it won't start, mark it executable first: chmod +x Chopped
+
+          Arch / Manjaro / EndeavourOS: grab the Chopped-arch artifact instead and
+          install it with:  sudo pacman -U chopped-*.pkg.tar.zst  -- then it's
+          "Chopped" in your app menu and "chopped" in a terminal.
+
+          HOST: pick HOST GAME and tell your friends the IP on screen. Over the
+          internet the game tries UPnP on UDP 27015; if that fails, forward UDP 27015
+          or use Tailscale/ZeroTier. JOIN: pick JOIN GAME and type the host's IP.
+          Saves live in ~/.local/share/chopped/saves.
+          EOF2
+          echo "Build: ${{ github.sha }}  (${{ github.ref_name }})" >> package/README.txt
+          # (a tarball inside the artifact: artifact zips drop the executable bit)
+          tar -C package -czf Chopped-linux-x86_64.tar.gz .
+      - name: Upload the Linux build
+        uses: actions/upload-artifact@v4
+        with:
+          name: Chopped-linux
+          path: Chopped-linux-x86_64.tar.gz
+          if-no-files-found: error
+      - name: Upload smoke-test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-logs-linux
+          path: dist/smoke-logs/
+          if-no-files-found: ignore
+
+  # Bryce: "make a package for arch based linux systems as well". The binary above, wrapped by
+  # packaging/arch/PKGBUILD with a desktop entry and an icon, built with makepkg in a real Arch
+  # container, then installed with pacman and run once to prove the package itself works.
+  arch-package:
+    name: Arch package
+    needs: linux-bin
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: Chopped-linux
+          path: linux
+      - name: makepkg
+        run: |
+          tar -C linux -xzf linux/Chopped-linux-x86_64.tar.gz
+          VER=$(sed -n 's/^RELEASE = (\([0-9]*\), \([0-9]*\), \([0-9]*\)).*/\1.\2.\3/p' chopped/config.py)
+          echo "== packaging chopped $VER"
+          test -n "$VER"
+          mkdir -p pkg
+          cp packaging/arch/PKGBUILD packaging/arch/chopped.desktop linux/Chopped linux/chopped_256.png pkg/
+          sed -i "s/^pkgver=.*/pkgver=$VER/" pkg/PKGBUILD
+          useradd -m builder
+          chown -R builder pkg
+          cd pkg
+          sudo -u builder makepkg -f --nodeps --noconfirm      # (makepkg won't run as root)
+          ls -la *.pkg.tar.zst
+      - name: Install it and run the selftest from the installed package
+        run: |
+          pacman -U --noconfirm pkg/chopped-*.pkg.tar.zst
+          test -x /usr/bin/chopped
+          test -f /usr/share/applications/chopped.desktop
+          SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy chopped --selftest --frames 120 --log /tmp/arch-selftest.log \
+            || { cat /tmp/arch-selftest.log; exit 1; }
+          cat /tmp/arch-selftest.log
+      - name: Upload the Arch package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Chopped-arch
+          path: pkg/*.pkg.tar.zst
+          if-no-files-found: error
+
   release:
     name: Publish release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: windows-exe
+    needs: [windows-exe, linux-bin, arch-package]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -106,9 +214,18 @@ jobs:
         with:
           name: Chopped-windows
           path: package
+      - uses: actions/download-artifact@v4
+        with:
+          name: Chopped-linux
+          path: linux
+      - uses: actions/download-artifact@v4
+        with:
+          name: Chopped-arch
+          path: arch
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${{ github.ref_name }}" package/Chopped.exe package/README.txt \
+            linux/Chopped-linux-x86_64.tar.gz arch/*.pkg.tar.zst \
             --repo "${{ github.repository }}" --title "Chopped ${{ github.ref_name }}" --generate-notes
