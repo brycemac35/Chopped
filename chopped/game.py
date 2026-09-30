@@ -234,7 +234,10 @@ class App:
     # ------------------------------------------------------------------ flow
     def host(self):
         self._save_settings()
-        port = getattr(self.args, "port", None) or C.DEFAULT_PORT
+        # (0 is a real answer: "any free port", what the selftest asks for so it can run next to a live game)
+        port = getattr(self.args, "port", None)
+        if port is None:
+            port = C.DEFAULT_PORT
         try:
             # (v0.12.1) the main menu's save slot (or --save FILE). The selftest bot never
             # touches your slots -- it'd overwrite the real crew with a robot's bad decisions.

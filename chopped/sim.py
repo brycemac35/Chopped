@@ -3068,7 +3068,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         as (thing, clearance in metres from our bumper to it), or (None, 0)."""
         look = 24.0
         passing = car.overtake_t > 0
-        car_w = 1.4 if passing else car.hw + 1.1   # (two 2.4 m cars side by side need 2.4 to not touch)
+        car_w = 1.9 if passing else car.hw + 1.1   # (two 2.4 m cars side by side need 2.4 to not touch)
         best, bf = None, look
         for other in self.cars.values():
             if other is car:
@@ -3348,6 +3348,8 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         if blocker is not None:
             # never faster than what lets us stop 2 m short of it at a comfortable 6 m/s^2
             target = min(target, math.sqrt(2.0 * 6.0 * max(0.0, gap - 2.0)))
+            if car.overtake_t > 0 and gap > 0.8:
+                target = max(target, 2.5)       # (v0.18) mid-pass: creep out round it, don't sit there braking
         boxed = False
         if car.overtake_t <= 0 and not self._has_priority(car):
             # (v0.18) don't block the box: no room on the far side of the junction, so wait at the line
@@ -3371,6 +3373,8 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
                 # a stalled car or someone loitering in the road: swing out and go round
                 car.overtake_t = 3.5
                 car.blocked_t = 0.0
+                car.rev_t = 0.4                 # (v0.18) a car stopped 2 m off a bumper can't swing out
+                #                                 without a run-up: back off a hair first
         else:
             car.blocked_t = 0.0
             throttle = clamp((target - vf) * 0.6, -1.0, 1.0)

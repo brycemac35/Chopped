@@ -48,6 +48,7 @@ class Audio(SfxSynth):
         self._engine_bytes = {}       # the same as raw PCM, straight off the render thread
         self._eng_want = []           # layouts/tone banks the game has asked for (rendered first)
         self._eng_failed = False
+        self._eng_urgent = False
         self.eng_ch = []              # [4 channels] per engine slot: 0 = your car, 1 = the loudest other.
                                       # index = (band parity) * 2 + (0 on load, 1 off load)
         self.eng_state = [[None] * 4, [None] * 4]
@@ -189,6 +190,8 @@ class Audio(SfxSynth):
     # Render order when nobody asks for anything: the common cars first. A layout the game asks
     # for jumps the queue. Each is ~0.12 s of pure Python; the thread naps between them so the
     # game loop isn't starved of the GIL.
+    IDLE_NAP = 0.02       # s slept between the bands of a layout nobody has asked for yet
+    IDLE_GAP = 0.4        # ... and between such layouts
     ENGINE_JOBS = ("i4", "v8", "i6", "i4t", "v6", "vtec", "rotary", "diesel", "electric", "bike_i4", "single",
                    "turbo", "sc", "air")
 
@@ -205,14 +208,19 @@ class Audio(SfxSynth):
                 if name is None:
                     break
                 asked = bool(want)
-                self._render_job(name)
+                self._eng_urgent = False
+                # a layout the game is waiting for renders flat out; the read-ahead of the rest is spread
+                # thin (a nap per band and between layouts) so it never holds the GIL against the frame loop
+                self._render_job(name, 0.0 if asked else self.IDLE_NAP)
                 done.add(name)
                 if not asked:
-                    time.sleep(0.004)
+                    time.sleep(self.IDLE_GAP)
         except Exception:
             self._eng_failed = True       # the old buzz it is, then
 
-    def _render_job(self, name):
+    def _render_job(self, name, nap=0.0):
+        """Render one job to PCM. `nap` seconds are slept after each band/tone (background read-ahead)."""
+        import time
         rate = self.rate
         if name == "air":
             self._air_bytes = self._pcm(ES.render_air(rate), 0.5)
@@ -225,6 +233,8 @@ class Audio(SfxSynth):
             for f in freqs:
                 x, _actual = ES.render_tone(f, rate, parts)
                 bands.append(self._pcm(x, vol))
+                if nap and not self._eng_urgent:
+                    time.sleep(nap)
             self._tone_bytes[name] = (freqs, bands)
         else:
             voice, red_hint = ES.LAYOUT_VOICE[name]
@@ -236,6 +246,8 @@ class Audio(SfxSynth):
                     x, actual = ES.render_engine(name, r, rate, redline=red, vtec_rpm=red * C.VTEC_AT,
                                                  seed=voice, load=load)
                     pair.append(self._pcm(x, 0.55))
+                    if nap and not self._eng_urgent:
+                        time.sleep(nap)
                 rpms.append(actual)
                 bands.append(tuple(pair))
             self._engine_bytes[name] = (rpms, bands)
@@ -252,6 +264,7 @@ class Audio(SfxSynth):
     def _want(self, name):
         if name not in self._eng_want:
             self._eng_want.append(name)
+            self._eng_urgent = True        # (the read-ahead in progress stops napping and finishes)
 
     def _bank(self, name):
         """The engine bank for a layout, or None while it's still rendering (asks for it)."""
