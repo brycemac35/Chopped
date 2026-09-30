@@ -29,6 +29,7 @@ hydraulics. No pygame, host-only.
 import math
 
 from . import config as C
+from .characters import stat, stamina_max
 from .enums import *  # noqa: F401,F403
 from .entities import NPC, Player, Trap
 from .physics import obb_rect_contact
@@ -465,7 +466,7 @@ class Police:
         p.hurt_t = 0.0
         p.jumpsuit = False
         p.pants_t = 0.0
-        p.stamina = C.STAMINA_MAX
+        p.stamina = stamina_max(p.char)
         self.toast("%s WOKE UP AT THE SHOP. EVERYTHING HURTS." % p.name, T_INFO)
 
     # ------------------------------------------------------------------ busted -> the precinct
@@ -776,7 +777,7 @@ class Police:
         return None
 
     def _bail(self, p):
-        return C.BAIL_BASE + C.BAIL_PER_ARREST * max(0, p.arrests - 1)
+        return int((C.BAIL_BASE + C.BAIL_PER_ARREST * max(0, p.arrests - 1)) * stat(p.char, "fee_mult"))
 
     def _post_bail(self, p):
         bail = self._bail(p)

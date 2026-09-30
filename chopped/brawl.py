@@ -17,6 +17,7 @@ treats as "the host said so".
 import math
 
 from . import config as C
+from .characters import stamina_max
 from .enums import *  # noqa: F401,F403
 from .entities import NPC, Player
 from .lines import (BONK_LINES, BRAWL_LINES, HUMBLED_LINES, REFUND_LINES, LAUGH_LINES,
@@ -476,8 +477,8 @@ class Brawl:
                 if q is not p and q.dancing and q.state == FOOT and \
                         (q.x - p.x) ** 2 + (q.y - p.y) ** 2 < C.HIGHFIVE_RADIUS ** 2:
                     self.highfive_cd = C.HIGHFIVE_COOLDOWN
-                    p.stamina = min(C.STAMINA_MAX, p.stamina + C.HIGHFIVE_STAMINA)
-                    q.stamina = min(C.STAMINA_MAX, q.stamina + C.HIGHFIVE_STAMINA)
+                    p.stamina = min(stamina_max(p.char), p.stamina + C.HIGHFIVE_STAMINA)
+                    q.stamina = min(stamina_max(q.char), q.stamina + C.HIGHFIVE_STAMINA)
                     self.toast("%s AND %s SYNCED UP. TEAM SPIRIT! (+STAMINA)" % (p.name, q.name), T_WHITE)
                     break
         if self.rng.random() > dt * 2.0:

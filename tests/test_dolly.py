@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from chopped import config as C
 from chopped import sim as S
+from chopped.characters import stamina_max
 from chopped import protocol as P
 from chopped.parts import Part, SLOT_ANCHOR
 
@@ -163,12 +164,12 @@ class TestDolly(unittest.TestCase):
         press(p, S.B_UP)
         step(w, 1.0)
         self.assertAlmostEqual(p.vx, C.WALK_SPEED * C.DOLLY_SPEED_MULT, delta=0.05)
-        self.assertEqual(p.stamina, C.STAMINA_MAX, "an empty dolly is no workout")
+        self.assertEqual(p.stamina, stamina_max(p.char), "an empty dolly is no workout")
         d.part = Part("eng_stock_1_6")
         p.x = gx + 4
         step(w, 1.0)
         self.assertAlmostEqual(p.vx, C.WALK_SPEED * C.DOLLY_LOADED_SPEED_MULT, delta=0.05)
-        self.assertLess(p.stamina, C.STAMINA_MAX - 5, "a loaded one is")
+        self.assertLess(p.stamina, stamina_max(p.char) - 5, "a loaded one is")
         self.assertAlmostEqual(math.hypot(d.x - p.x, d.y - p.y), C.DOLLY_OFFSET, delta=0.05)
 
     def test_let_go_car_and_arrest_all_drop_the_dolly_where_you_stand(self):

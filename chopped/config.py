@@ -9,8 +9,8 @@ engine and exactly no maths textbooks).
 import math
 
 GAME_TITLE = "Chopped"
-VERSION = 15  # bump when the wire protocol changes so old clients get a polite "no"
-RELEASE = (0, 14, 0)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
+VERSION = 17  # bump when the wire protocol changes so old clients get a polite "no"
+RELEASE = (0, 17, 0)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
 
 # --------------------------------------------------------------------------
 # Rendering scale
@@ -86,6 +86,16 @@ STAMINA_SPRINT_DRAIN = (12.0, 22.0, 38.0)   # per second: empty / one-handed / t
 STAMINA_WALK_2H_DRAIN = 8.0      # just carrying a bumper is cardio
 STAMINA_REGEN = 18.0
 STAMINA_REGEN_DELAY = 0.9        # catch your breath before you get it back
+# (v0.16, choosable characters) see characters.py; every perk is a multiplier from this block.
+CHAR_DASH_STAMINA_MAX = 1.5      # ATHLETE: a lung and a half. Mostly the half is ego.
+CHAR_DASH_STAMINA_REGEN = 1.3    # ...and he gets his wind back like he's been reading about breathing
+CHAR_SPANNER_STRIP_TIME = 0.6    # GREASE MONKEY: every strip (dolly engines, junk piles too) in 60% of the time. Muscle memory.
+CHAR_SLIM_BREAKIN_TIME = 0.5     # LIGHT FINGERS: half the time to smash in...
+CHAR_SLIM_HOTWIRE_TIME = 0.5     # ...and half the time to hotwire. He has a lot of practice, and a record.
+CHAR_SLIM_ALARM_CUT_TIME = 0.5   # snip snip
+CHAR_SLIM_ALARM_WIRES = 0.5      # wires to guess from x0.5: 4 -> 2, so a coin flip instead of a prayer
+CHAR_SMOOTH_SALE_BONUS = 1.15    # SMOOTH TALKER: +15% on sales he makes (his auction lots, orders he fills)
+CHAR_SMOOTH_FEE_MULT = 0.5       # bail and papers cost him half: the clerk "knows a guy"
 STAMINA_RECOVER_AT = 25.0        # exhausted until you're back above this
 JUMP_SPEED = 6.2                 # m/s straight up: ~0.9 m of air. Doomguy couldn't do this.
 JUMP_GRAVITY = 21.0              # snappier than real gravity; floaty jumps feel like the moon
@@ -738,7 +748,17 @@ DAY_LENGTH = 180.0               # seconds: dawn to midnight
 # costs, once; SHOP_RENT is what it adds to the daily bill forever after.
 SHOP_PRICE = (0, 4000, 12000, 30000)
 SHOP_RENT = (100, 150, 250, 400)
-DEBT_GRACE = 120.0               # two minutes in the red and the landlord changes the locks
+# (Bryce, after a playtester asked "can you even lose?") Rent strikes replace the old hidden
+# two-minute debt timer, which nobody could see and nobody lost to. Now it is baseball, with
+# eviction: miss a midnight (cash can't cover rent PLUS whatever's carried over) and that is a
+# strike; the unpaid rent piles onto next night's bill. Pay the whole pile and the slate is clean.
+# Two strikes and the landlord changes the locks. Two, because one is a bad night, and three is
+# a lease with feelings. Change it and every toast and the HUD follow, they read this number.
+RENT_STRIKES_MAX = 2
+# Seconds before midnight that the landlord's nice-guy voicemail arrives ("YOU'RE $N SHORT").
+# 45 s is a long enough run to sell a few parts or steal one more car, and short enough that the
+# toast isn't stale by the time it matters. Once per day, so it's a nudge, not a nag.
+RENT_WARN_TIME = 45.0
 # (save files) how often a hosting server with --save writes the crew's progress to disk,
 # real seconds, so a crash or a yanked power cord costs at most this much. Also saved once,
 # unconditionally, on a clean shutdown -- this is just the safety net in between.
@@ -877,18 +897,44 @@ MAX_PICKUPS = 90
 
 TOAST_TIME = 3.5
 SAY_TIME = 9.0                   # (v0.12.1) s a line of NPC dialogue stays up: long enough to read a job brief
+# Volume sliders (settings screen), each 0..1. Final gain = (master * bus) ** VOLUME_CURVE.
+# Curve 2.0: perceived loudness is roughly logarithmic, so slider 0.5 -> gain 0.25 (-12 dB) sounds about
+# half as loud; a linear slider would feel like nothing happens until the bottom. 1.0 = the mix exactly
+# as tuned before sliders existed (audio.MASTER and MUSIC_VOLUME are the baseline). The ONE set of
+# default numbers: settings.py shows them as percent (VOL_*_DEFAULT below are just x100).
+VOLUME_DEFAULTS = {"master": 1.0,    # the OS volume knob is the real "quiet", so master starts full
+                   "music": 0.7,     # the beat sits under the engines and the crunching, not on top
+                   "sfx": 1.0,
+                   "engine": 0.8}    # engines run constantly, so a touch under the one-shots
+VOLUME_CURVE = 2.0
 MUSIC_VOLUME = 0.45              # the beat sits under the engine and the sirens, not on top of them
 MOUSE_PITCH_SENS = 0.0022        # look up/down: share of the view height per mouse count
 PITCH_LIMIT = 0.42               # ...up to this share of the view (y-shearing gets weird past it)
 # ---- sprite angles (v0.8, Bryce: "make the objects you interact with have more angles so they
 # feel more real"). Box models are rendered once per angle and cached, so more angles cost a
 # little memory and a little first-sight rendering, not frame time.
-CAR_ANGLES = 32                  # was 16: cars turning in front of you no longer "tick" round
-CHASE_CAR_ANGLES = 72            # your own car in the chase cam: it's right there, being drifted
-PERSON_ANGLES = 16               # was 8
-PROP_ANGLES = 16                 # crates, the dolly, gnomes, traps, the gate (was 8)
-SPRITE_CACHE_CARS = 4000
-SPRITE_CACHE_PEOPLE = 4000
+# (v0.17, Bryce: "up the resolution on all objects by 4x... add extra angled frames": doubled again.)
+CAR_ANGLES = 64                  # was 32 (16 before that): a car turning in front of you is a smooth swing now
+CHASE_CAR_ANGLES = 144           # your own car in the chase cam: 2.5 degrees a frame, you can't see the steps
+PERSON_ANGLES = 32               # was 16 (8 before that)
+PROP_ANGLES = 32                 # crates, the dolly, gnomes, traps, the gate (was 16)
+# ---- (v0.17) the hi-res pass. The 3D view renders at RENDER_SCALE x 640x328; the HUD stays
+# 640x360 and is scaled up over it, chunky as ever. 2 = 1280x656, exactly a 1080p desktop's 2x
+# window, so the frame goes to the screen 1:1. 3 is for 4K and brave CPUs; 1 is the old look.
+RENDER_SCALE_DEFAULT = 2
+RENDER_SCALE_MIN, RENDER_SCALE_MAX = 1, 3   # (the settings slider's range) past 3x the sprite blits eat the frame
+FP_HIRES_WORLD = False           # walls, street, sky and ceilings at full render scale too. Off: they're
+                                 # 4-8 px/m textures with nothing sharper to show, and their per-column /
+                                 # per-row Python loops cost ~8 ms more a frame at 2x (fp._world_lowres)
+# Box-model sprites are drawn at SPRITE_DETAIL x their old pixels-per-metre when you're up close
+# (a car 12 -> 48 px/m). Only up close: each sprite has mips at 1x, 2x, 4x and the renderer picks
+# the smallest one that still covers the screen pixels, so a car 80 m away costs what it used to.
+SPRITE_DETAIL = 4
+SPRITE_MIP_BIAS = 1.0            # a mip must have >= this x the on-screen px/m; <1 trades sharpness for RAM
+SPRITE_CACHE_MB = 160            # every cached sprite angle, by pixel bytes (LRU). A 48 px/m car is ~100 KB,
+                                 # the chase cam's 80 px/m one ~300 KB: about a busy street's worth, well
+                                 # under the 1 GB we promised the process would stay under
+FOV_MIN, FOV_MAX = 60, 120       # the FOV slider's range: below 60 is a tube, above 120 the walls bend
 CHASE_BACK = 3.8                 # 3rd-person camera: this far behind, plus 0.75 x the car's length
 CHASE_HEIGHT = 2.1               # ...and this high, plus a bit for tall vans
 CHASE_PITCH = 0.12               # looking down at the car by this share of the view
@@ -902,6 +948,7 @@ DRIFT_MIN_SPEED = 8.0
 # First-person view (the Doom-style one)
 # --------------------------------------------------------------------------
 FP_FOV = 90.0                    # degrees across. Doom's number, and it keeps side streets in view
+                                 # (v0.17: the default; the settings slider calls FPRenderer.set_fov)
 FP_EYE = 1.6                     # metres: standing eye height
 FP_EYE_CAR = 1.2                 # sitting in a Kei, knees round your ears
 FP_EYE_BIKE = 1.55               # (v0.13) on a bike: sat up high, hunched over the tank
@@ -935,3 +982,14 @@ def door_specs(garage_rect):
     gx, gy, gw, gh = garage_rect
     y = gy + gh
     return [(i, gx + (col + 0.5) * TILE_M, y) for i, col in enumerate(DOOR_COLS)]
+
+
+# --------------------------------------------------------------------------
+# (v0.17) player settings (settings.py; the SETTINGS screen in the main menu and pause menu)
+# --------------------------------------------------------------------------
+# (FOV_MIN/MAX and RENDER_SCALE_* live with the rest of the hi-res settings, up by CAR_ANGLES)
+# the volume sliders' defaults in percent: VOLUME_DEFAULTS (with the sound settings), x100
+VOL_MASTER_DEFAULT = int(round(VOLUME_DEFAULTS["master"] * 100))
+VOL_MUSIC_DEFAULT = int(round(VOLUME_DEFAULTS["music"] * 100))
+VOL_SFX_DEFAULT = int(round(VOLUME_DEFAULTS["sfx"] * 100))
+VOL_ENGINE_DEFAULT = int(round(VOLUME_DEFAULTS["engine"] * 100))

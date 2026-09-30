@@ -72,6 +72,8 @@ def dump(world):
         # (v0.12) which shops the crew owns -- rent (World.rent_due) is computed from this,
         # so losing it on load would quietly refund every fence the crew ever bought.
         "shop_owned": list(world.shop_owned),
+        # (v0.15) rent strikes: the landlord remembers, even across a reload
+        "strikes": world.strikes, "back_rent": world.back_rent,
         # (v0.12.1) the city itself. shop_owned is a list of lot INDICES, which only mean
         # anything in the city they were bought in -- load them into a fresh random city
         # and the crew wakes up owning somebody else's warehouse. Also: your city, back.
@@ -109,6 +111,8 @@ def apply(world, data):
         for i in range(1, len(world.shop_owned)):    # shop 0 (home base) is always owned
             if i < len(saved_shops):
                 world.shop_owned[i] = bool(saved_shops[i])
+    world.strikes = max(0, min(C.RENT_STRIKES_MAX - 1, int(data.get("strikes", 0))))
+    world.back_rent = max(0, int(data.get("back_rent", 0)))
     world.story_ch = max(0, int(data.get("story_ch", world.story_ch)))
     world.story_active = bool(data.get("story_active", world.story_active))
     world.story_n, world.story_flags, world.story_told = 0, {}, False

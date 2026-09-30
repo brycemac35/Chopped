@@ -619,7 +619,7 @@ class TestNoPygameInTheSim(unittest.TestCase):
         """The simulation is authoritative and testable: it must not need pygame."""
         import subprocess
         mods = ["sim", "physics", "brawl", "garage", "police", "sillies", "quests", "story", "business", "entities", "enums",
-                "vehicles", "parts", "lines", "drivetrain", "enginesynth", "mapgen"]
+                "vehicles", "parts", "lines", "characters", "drivetrain", "enginesynth", "mapgen"]
         code = ("import sys; sys.modules['pygame'] = None; sys.path.insert(0, %r)\n"
                 "import importlib\n"
                 "for m in %r: importlib.import_module('chopped.' + m)\n"

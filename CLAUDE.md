@@ -9,7 +9,174 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
 
 ---
 
+## 0. How we work (from Sept 29, 2026): a small AI studio, run cheaply
+
+The main Claude Code session is the **Executive Game Director**: it owns the game's vision, the
+architecture, what gets built in what order, and every final technical call. Specialist subagents do
+focused work and report back; the Director checks their output and never takes it on trust. The goal:
+**a good game + coherent code + coherent design + as little wasted Claude usage as possible.**
+
+**Before delegating, ask:** can I just do this myself? Does it need a specialist? Is the extra context
+worth the tokens? Trivial work (a small edit, a doc tweak, a one-line tuning change) is done directly,
+with no agent.
+
+**Model tiers** (the models this install offers: `haiku`, `sonnet`, `opus`; `fable` is not assigned):
+
+| Tier | Model | Use for |
+|---|---|---|
+| CHEAP | haiku | Small edits, formatting, running tests and summarising failures, routine file inspection, docs |
+| STANDARD | sonnet | Feature work, multi-file changes, gameplay systems, harder debugging, code review |
+| HIGH | opus | Major architecture, big refactors, bugs that beat STANDARD twice, hard technical disagreements |
+
+**Escalation:** CHEAP -> STANDARD -> HIGH, and only when needed. A reviewer's small finding goes back to
+the same agent as a targeted fix; escalate only after repeated failure. Architectural problems go to
+the Architect; vehicle feel goes to the physics side of the Gameplay Programmer.
+
+**The team** -- agent definitions live in `.claude/agents/` (they load at session start; restart Claude Code after editing them):
+
+| Agent | Tier | Invoke when |
+|---|---|---|
+| Director (main session) | the session's model | Always: plans, splits work, reviews, decides. Also acts as Game Director and design lead |
+| `gameplay-programmer` | STANDARD | Features in the sim/business/quest/story/garage/police/vehicle code |
+| `qa-runner` | CHEAP | After any code change: run the suite, report only failures |
+| `code-reviewer` | STANDARD | Before a commit on any non-trivial change: PASS or REQUIRED CHANGES |
+| `game-designer` | STANDARD | Economy, mission, narrative or progression decisions that need reasoning |
+| `architect` | HIGH | Only for real architecture (splitting `sim.py`, moving parts/prices to data files) |
+| `graphics-programmer` | STANDARD | Raycaster, sprites, textures, lighting, sky, roofs, draw performance (AV) |
+| `vfx-animation` | STANDARD | Smoke, sparks, fire, destruction, screen effects, mechanical/person animation (AV) |
+| `audio-engineer` | STANDARD | Sfx, engine voices, the beat, mixing, ambience (AV) |
+| `ui-ux-designer` | STANDARD | HUD, menus, prompts, mod shop menu, controls discoverability (GUI) |
+| `gameplay-qa` | STANDARD | Read-only player-eye pass: confusing prompts, exploits, soft-locks, grind (QOL) |
+| `debugger` | STANDARD | Hard-to-reproduce bugs, after a first plain attempt has failed |
+| `performance-specialist` | STANDARD | Only with measured slowness; needs before/after numbers |
+
+Simple mechanical jobs inside any of these (a rename, a text tweak, running a script) can be done by the
+Director directly or handed to `haiku` in a general agent, rather than paying for a specialist.
+
+**Not hired** (nothing to do yet; add one only when there is): separate technical artist and 3D/environment/vehicle
+artists (all art is procedural code, so that's `graphics-programmer`), save engineer (`savefile.py` is small),
+build/release engineer (CI already builds and smoke-tests), dependency specialist, technical researcher (use
+web search directly), tools engineer, narrative and world designers (`game-designer` covers them for now).
+
+**Every specialist reports in this shape, and never pastes whole files:**
+```
+TASK:      what was asked
+ANALYSIS:  important findings only
+CHANGES:   what changed
+FILES:     paths touched
+TESTS:     what was run, and the result
+RESULT:    PASS / FAIL / NEEDS REVIEW
+CONCERNS:  anything the Director must know
+```
+
+**Token rules:** read only the files a task needs; prefer `git diff` and targeted searches over reading
+whole modules; give each agent the smallest useful context; no agents for trivial work; parallel agents
+only for genuinely independent work; short reports.
+
+**Coherence rule:** there is ONE game. Before any change, check the existing architecture, terms, data
+models, progression, story and UI conventions (sections 2-4 below still apply in full). Specialists don't
+invent parallel systems; the Director resolves conflicts.
+
+**Architecture direction:** move gradually toward modular, data-driven systems (vehicles, parts,
+prices, missions, dialogue, characters, upgrades), so adding a car or a part barely touches core code.
+**Simple + modular + testable beats clever + abstract.** No big-bang refactors; improve a module when a
+feature is already touching it.
+
+**Git:** commit and push only when Bryce asks. Author is Bryce, with Claude as co-author.
+
+---
+
 ## 1. Status and your tasks, in order
+
+### Where things stand (Sept 29, 2026, RELEASE 0.17.0: hi-res objects + a settings screen)
+- **v0.17** (Bryce: "please up the resolution on all objects by 4x. keep the style, but add extra
+  angled frames and up the render resolution itself. also add a FOV slider and audio settings"):
+  - **Render scale k** (`C.RENDER_SCALE_DEFAULT` 2, 1..3, `App.set_render_scale(k)` ->
+    `FPRenderer.set_scale`, works mid-game): the first-person view is k x 640x328 in
+    `App.frame`; `low` is now a see-through 640x360 HUD/menu layer that `_compose` scales up k
+    over it, so the HUD keeps its chunky pixels. **Walls, street, sky and ceilings still draw at
+    640 and are scaled up** (`fp._world_lowres`): their textures are 4-8 px/m, so full res looked
+    identical and cost ~8 ms a frame. `C.FP_HIRES_WORLD = True` turns full-res world back on.
+    Sprites, particles, labels, tracers and the first-person hands/guns/dash draw at full res.
+  - **Objects 4x:** box sprites build at 1x/2x/4x the old px-per-metre (`fp._mip` picks the
+    smallest that covers the on-screen size, so far cars cost what they used to); the 4x mip gets a
+    2 px outline (`render_boxes(outline=)`). One byte-budgeted LRU `SpriteCache`
+    (`SPRITE_CACHE_MB` 160) replaced the three entry-count caches.
+  - **Angles doubled:** cars 64, chase car 144, people 32, props 32.
+  - **FOV:** `FPRenderer.set_fov(deg)` (`FOV_MIN`/`FOV_MAX` 60..120); F8's fisheye wobbles
+    around it.
+  - **Audio buses** (`audio.Audio.set_volumes(master, music, sfx, engine)` / `get_volumes` /
+    `gain`): gain = (master x bus) ** `VOLUME_CURVE` (2.0); `VOLUME_DEFAULTS` is the single
+    source (1.0/0.7/1.0/0.8). `--mute` still wins.
+  - **Settings** (`chopped/settings.py`, `%APPDATA%\Chopped\settings.json`, beside the saves;
+    `CHOPPED_SAVE_DIR` isolates tests; atomic writes; the selftest never writes): fov,
+    render_scale, the four volumes, name and char (the menu remembers you now; `--name`/`--char`
+    still win and aren't saved). `ui.SettingsPanel` from a main-menu SETTINGS row and a pause
+    SETTINGS button (S); changes apply live, save on leaving.
+  - No wire change: **protocol VERSION stays 17, RELEASE 0.17.0.** Tests: `test_hires.py`,
+    `test_settings.py`, `test_audio_volume.py`. **380 total, all OK**; selftests host ~48 fps,
+    solo ~34 at k=2 (same as before the upgrade); peak RSS ~165-185 MB in the renderer's scenes.
+- **Decisions flagged for Bryce:** the world-at-640 call above; a small detail pop when a sprite
+  crosses mips; a k that doesn't divide the window's scale gives uneven 3D pixels; the mod shop
+  preview stays 24 px/m; the shop interior's wall ray loop (~7 ms) is the next thing to optimise.
+
+### Where things stand (Sept 29, 2026, RELEASE 0.16.0: pick your crook)
+- **v0.16** (Bryce, on the playtester's other ideas: "no hand painted textures. spin them up and
+  implement in parallel"). Photo/painted textures are **off the table**; choosable characters are in:
+  - **`chopped/characters.py`** (new, no pygame, data only): `CHARACTERS` (id, name, title, perk,
+    blurb, `stats`), `clamp_char`, `stat(char, key)` (1.0 = no opinion), `stamina_max`,
+    `alarm_wires`. Multipliers are `config.CHAR_*`. Ids are append-only (they ride the wire).
+    0 **DASH** athlete (stamina pool x1.5, regen x1.3); 1 **SPANNER** grease monkey (strip x0.6:
+    cars, dolly engines, junk piles); 2 **SLIM** light fingers (break-in/hotwire/wire-cut x0.5,
+    cut-the-wires 1 in 2); 3 **SMOOTH** smooth talker (+15% on sales he lists/fills: `Lot.who`,
+    orders, whole-car sales; bail and papers x0.5).
+  - **Wire (VERSION 17):** a char byte after the name in JOIN (short packet -> 0); `Player.char`;
+    the PLAYER row gets char LAST (index 19, row length 20) and stamina is a ratio of the player's
+    OWN max; SELF_MOTION has a trailing char byte and `Predictor.Body.char` is set in `reconcile`
+    (physics reads the stamina pool). Not saved: a character is who joined, not crew progress.
+  - **Client:** menu CHARACTER row (`ui.Menu.char`, A/D or click, portrait panel with the perk;
+    in-session only, `--char N` seeds it); `game._make_client` passes `char=`. Art in `fpart`:
+    `CHAR_LOOKS`/`char_look`, `person_boxes(..., char=)` (skin/hair/accessory; shirt stays the
+    crew colour), `make_face(..., char=)`, `char_portrait(char, 48)`; `fp._pchar`. The HUD face,
+    the first-person hands and a pause-screen perk panel follow your character. Also fixed: the host
+    banner no longer sits on the day-change banner.
+  - Tests: `tests/test_characters.py` (15). **350 total, all OK**; selftests 35-50 fps.
+- **Decisions flagged for Bryce:** DASH is id 0, so an old client / no `--char` plays the athlete;
+  the choice isn't remembered between launches (nothing in the menu is yet); SMOOTH's bonus is lost
+  if he's disconnected when the hammer falls; SLIM's beanie+shades read as one dark block from the
+  front at world scale.
+
+### Where things stand (Sept 29, 2026, RELEASE 0.15.0: a playtester's feedback -- you can lose now, and you can see it)
+- **v0.15** (Bryce forwarded a playtest from Hypnogogiac: "I don't know if you even can lose... miss two
+  rent payments and you lose? A big bar at the top like Majora's Mask's day tracker... pick a few key
+  details and make them big... the two black pixels read as a cyclops; flat skin, and show the NPC's
+  face next to their dialog"). All done:
+  - **Rent strikes** replace `DEBT_GRACE`/`debt_t` (gone): at midnight `rent_owed()` = `rent_due()` +
+    `back_rent`. Can't cover it -> nothing is charged, tonight's rent joins `back_rent`, `strikes` += 1;
+    `RENT_STRIKES_MAX` (2) in a row -> SHOP SEIZED. Paying the whole bill clears both. A once-a-day
+    warning toast at `RENT_WARN_TIME` (45 s). Cash is clamped at 0 every tick (debt no longer exists).
+    Toasts are 80 chars now (were 60). Wire: `SNAP_HDR`'s debt H -> strikes B + back_rent I;
+    `snap.rent_due` is the full bill. Saves keep strikes/back_rent.
+  - **The day bar** (`doomhud`, 30 px across the top): DAY N, a dawn-to-midnight sky track with a
+    sun that turns into a moon, MIDNIGHT IN m:ss, big CASH / RENT DUE (green COVERED / red SHORT $X),
+    two strike pips "2 MISSES = SHOP SEIZED". Pulses when short under 45 s; "FINAL HOURS" alarm in
+    the last 15 s with a strike standing. A day-1 card per run explains the rule; SHOP SEIZED says
+    "MISSED RENT TWICE"; the INSTRUCTIONS window opens with "THE RENT (HOW YOU LOSE)".
+  - **Hierarchy:** day/rent left the bottom bar; CASH and HEAT got the wide cells at full big type,
+    the rest is smaller. Everything that sat at the top (toasts, compasses, radar, quest panel,
+    banners) starts under the day bar. The quest panel is compact outside the shop; **hold J** for
+    the full list (`info["quests_open"]`).
+  - **Faces:** `fpart.person_boxes` has no eyes (flat skin + hair). `fpart.portrait(speaker, 24)`
+    paints a front-on bust per named NPC (matching their world colours; `portrait_names()`), a
+    crc32-seeded one for anyone else; `_speech` draws it left of the text. Contacts' outfits come
+    from their name now (`contact_outfit`), so model and portrait always match.
+  - **Protocol VERSION 16, RELEASE 0.15.0.** Tests: `tests/test_v015.py`; `test_sim`'s flat-rent
+    test now starts with enough cash for four nights.
+- **Decisions flagged for Bryce:**
+  - Strikes clear when the whole bill is paid, so it's two misses **in a row**, not two per run.
+  - A missed night charges nothing; the rent carries over. The run reset still keeps the personal
+    car's mods (the roguelike's bit of meta-progression).
+  - Photo/painted textures: Bryce said no (v0.16). Choosable characters: done in v0.16.
 
 ### Where things stand (Sept 27, 2026, session 2, RELEASE 0.14.0: the business end + the arrest ride)
 - **v0.14** (Bryce: "instead of the other shops you can buy being a shop in the open, make it so they
@@ -588,7 +755,11 @@ Tone: GTA 2 meets a heist gone wrong. Code comments are funny *and* explain why 
   ```
   set SDL_VIDEODRIVER=dummy & set SDL_AUDIODRIVER=dummy & python -m unittest discover -s tests -v
   ```
-  (On Linux/macOS: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests -v`.) At handoff (session 2, RELEASE 0.14.0): **323 tests, all OK**, and the game-loop selftest ran at about 42-50 fps.
+  (On Linux/macOS: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python -m unittest discover -s tests -v`.)
+  **On Bryce's PC** the system `python` is 3.10 without pygame; use the project venv instead
+  (Python 3.12.10, pygame-ce 2.5.8, miniupnpc 2.3.3, gitignored): in PowerShell,
+  `$env:SDL_VIDEODRIVER='dummy'; $env:SDL_AUDIODRIVER='dummy'; .\.venv\Scripts\python -m unittest discover -s tests`
+  (about 90 s; verified 323 OK on Sept 29, 2026). At handoff (session 2, RELEASE 0.14.0): **323 tests, all OK**, and the game-loop selftest ran at about 42-50 fps.
 
 ## 3. Architecture (details in README.md)
 - `main.py` is the command line: `--host`, `--join IP[:PORT]`, `--server` (headless), `--selftest`, `--port`, `--name`, `--mute`, `--no-upnp`, `--log FILE`, `--fake-lag MS`, `--no-predict`.

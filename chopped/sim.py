@@ -13,6 +13,7 @@ import random
 from . import config as C
 from .config import clamp, lerp, wrap_angle
 from .mapgen import CityMap, GRASS, SIDEWALK
+from .characters import stamina_max, stat, alarm_wires
 from .parts import (SLOTS, SLOT_CATEGORY, WHEEL_SLOTS, PANEL_SLOTS, STRIP_TIME, DOLLY, Part,
                     kei_loadout, cop_loadout, personal_loadout, model_loadout, roll_trunk, wheel_slots)
 from . import vehicles as V
@@ -58,7 +59,9 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         self.day = 1
         self.day_t = C.DAY_LENGTH       # seconds until midnight (rent)
         self.day_stats = [0, 0, 0]      # cars delivered, parts sold, dollars earned today
-        self.debt_t = 0.0
+        self.strikes = 0                # (v0.15) missed midnights in a row; RENT_STRIKES_MAX = SHOP SEIZED
+        self.back_rent = 0              # rent left unpaid from missed nights, added to the next bill
+        self.rent_warned = False        # the "you're $N short" toast fires once a day
         self.gameover_t = 0.0
         self.run = 1
         self.heat = 0.0
@@ -122,7 +125,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
 
     def toast(self, text, color=T_WHITE):
         self.event_seq += 1
-        self.events.append((self.event_seq, self.time, 0, (color, text[:60])))
+        self.events.append((self.event_seq, self.time, 0, (color, text[:80])))
 
     def sfx(self, sid, x, y):
         self.event_seq += 1
@@ -287,12 +290,12 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         return pk
 
     # ------------------------------------------------------------------ players
-    def add_player(self, name, pid=None):
+    def add_player(self, name, char=0, pid=None):
         if len(self.players) >= C.MAX_PLAYERS:
             return None
         if pid is None:
             pid = next(i for i in range(1, C.MAX_PLAYERS + 1) if i not in self.players)
-        p = Player(pid, (name or "PLAYER%d" % pid)[:12].upper(), (pid - 1) % 4)
+        p = Player(pid, (name or "PLAYER%d" % pid)[:12].upper(), (pid - 1) % 4, char)
         sx, sy = self.map.player_spawns[(pid - 1) % 4]
         p.x, p.y = sx, sy
         if self.give_loadout:
@@ -526,8 +529,12 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
 
     # ------------------------------------------------------------------ economy
     def rent_due(self):
-        """(v0.12) flat per shop you own, not per day -- see config.SHOP_RENT."""
+        """(v0.12) flat per shop you own, not per day -- see config.SHOP_RENT. Tonight's rent only."""
         return sum(r for r, owned in zip(C.SHOP_RENT, self.shop_owned) if owned)
+
+    def rent_owed(self):
+        """(v0.15) the FULL bill at midnight: tonight's rent plus whatever you dodged before."""
+        return self.rent_due() + self.back_rent
 
     def _earn(self, amount, parts=0):
         self.cash += amount
@@ -537,26 +544,50 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
     def _economy(self, dt):
         self.day_t -= dt
         if self.day_t <= 0:
-            rent = self.rent_due()
+            bill = self.rent_owed()
             cars, parts, earned = self.day_stats
             self.toast("DAY %d DONE: %d CARS, %d PARTS, +$%d" % (self.day, cars, parts, earned), T_INFO)
-            self.cash -= rent
-            self.toast("MIDNIGHT. THE LANDLORD TAKES $%d" % rent, T_BAD)
+            seized = False
+            if self.cash >= bill:
+                self.cash -= bill
+                self.back_rent = self.strikes = 0
+                self.toast("MIDNIGHT. THE LANDLORD TAKES $%d" % bill, T_BAD)
+            else:
+                # can't pay: cash is left alone (rent never drives you negative), tonight's rent
+                # rolls into the pile, and the landlord makes a note in his little book
+                self.back_rent += self.rent_due()
+                self.strikes += 1
+                if self.strikes >= C.RENT_STRIKES_MAX:
+                    seized = True
+                else:
+                    self.toast("MISSED RENT. STRIKE %d OF %d. PAY $%d BY MIDNIGHT OR LOSE THE SHOP" %
+                               (self.strikes, C.RENT_STRIKES_MAX, self.rent_owed()), T_BAD)
             self.sfx(S_RENT, *self.map.garage_center)
             self.day += 1
             self.day_t += C.DAY_LENGTH
             self.day_stats = [0, 0, 0]
             self.cops_today = 0         # (v0.10) dispatch gets a fresh COPS_PER_DAY budget
             self.cops_exhausted_told = False
-            self.toast("DAY %d. RENT AT MIDNIGHT: $%d" % (self.day, self.rent_due()), T_INFO)
-            self._rotate_quests()
-        if self.cash < 0:
-            self.debt_t += dt
-            if self.debt_t >= C.DEBT_GRACE:
+            self.rent_warned = False
+            if seized:
                 self.gameover_t = C.GAMEOVER_BANNER
                 self.toast("THE LANDLORD CHANGED THE LOCKS. SHOP SEIZED!", T_BAD)
-        else:
-            self.debt_t = 0.0
+                return
+            self.toast("DAY %d. RENT AT MIDNIGHT: $%d" % (self.day, self.rent_owed()), T_INFO)
+            self._rotate_quests()
+        elif not self.rent_warned and self.day_t <= C.RENT_WARN_TIME and self.cash < self.rent_owed():
+            self.rent_warned = True
+            short = self.rent_owed() - max(0, self.cash)
+            t = "%d:%02d" % (int(self.day_t) // 60, int(self.day_t) % 60)
+            if self.strikes:
+                self.toast("STRIKE %d! RENT IN %s, YOU'RE $%d SHORT. MISS IT: SHOP'S GONE" %
+                           (self.strikes, t, short), T_BAD)
+            else:
+                self.toast("RENT DUE IN %s: YOU'RE $%d SHORT" % (t, short), T_BAD)
+        # rent can't dent the wallet any more, but a refunded robbery or a speed camera still can:
+        # cash never goes below zero. Debt is gone; strikes are how you lose now.
+        if self.cash < 0:
+            self.cash = 0
 
     def reset_run(self):
         """New run after SHOP SEIZED. Your personal ride keeps every mod you
@@ -567,7 +598,8 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         self.day = 1
         self.day_t = C.DAY_LENGTH
         self.day_stats = [0, 0, 0]
-        self.debt_t = 0.0
+        self.strikes = self.back_rent = 0
+        self.rent_warned = False
         self.gameover_t = 0.0
         self.heat = 0.0
         self.dispatched = False
@@ -617,7 +649,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         for i, p in enumerate(self.players.values()):
             p.state = FOOT
             p.hands = []
-            p.stamina = C.STAMINA_MAX
+            p.stamina = stamina_max(p.char)
             p.exhausted = False
             p.tumble_t = p.cuffed_t = p.arrest_t = 0.0
             p.vx = p.vy = 0.0
@@ -952,13 +984,13 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             # one), quiet if you luck into the right one and worse than smashing if you don't.
             if p.sneak:
                 return (("cutwires", car.id),
-                        "HOLD E: CUT THE WIRES (1 IN %d QUIET)   X: FORGET IT, SMASH IT" % C.ALARM_CUT_WIRES,
-                        C.ALARM_CUT_TIME, lambda: self._cut_wires(p, car), lambda: setattr(p, "sneak", False))
+                        "HOLD E: CUT THE WIRES (1 IN %d QUIET)   X: FORGET IT, SMASH IT" % alarm_wires(p.char),
+                        C.ALARM_CUT_TIME * stat(p.char, "alarm_cut_time"), lambda: self._cut_wires(p, car), lambda: setattr(p, "sneak", False))
             return (("breakin", car.id), ("HOLD E: SNAP THE STEERING LOCK (ALARM)" if V.is_bike(car.model) else
                                           "HOLD E: BREAK IN (SETS OFF ALARM)") + "   X: CUT THE WIRES INSTEAD (SLOWER)",
-                    C.BREAKIN_TIME, lambda: self._break_in(p, car), lambda: setattr(p, "sneak", True))
+                    C.BREAKIN_TIME * stat(p.char, "breakin_time"), lambda: self._break_in(p, car), lambda: setattr(p, "sneak", True))
         if car.state == BROKEN_IN:
-            return (("hotwire", car.id), "HOLD E: HOTWIRE", C.HOTWIRE_TIME, lambda: self._hotwire(p, car))
+            return (("hotwire", car.id), "HOLD E: HOTWIRE", C.HOTWIRE_TIME * stat(p.char, "hotwire_time"), lambda: self._hotwire(p, car))
         if car.state == RUNNING:
             bike = V.is_bike(car.model)
             if car.driver is None:
@@ -1010,7 +1042,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             return (None, "HANDS FULL - SELL OR DROP (G) FIRST", 0, None)
         cat = SLOT_CATEGORY[best]
         return (("strip", car.id, best), "HOLD E: STRIP %s - %s $%d" % (SLOT_LABEL[best], part.name.upper(), part.value),
-                STRIP_TIME[cat], lambda: self._strip(p, car, best))
+                STRIP_TIME[cat] * stat(p.char, "strip_time"), lambda: self._strip(p, car, best))
 
     def _break_in(self, p, car):
         car.state = BROKEN_IN
@@ -1032,7 +1064,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         car.stolen = True
         p.sneak = False
         self._charge(p, "gta")
-        quiet = self.rng.randrange(C.ALARM_CUT_WIRES) == 0
+        quiet = self.rng.randrange(alarm_wires(p.char)) == 0
         if quiet:
             self.sfx(S_STRIP, car.x, car.y)
             self.toast("%s CUT THE RIGHT WIRE. NOT A PEEP." % p.name, T_INFO)
@@ -1183,7 +1215,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
                     if not self.dolly_fits(part):
                         return (None, self.dolly_refusal(part), 0, None)
                     return (("dstrip", car.id), "HOLD E: STRIP %s ONTO THE DOLLY - $%d" % (
-                        part.name.upper(), part.value), STRIP_TIME["engine"], lambda: self._dolly_strip(p, car))
+                        part.name.upper(), part.value), STRIP_TIME["engine"] * stat(p.char, "strip_time"), lambda: self._dolly_strip(p, car))
             return (None, "PUSHING THE DOLLY.  G: LET GO", 0, None)
         return (None, "DOLLY: %s ($%d) - TO DAVE'S AUCTION, OR THE TUNE-UP.  G: LET GO" % (
             d.part.name.upper(), d.part.value), 0, None)

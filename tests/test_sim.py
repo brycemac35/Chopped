@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from chopped import config as C
 from chopped import sim as S
+from chopped.characters import stamina_max
 from chopped.parts import Part, SLOTS
 from chopped import garage as G
 
@@ -174,13 +175,12 @@ class TestCoreLoop(unittest.TestCase):
         self.assertEqual(w.day, 2)
         self.assertEqual(w.rent_due(), C.SHOP_RENT[0], "flat per shop now, not steeper by the day")
         self.assertAlmostEqual(w.day_t, C.DAY_LENGTH, delta=0.1)
-        # --- debt -> SHOP SEIZED -> new run
+        # --- two missed midnights -> SHOP SEIZED -> new run
         personal.x += 30.0          # drive it off somewhere; it should come home
-        w.cash = -10
-        w.step(DT)
-        self.assertGreater(w.debt_t, 0)
-        w.debt_t = C.DEBT_GRACE - 0.001
-        w.step(DT)
+        w.cash = 0
+        for _ in range(C.RENT_STRIKES_MAX):
+            w.day_t = 0.001
+            w.step(DT)
         self.assertGreater(w.gameover_t, 0, "should be in SHOP SEIZED banner")
         step(w, C.GAMEOVER_BANNER + 0.2)
         self.assertEqual(w.run, 2)
@@ -241,8 +241,8 @@ class TestCoreLoop(unittest.TestCase):
         p.x, p.y = road_point(w)
         press(p, S.B_RIGHT | S.B_SPRINT)
         step(w, 1.0)
-        self.assertAlmostEqual(p.stamina, C.STAMINA_MAX - 38, delta=1.5)
-        step(w, C.STAMINA_MAX / 38.0)      # however long the (bigger, v0.10) tank takes to empty
+        self.assertAlmostEqual(p.stamina, stamina_max(p.char) - 38, delta=1.5)   # (player 0 is DASH: bigger tank)
+        step(w, stamina_max(p.char) / 38.0)      # however long the (bigger, v0.10) tank takes to empty
         self.assertTrue(p.exhausted)
         self.assertFalse(p.sprinting)
         press(p, 0)
@@ -635,6 +635,7 @@ class TestDays(unittest.TestCase):
         to get steeper forever; now day 1 costs the same as day 4, and only buying another
         shop moves the bill."""
         w = quiet_world()
+        w.cash = 1000       # (v0.15) enough for all four nights: a missed night charges nothing now
         cash = []
         for day in range(1, 5):
             self.assertEqual(w.day, day)

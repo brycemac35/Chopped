@@ -45,6 +45,7 @@ from .entities import Trap
 from .parts import Part, DOLLY, engine_class, ENGINE_CLASS_NAMES
 from . import vehicles as V
 from .quests import wrap
+from .characters import stat
 from .lines import (JUNK_LINES, CLEANUP_LINES, SHOP_OPEN_LINES, AUCTION_SOLD_LINES, AUCTION_UNSOLD_LINES,
                     CAR_SOLD_LINES, CAR_UNSOLD_LINES, HANDOVER_LINES, PAPERS_LINES, PAPERS_REFUSED,
                     CONTACT_HELLO, CONTACT_NOTHING, CONTACT_THANKS, MO_MAXED)
@@ -63,10 +64,11 @@ JUNK_FINDS = ("whl_worn_steel", "whl_stock_alloy", "door_stock", "bmp_stock", "e
 
 class Lot:
     """One thing under Dave's hammer: a part, or a whole (papered) car by id."""
-    __slots__ = ("part", "car_id", "ask", "tier", "t", "name")
+    __slots__ = ("part", "car_id", "ask", "tier", "t", "name", "who")
 
-    def __init__(self, part, car_id, ask, tier, t, name):
+    def __init__(self, part, car_id, ask, tier, t, name, who=None):
         self.part, self.car_id, self.ask, self.tier, self.t, self.name = part, car_id, ask, tier, t, name
+        self.who = who              # (v0.16) pid of whoever listed it: a SMOOTH TALKER's lots pay extra
 
 
 def ask_price(value, tier):
@@ -181,7 +183,7 @@ class Business:
         if where in self.cleanup:
             return (None, "LEAVE IT: THE CLEAN-UP CREW'S GOT IT", 0, None)
         return (("junk", best.id), "HOLD E: CLEAR OUT %s (%d LEFT)" % (what, len(self.junk[where])),
-                C.JUNK_CLEAR_TIME, lambda: self._clear_junk(p, where, best))
+                C.JUNK_CLEAR_TIME * stat(p.char, "strip_time"), lambda: self._clear_junk(p, where, best))
 
     def _clear_junk(self, p, idx, t):
         piles = self.junk.get(idx) or []
@@ -324,6 +326,11 @@ class Business:
         return (("sell", id(part)), "HOLD E: AUCTION %s AT $%d (%s)   X: PRICE" % (part.name.upper(), ask, tag),
                 C.SELL_TIME, lambda: self._sell(p), cycle)
 
+    def _sale_pay(self, pid, amount):
+        """(v0.16) money from a sale, after the seller's charm (characters: sale_bonus). pid None/gone = 1.0."""
+        q = self.players.get(pid)
+        return int(amount * stat(q.char, "sale_bonus")) if q is not None else int(amount)
+
     def _hammer_time(self, tier, car=False):
         return C.AUCTION_ASKS[tier][3] * (C.AUCTION_CAR_TIME if car else 1.0)
 
@@ -333,7 +340,7 @@ class Business:
             return False
         ask = ask_price(part.value, tier)
         t = self._hammer_time(tier)
-        self.lots.append(Lot(part, None, ask, tier, t, part.name.upper()))
+        self.lots.append(Lot(part, None, ask, tier, t, part.name.upper(), getattr(who, "id", None)))
         self.sfx(S_SELL, *self._dave())
         self._tell("DAVE: LOT %d, %s, $%d (%s). HAMMER IN %dS" % (
             len(self.lots), part.name.upper(), ask, C.AUCTION_ASKS[tier][0], int(t)), T_INFO)
@@ -365,7 +372,7 @@ class Business:
         t = self._hammer_time(p.ask, car=True)
         self._spill_trunk(car, 2.0)                  # (the boot's contents are yours: keep them)
         car.lot = True
-        self.lots.append(Lot(None, car.id, ask, p.ask, t, name))
+        self.lots.append(Lot(None, car.id, ask, p.ask, t, name, p.id))
         self.sfx(S_SELL, car.x, car.y)
         self._tell("DAVE: LOT %d, ONE %s, PAPERS AND ALL, $%d. HAMMER IN %dS" % (
             len(self.lots), name, ask, int(t)), T_INFO)
@@ -386,9 +393,10 @@ class Business:
             sold = self.rng.random() < C.AUCTION_ASKS[lot.tier][2]
             if lot.part is not None:
                 if sold:
-                    self._earn(lot.ask, 1)
+                    pay = self._sale_pay(lot.who, lot.ask)
+                    self._earn(pay, 1)
                     self.sfx(S_CASH, *self._dave())
-                    self._tell(self.rng.choice(AUCTION_SOLD_LINES) % (lot.name, lot.ask), T_MONEY)
+                    self._tell(self.rng.choice(AUCTION_SOLD_LINES) % (lot.name, pay), T_MONEY)
                 else:
                     self._to_locker(lot.part)
                     self._tell(self.rng.choice(AUCTION_UNSOLD_LINES) % (lot.name, lot.ask), T_BAD)
@@ -400,6 +408,7 @@ class Business:
             if not sold:
                 self._tell(self.rng.choice(CAR_UNSOLD_LINES) % (lot.name, lot.ask), T_BAD)
                 continue
+            lot.ask = self._sale_pay(lot.who, lot.ask)   # (the lister's charm goes into the agreed price)
             if not self.map.contacts:
                 self._earn(lot.ask)                  # (a city with nobody in it: Dave collects it himself)
                 self._tell(self.rng.choice(AUCTION_SOLD_LINES) % (lot.name, lot.ask), T_MONEY)
@@ -415,6 +424,10 @@ class Business:
     # ------------------------------------------------------------------ papers and buyers
     def papers_price(self, car):
         return max(C.PAPERS_MIN, int(self.whole_price(car) * C.PAPERS_RATE))
+
+    def papers_cost(self, p, car):
+        """What THIS player pays: the clerk knows a guy (characters: fee_mult)."""
+        return int(self.papers_price(car) * stat(p.char, "fee_mult"))
 
     def _papers_candidate(self):
         best, bv = None, -1
@@ -435,7 +448,7 @@ class Business:
         car = self._papers_candidate()
         if car is None:
             return (None, "RECORDS: PAPERS FOR A CAR YOU'VE 'BOUGHT'. GET ONE HOME TO THE SHOP FIRST.", 0, None)
-        price = self.papers_price(car)
+        price = self.papers_cost(p, car)
         name = V.model(car.model).name.upper()
         if self.cash < price:
             return (None, "RECORDS: PAPERS FOR THE %s, $%d - CAN'T AFFORD THEM" % (name, price), 0, None)
@@ -601,14 +614,15 @@ class Business:
         else:
             return
         name = self.map.contacts[o["contact"]][0]
-        pay = int(part.value * C.ORDER_RATE)
+        pay = self._sale_pay(p.id, part.value * C.ORDER_RATE)
         self._earn(pay, 1)
         o["got"] += 1
         self.sfx(S_SELL, p.x, p.y)
         if o["got"] < o["need"]:
             self._tell("%s TOOK THE %s: +$%d (%d/%d)" % (name, part.name.upper(), pay, o["got"], o["need"]), T_MONEY)
             return
-        self._earn(o["bonus"])
+        bonus = self._sale_pay(p.id, o["bonus"])
+        self._earn(bonus)
         rep = ""
         if self.order_rep_today < C.ORDER_REP_PER_DAY:
             self.order_rep_today += 1
@@ -616,7 +630,7 @@ class Business:
             rep = ", +1 REP"
         self.sfx(S_CASH, p.x, p.y)
         self._say(name, self.rng.choice(CONTACT_THANKS))
-        self._tell("ORDER FILLED FOR %s: +$%d, +$%d BONUS%s" % (name, pay, o["bonus"], rep), T_MONEY)
+        self._tell("ORDER FILLED FOR %s: +$%d, +$%d BONUS%s" % (name, pay, bonus, rep), T_MONEY)
         self.orders[k] = None
         self.order_t[k] = C.ORDER_NEW_DELAY
         if rep:

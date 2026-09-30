@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from chopped import config as C
 from chopped import sim as S
+from chopped.characters import stamina_max
 from chopped import protocol as P
 from chopped.mapgen import CityMap
 from chopped.net import Server, Client
@@ -113,7 +114,7 @@ class TestPredictionLockstep(unittest.TestCase):
         pred, srv, pr = lockstep(w, p.id, script)
         self.assertLess(worst_gap(pred, srv), 0.01)
         self.assertEqual(pr.corrections, 0)
-        self.assertLess(p.stamina, 60, "sprinting with an engine is hard work")
+        self.assertLess(p.stamina, stamina_max(p.char) - 80, "sprinting with an engine is hard work")
 
     def test_misprediction_is_smoothed_not_snapped(self):
         w = quiet_world()

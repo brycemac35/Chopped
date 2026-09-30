@@ -1,8 +1,10 @@
 """
 doomhud.py -- the Doom-style status bar and first-person overlays.
 
-Bottom bar, left to right: CASH | HEAT% | HANDS | the face | STAMINA% (or
-KM/H in a car) | COPS | DAY / RENT. The face gets sweatier as the heat goes
+Top of the view: the DAY BAR (day, a sun-to-moon clock track, CASH vs RENT DUE, the
+strike pips) -- the lose condition is the most important thing on screen, so it's the
+biggest. Bottom bar, left to right: CASH | HEAT% | the face | HANDS | STAMINA% (or
+KM/H in a car) | COPS (cash and heat get the room). The face gets sweatier as the heat goes
 up, grins when money comes in, and goes cross-eyed when you get run over.
 Above the bar: your hands (and whatever's in them), the dolly's handles, or
 the inside of whatever car you're in.
@@ -19,17 +21,21 @@ from . import config as C
 from . import sim as S
 from . import protocol as PR
 from . import fpart as FA
-from .art import P, PixelFont, PLAYER_COLORS, CAR_COLORS, GLYPHS, SKINS, shade
+from . import ui as U
+from .art import P, PixelFont, PLAYER_COLORS, CAR_COLORS, GLYPHS, shade
 from .parts import PART_IDS, PART_DEFS, PART_INDEX, NO_PART, Part
 from . import vehicles as V
 from .quests import QUESTS, QUEST_ORDER, ACT_NAMES
 from . import story as ST
 from . import business as BIZ
 from .parts import ENGINE_CLASS_NAMES
+from .characters import stamina_max
 
 W, H = C.LOW_W, C.LOW_H
 BAR_H = 32
 VIEW_H = H - BAR_H
+TOP_H = 30               # the day bar across the top of the view (Bryce: "a big bar at the top")
+TOP_PAD = TOP_H + 3      # first free row under the day bar: toasts, compass lines and the radar start here
 BX = (W - 480) // 2      # the classic 480-wide bar sits in the middle; ARMS and GEAR panels flank it
 TOAST_COLORS = {S.T_WHITE: P["white"], S.T_MONEY: P["money"], S.T_BAD: P["danger"],
                 S.T_INFO: P["gold"], S.T_COP: (130, 170, 255)}
@@ -45,6 +51,7 @@ WITNESS_TEXT = {
 # the big red digits: top rows bright, bottom rows dark, like they were chiselled
 BIG_RED = ((255, 80, 60), (236, 50, 40), (200, 30, 30), (160, 20, 20), (120, 14, 14))
 BIG_GOLD = ((255, 236, 120), (240, 200, 70), (220, 170, 50), (190, 140, 40), (150, 100, 30))
+BIG_GREEN = ((190, 255, 170), (140, 240, 120), (90, 210, 80), (56, 170, 56), (34, 120, 40))
 BIG_BLUE = ((170, 200, 255), (130, 170, 255), (90, 130, 240), (60, 100, 210), (40, 70, 170))
 
 
@@ -57,13 +64,16 @@ INSPECT_CONDITION = ("SCRAP", "ROUGH", "USED", "TIDY", "MINT")
 class Pen:
     """Draws in the original 480-wide coordinates and scales to whatever the
     real view is (640 wide since v0.7), so the fists and guns grow with the
-    screen instead of shrinking into the corner. Whole pixels, no blur."""
+    screen instead of shrinking into the corner. Whole pixels, no blur.
+    (v0.17) On the hi-res view (render scale ks x 640 wide) the shapes just get more pixels;
+    text and pasted images are pixel art, so they're blown up by the whole number ks."""
     BASE_W = 480
 
     def __init__(self, surf):
         self.s = surf
         self.k = k = surf.get_width() / float(self.BASE_W)
         self.size = (self.BASE_W, int(round(surf.get_height() / k)))
+        self.ks = max(1, int(round(surf.get_width() / float(W))))
 
     def _pt(self, p):
         return (int(round(p[0] * self.k)), int(round(p[1] * self.k)))
@@ -92,9 +102,12 @@ class Pen:
         pygame.draw.line(self.s, col, self._pt(a), self._pt(b), self._len(width))
 
     def blit(self, img, pos):
+        if self.ks > 1:
+            img = pygame.transform.scale_by(img, self.ks)
         self.s.blit(img, self._pt(pos))
 
     def text(self, font, text, x, y, col, **kw):
+        kw["scale"] = kw.get("scale", 1) * self.ks
         font.draw(self.s, text, *self._pt((x, y)), col, **kw)
 
 
@@ -115,6 +128,13 @@ class DoomHud:
         self.dlg = None                # the block on screen: [speaker, lines, shown_at]
         self.help_until = time.perf_counter() + 10.0
         self.bar = self._make_bar()
+        self.topbar = self._make_topbar()
+        self.sky = self._make_sky(self.SKY_W, self.SKY_H)
+        self.card_run = None           # (v0.15) which run the day-1 rules card was shown for
+        self.card_t0 = 0.0
+        self.top_extra = 0             # px the day-1 card pushes the top-left/centre text down
+        self.quests_full = False
+        self._portraits = {}
         self._big = {}
         self._faces = {}
         self._panels = {}
@@ -141,10 +161,62 @@ class DoomHud:
                      rng.choice(((80, 78, 84), (106, 104, 110), (72, 70, 76))))
         s.fill((130, 128, 134), (0, 0, W, 1))
         s.fill((50, 48, 54), (0, BAR_H - 1, W, 1))
-        for x in (0, 96, 168, 228, 262, 330, 372, 480):
+        # (v0.15) CASH and HEAT get the wide cells (the day/rent block moved to the top bar)
+        for x in (0, 140, 224, 256, 318, 396, 480):
             s.fill((50, 48, 54), (BX + x, 2, 1, BAR_H - 4))
             s.fill((130, 128, 134), (BX + x + 1, 2, 1, BAR_H - 4))
-        s.fill((30, 28, 34), (BX + 230, 1, 30, BAR_H - 2))       # face well
+        s.fill((30, 28, 34), (BX + 225, 1, 30, BAR_H - 2))       # face well
+        return s
+
+    # ---- the day bar's geometry. Why these numbers: DAY is ~66 px of big type, the money
+    # block needs ~230 for "$12345 / $300" plus SHORT/COVERED, the pips + legend ~130, and the
+    # sky track gets what's left. The radar sits right under the strikes block, so nothing
+    # here needs to know about it.
+    SKY_X, SKY_W, SKY_Y, SKY_H = 76, 176, 4, 11
+    MONEY_X = 262
+    STRIKE_X = 506
+
+    def _make_topbar(self):
+        s = pygame.Surface((W, TOP_H))
+        s.fill((30, 26, 52))
+        rng = random.Random(7)
+        for _ in range(W * TOP_H // 6):
+            s.set_at((rng.randrange(W), rng.randrange(TOP_H)),
+                     rng.choice(((24, 20, 44), (38, 34, 62), (20, 18, 38))))
+        for x in (72, 256, 500):                                  # chunky dividers between the blocks
+            s.fill((14, 12, 26), (x, 2, 2, TOP_H - 5))
+            s.fill((70, 64, 100), (x + 2, 2, 1, TOP_H - 5))
+        s.fill((90, 84, 130), (0, 0, W, 1))
+        s.fill((10, 8, 18), (0, TOP_H - 2, W, 2))
+        s.fill((150, 140, 60), (0, TOP_H - 3, W, 1))              # a thin gold rule: it's the important bar
+        return s
+
+    def _make_sky(self, w, h):
+        """Dawn to midnight, left to right: the track's sky colour shifts along it."""
+        keys = ((0.0, (250, 170, 120)), (0.15, (150, 190, 236)), (0.5, (110, 176, 250)),
+                (0.68, (244, 150, 80)), (0.8, (120, 60, 110)), (0.9, (36, 30, 84)), (1.0, (12, 10, 40)))
+        s = pygame.Surface((w, h))
+        rng = random.Random(11)
+        for x in range(w):
+            t = x / float(w - 1)
+            col = keys[-1][1]
+            for (t0, c0), (t1, c1) in zip(keys, keys[1:]):
+                if t <= t1:
+                    u = (t - t0) / (t1 - t0)
+                    col = tuple(int(c0[i] + (c1[i] - c0[i]) * u) for i in range(3))
+                    break
+            s.fill(col, (x, 0, 1, h))
+            s.fill(shade(col, 0.82), (x, h - 3, 1, 3))            # a darker "ground" band, chunky
+            if t > 0.78 and rng.random() < 0.09:
+                s.set_at((x, rng.randrange(0, h - 4)), (240, 240, 210))     # stars
+        return s
+
+    def _tint(self, w, h, rgb, alpha):
+        key = ("tint", w, h, rgb, alpha)
+        s = self._panels.get(key)
+        if s is None:
+            s = self._panels[key] = pygame.Surface((w, h), pygame.SRCALPHA)
+            s.fill((*rgb, alpha))
         return s
 
     def big(self, text, ramp=BIG_RED):
@@ -179,11 +251,15 @@ class DoomHud:
             s.fill((20, 18, 30, alpha))
         return s
 
-    def face(self, mood, color, flash):
-        key = (mood, self.look, color, flash)
+    def face(self, mood, color, flash, char=0):
+        key = (mood, self.look, color, flash, char)
         s = self._faces.get(key)
         if s is None:
-            s = self._faces[key] = FA.make_face(mood, self.look, color, flash)
+            try:
+                s = FA.make_face(mood, self.look, color, flash, char=char)
+            except TypeError:                   # (fpart without the char kwarg yet)
+                s = FA.make_face(mood, self.look, color, flash)
+            self._faces[key] = s
         return s
 
     def add_toast(self, text, color, now):
@@ -231,7 +307,7 @@ class DoomHud:
             return
         orange = len(me) > 17 and me[17] & (PR.PF2_JUMPSUIT | PR.PF2_JAILED)
         sleeve0 = (240, 120, 30) if orange else PLAYER_COLORS[me[1] % 4]
-        skin0 = SKINS[me[0] % 4]
+        skin0 = FA.char_look(me[-1] if len(me) > 19 else 0)["skin"]
         if me[3] & PR.PF_CARRY:
             # a pair of legs over your left shoulder, kicking; your hands on their knees
             kick = math.sin(now * 11) * 6
@@ -251,7 +327,7 @@ class DoomHud:
         bob = math.sin(now * 9.0) * 3 * speed_bob
         sway = math.cos(now * 4.5) * 4 * speed_bob
         sleeve = sleeve0
-        skin = SKINS[me[0] % 4]
+        skin = FA.char_look(me[-1] if len(me) > 19 else 0)["skin"]
         if me[3] & PR.PF_DOLLY:
             d = next((d for d in view.dollies.values() if d[5] == me[0]), None)
             self._dolly_view(pen, d, bob, sway, skin, sleeve)
@@ -491,11 +567,11 @@ class DoomHud:
         vw, vh = surf.get_size()
         if d[0] > 0.3:
             num = self.big("%d" % int(d[1]), BIG_GOLD)
-            surf.blit(num, (vw // 2 - num.get_width() // 2, 30))
-            self.font.draw(surf, "DRIFT x%.1f  %.1fS" % (1.0 + min(3.0, d[0]) * 0.5, d[0]), vw // 2, 50,
+            surf.blit(num, (vw // 2 - num.get_width() // 2, TOP_PAD + 30))
+            self.font.draw(surf, "DRIFT x%.1f  %.1fS" % (1.0 + min(3.0, d[0]) * 0.5, d[0]), vw // 2, TOP_PAD + 50,
                            P["gold"], align="center")
         elif now < d[4]:
-            self.font.draw(surf, d[3], vw // 2, 36, P["gold"], scale=2, align="center")
+            self.font.draw(surf, d[3], vw // 2, TOP_PAD + 36, P["gold"], scale=2, align="center")
 
     def _icon6(self, idx):
         ic = self.icons6.get(idx)
@@ -666,23 +742,26 @@ class DoomHud:
         flash = int(now * 4) % 2 == 0
         by = H - BAR_H
         low.blit(self.bar, (0, by))
-        # CASH
+        self._card_state(snap, now, info)
+        self.quests_full = bool(info.get("in_garage") or info.get("quests_open"))
+        # CASH and HEAT: the two things the bottom bar is about, in the widest cells
         if self.last_cash is not None and snap.cash > self.last_cash:
             self.grin_until = now + 1.6
         self.last_cash = snap.cash
         cash = ("-$%d" % -snap.cash) if snap.cash < 0 else "$%d" % snap.cash
         num = self.big(cash, BIG_RED if snap.cash >= 0 else BIG_BLUE)
-        if num.get_width() > 92:
-            num = pygame.transform.scale(num, (92, num.get_height()))
-        low.blit(num, (BX + 48 - num.get_width() // 2, by + 3))
-        f.draw(low, "CASH", BX + 48, by + 23, P["white"], align="center")
-        # HEAT
+        if num.get_width() > 128:
+            num = pygame.transform.scale(num, (128, num.get_height()))
+        low.blit(num, (BX + 70 - num.get_width() // 2, by + 3))
+        f.draw(low, "CASH", BX + 70, by + 23, P["white"], align="center")
         heat_ramp = BIG_BLUE if snap.cops and flash else BIG_RED
         num = self.big("%d%%" % snap.heat, heat_ramp)
-        low.blit(num, (BX + 132 - num.get_width() // 2, by + 3))
-        f.draw(low, "HEAT", BX + 132, by + 23, P["white"], align="center")
-        # HANDS
-        hx = BX + 172
+        low.blit(num, (BX + 182 - num.get_width() // 2, by + 3))
+        f.draw(low, "HEAT", BX + 182, by + 23, P["white"], align="center")
+        # everything below is secondary: small type, dim labels
+        dim = (214, 212, 222)          # (readable on the grey bar; the SIZE is what marks them secondary)
+        hx = BX + 263
+        hc = hx + 24
         if me is not None:
             hands = [h for h in (me[9], me[10]) if h != NO_PART]
             dolly = next((d for d in view.dollies.values() if d[5] == me[0]), None) \
@@ -701,9 +780,8 @@ class DoomHud:
                 w = info["weapon"]
                 n = snap.arsenal[S.AMMO_BYTE_OF_ARM[w]] if w in S.AMMO_BYTE_OF_ARM \
                     else snap.arsenal[4 + S.GEAR_OF_ARM[w]]
-                low.fill((92, 90, 96), (hx, by + 2, 52, 20))
-                num = self.big("%d" % n, BIG_RED if n else BIG_BLUE)
-                low.blit(num, (BX + 198 - num.get_width() // 2, by + 3))
+                low.fill((92, 90, 96), (hx - 3, by + 2, 54, 20))
+                f.draw(low, "%d" % n, hc, by + 7, P["white"] if n else P["danger"], scale=2, align="center")
             else:
                 for i, h in enumerate(hands):
                     low.blit(self.icons2[h], (hx + 3 + i * 26, by + 4))
@@ -712,7 +790,7 @@ class DoomHud:
             label = "DOLLY"
         elif me is not None and me[9] == NO_PART and info.get("weapon", S.ARM_FISTS) != S.ARM_FISTS:
             label = WEAPON_LABELS[info["weapon"]]
-        f.draw(low, label, BX + 198, by + 23, P["white"], align="center")
+        f.draw(low, label, hc, by + 23, dim, align="center")
         # FACE
         if me is not None:
             if now > self.look_t:
@@ -736,42 +814,36 @@ class DoomHud:
             else:
                 mood = "calm"
             fl = (1 if flash else 2) if snap.cops else 0
-            low.blit(self.face(mood, me[1], fl), (BX + 232, by + 1))
+            low.blit(self.face(mood, me[1], fl, me[-1] if len(me) >= 20 and isinstance(me[-1], int) else 0),
+                     (BX + 227, by + 1))
         # STAMINA / SPEED
         car = view.my_car
+        sx = BX + 357
         if car is not None and me is not None and me[2] in (S.DRIVER, S.PASSENGER):
-            num = self.big("%d" % (math.hypot(car[9], car[10]) * 3.6))
-            low.blit(num, (BX + 296 - num.get_width() // 2, by + 3))
-            f.draw(low, "KM/H", BX + 296, by + 23, P["white"], align="center")
+            f.draw(low, "%d" % (math.hypot(car[9], car[10]) * 3.6), sx, by + 7, P["white"], scale=2, align="center")
+            f.draw(low, "KM/H", sx, by + 23, dim, align="center")
         elif me is not None:
             winded = me[3] & PR.PF_EXHAUSTED
-            num = self.big("%d%%" % me[11], BIG_BLUE if winded else BIG_RED)
-            low.blit(num, (BX + 296 - num.get_width() // 2, by + 3))
-            f.draw(low, "WINDED!" if winded else "STAMINA", BX + 296, by + 23,
-                   P["danger"] if winded and flash else P["white"], align="center")
+            # (v0.16) a percentage of YOUR pool: DASH's bigger lungs shouldn't read 210%
+            pool = stamina_max(me[-1] if len(me) >= 20 and isinstance(me[-1], int) else 0)
+            f.draw(low, "%d%%" % (100 * me[11] / pool), sx, by + 7, P["danger"] if winded else P["white"], scale=2, align="center")
+            f.draw(low, "WINDED!" if winded else "STAMINA", sx, by + 23,
+                   P["danger"] if winded and flash else dim, align="center")
         # COPS
+        cx = BX + 438
         for i in range(min(snap.cops, 2)):
             c = (255, 60, 60) if (flash ^ bool(i)) else (80, 120, 255)
-            low.fill(P["ink"], (BX + 338 + i * 16, by + 5, 12, 14))
-            low.fill(c, (BX + 339 + i * 16, by + 6, 10, 5))
-            low.fill(P["white"], (BX + 339 + i * 16, by + 12, 10, 6))
+            low.fill(P["ink"], (cx - 14 + i * 16, by + 5, 12, 14))
+            low.fill(c, (cx - 13 + i * 16, by + 6, 10, 5))
+            low.fill(P["white"], (cx - 13 + i * 16, by + 12, 10, 6))
         lethal = getattr(snap, "alert", 0) & PR.AL_LETHAL
-        f.draw(low, "LETHAL" if lethal else "COPS", BX + 351, by + 23,
-               (P["danger"] if flash else P["white"]) if lethal else (130, 170, 255) if snap.cops else P["white"],
+        f.draw(low, "LETHAL" if lethal else "COPS", cx, by + 23,
+               (P["danger"] if flash else P["white"]) if lethal else (130, 170, 255) if snap.cops else dim,
                align="center")
-        # DAY / RENT
-        dx = BX + 378
-        f.draw(low, "DAY %d" % snap.day, dx, by + 3, P["gold"])
-        f.draw(low, "RENT $%d" % snap.rent_due, dx, by + 11, P["white"])
-        due = snap.rent
-        f.draw(low, "DUE %s" % mmss(due), dx, by + 19,
-               P["danger"] if (due < 30 and flash) else P["white"])
-        if snap.cash < 0:
-            f.draw(low, "IN THE RED %s" % mmss(C.DEBT_GRACE - snap.debt), dx + 44, by + 3,
-                   P["danger"] if flash else P["gold"])
         self._arms_panel(low, snap, me, info, by)
         self._gear_panel(low, snap, me, view, by)
         # ---- above the bar -------------------------------------------------
+        self._day_bar(low, snap, now, flash)
         self._toasts(low, now)
         self._speech(low, now)
         self._status_line(low, snap, now)
@@ -793,12 +865,140 @@ class DoomHud:
             self._inspect_card(low, snap, now)
         self._banners(low, snap, me, now, flash)
         self._comedy_banner(low, me, now)
-        if now < self.help_until and not info.get("paused") and not info.get("menu"):
+        if now < self.help_until and not info.get("paused") and not info.get("menu") and self.dlg is None:
             # (v0.13) the controls live behind the pause menu's INSTRUCTIONS button now; the
             # first few seconds of a session just say where to find them
             t = "ESC: PAUSE / INSTRUCTIONS"
             low.blit(self._panel(f.width(t) + 12, 12, 170), (W // 2 - f.width(t) // 2 - 6, VIEW_H - 40))
             f.draw(low, t, W // 2, VIEW_H - 37, P["gold"], align="center")
+
+    CARD_TIME = 25.0        # s the day-1 rules card stays up
+    CARD_H = 24
+
+    def _card_state(self, snap, now, info):
+        """(v0.15) once per run, on day 1: the rules card under the day bar. Keyed on snap.run so a
+        fresh run after a seizure gets it again."""
+        run = getattr(snap, "run", 0)
+        if snap.day == 1 and run != self.card_run:
+            self.card_run, self.card_t0 = run, now
+        self.card_on = bool(snap.day == 1 and now - self.card_t0 < self.CARD_TIME and snap.gameover <= 0
+                            and not info.get("paused") and not info.get("menu"))
+        self.top_extra = self.CARD_H if self.card_on else 0
+
+    def _day_bar(self, low, snap, now, flash):
+        """(v0.15, Bryce: "make the lose condition much more apparent") the Majora's-Mask-style band
+        across the top: DAY, a dawn-to-midnight track with a sun that turns into a moon, CASH against
+        RENT DUE, the countdown, and the strike pips. It escalates: pulses when you're short and
+        the clock's under RENT_WARN_TIME, and goes full alarm in the last 15 s with a strike standing."""
+        f = self.font
+        smax = getattr(C, "RENT_STRIKES_MAX", 2)
+        strikes = max(0, int(getattr(snap, "strikes", 0) or 0))
+        back = int(getattr(snap, "back_rent", 0) or 0)
+        due, cash = int(snap.rent_due), snap.cash
+        left = max(0.0, snap.rent)
+        seized = snap.gameover > 0
+        if seized:
+            strikes = smax
+        short = cash < due
+        warn = short and left <= getattr(C, "RENT_WARN_TIME", 45.0)
+        final = seized or (short and strikes >= smax - 1 and strikes > 0 and left <= 15.0)
+        ox = 1 if (final and int(now * 24) % 2) else 0            # the alarm makes the whole bar judder
+        low.blit(self.topbar, (0, 0))
+        if final:
+            low.blit(self._tint(W, TOP_H, (230, 20, 20), 150 if flash else 90), (0, 0))
+            for r in ((0, TOP_H, 3, VIEW_H - TOP_H), (W - 3, TOP_H, 3, VIEW_H - TOP_H), (0, VIEW_H - 3, W, 3)):
+                low.blit(self._tint(r[2], r[3], (230, 20, 20), 110 if flash else 50), r[:2])
+        elif warn:
+            a = int((22 + 80 * (0.5 + 0.5 * math.sin(now * 6))) // 10) * 10
+            low.blit(self._tint(W, TOP_H, (220, 30, 30), a), (0, 0))
+        # DAY
+        num = self.big("DAY %d" % snap.day, BIG_GOLD)
+        if num.get_width() > 64:
+            num = pygame.transform.scale(num, (64, num.get_height()))
+        low.blit(num, (6 + ox, 6))
+        # the track: elapsed time darkens behind the sun
+        p = max(0.0, min(1.0, 1.0 - left / C.DAY_LENGTH))
+        kx, ky, kw, kh = self.SKY_X + ox, self.SKY_Y, self.SKY_W, self.SKY_H
+        low.fill((10, 8, 18), (kx - 2, ky - 2, kw + 4, kh + 4))
+        low.fill((110, 104, 150), (kx - 1, ky - 1, kw + 2, kh + 2))
+        low.blit(self.sky, (kx, ky))
+        done_w = int(p * kw) // 2 * 2
+        if done_w:
+            low.blit(self._tint(done_w, kh, (0, 0, 20), 70), (kx, ky))
+        for i in range(1, 6):
+            low.fill((10, 8, 18), (kx + kw * i // 6, ky, 1, 2))
+        endc = (255, 60, 50) if (warn and flash) else (170, 30, 30)
+        low.fill(endc, (kx + kw - 2, ky, 2, kh))                   # midnight
+        sx = max(kx + 4, min(kx + kw - 5, kx + int(p * kw)))
+        cy = ky + 6 - int(math.sin(math.pi * p) * 2)
+        if p < 0.72:
+            body = (255, 230, 90) if p < 0.55 else (255, 170, 60)
+            pygame.draw.circle(low, (255, 250, 190) if p < 0.55 else (255, 200, 110), (sx, cy), 5)
+            pygame.draw.circle(low, body, (sx, cy), 4)
+            for a, b in ((-7, 0), (7, 0), (0, -7), (0, 7)):        # chunky rays
+                low.fill(body, (sx + a - (a == 0), cy + b - (b == 0), 1 + 0, 1 + 0))
+        else:
+            pygame.draw.circle(low, (236, 236, 214), (sx, cy), 4)
+            bx, by_ = min(kx + kw - 1, sx + 2), cy - 1
+            pygame.draw.circle(low, self.sky.get_at((max(0, min(kw - 1, bx - kx)), 2)), (bx, by_), 3)
+        # countdown
+        if seized:
+            text, col = "SHOP SEIZED", (P["white"] if flash else (255, 90, 70))
+        elif final:
+            text, col = "FINAL HOURS %s" % mmss(left), (P["white"] if flash else (255, 90, 70))
+        else:
+            text = "MIDNIGHT IN %s" % mmss(left)
+            col = (P["danger"] if flash else P["white"]) if warn else P["white"]
+        f.draw(low, text, kx, 16, col, scale=2)
+        # CASH vs RENT DUE
+        mx = self.MONEY_X + 8 + ox
+        cash_txt = ("-$%d" % -cash) if cash < 0 else "$%d" % cash
+        cs = self.big(cash_txt, BIG_RED if short else BIG_GREEN)
+        ds = self.big("/ $%d" % due, BIG_GOLD)
+        total = cs.get_width() + 6 + ds.get_width()
+        if total > 150:                                            # a ridiculous fortune: squash, don't overflow
+            k = 150.0 / total
+            cs = pygame.transform.scale(cs, (max(1, int(cs.get_width() * k)), 17))
+            ds = pygame.transform.scale(ds, (max(1, int(ds.get_width() * k)), 17))
+            total = cs.get_width() + 6 + ds.get_width()
+        low.blit(cs, (mx, 10))
+        low.blit(ds, (mx + cs.get_width() + 6, 10))
+        f.draw(low, "CASH", mx, 2, P["metal_l"])
+        lab = "RENT DUE" + (" (INCL $%d BACK RENT)" % back if back > 0 else "")
+        f.draw(low, lab, mx + cs.get_width() + 6, 2, P["gold"] if back > 0 else P["metal_l"])
+        if short:
+            st, sc = "SHORT $%d" % (due - cash), (P["danger"] if (warn and flash) else (255, 90, 70))
+        else:
+            st, sc = "COVERED", P["money"]
+        scale = 2 if mx + total + 8 + len(st) * 8 <= self.STRIKE_X - 8 else 1
+        f.draw(low, st, self.STRIKE_X - 8, 13 if scale == 2 else 16, sc, scale=scale, align="right")
+        # STRIKES
+        px = self.STRIKE_X + 8 + ox
+        f.draw(low, "MISSED RENT", px, 2, P["metal_l"])
+        for i in range(smax):
+            x = px + i * 20
+            hit = i < strikes
+            edge = (255, 90, 70) if hit else (110, 104, 150)
+            if hit or (i == strikes and warn):
+                low.fill(edge if (hit or flash) else (110, 104, 150), (x - 1, 9, 18, 17))
+            else:
+                low.fill(edge, (x - 1, 9, 18, 17))
+            low.fill((200, 30, 30) if hit else (22, 18, 36), (x, 10, 16, 15))
+            if hit:
+                pygame.draw.line(low, P["white"], (x + 3, 13), (x + 12, 21), 2)
+                pygame.draw.line(low, P["white"], (x + 12, 13), (x + 3, 21), 2)
+        lx = px + smax * 20 + 4
+        f.draw(low, "%d MISSES =" % smax, lx, 10, P["metal_l"])
+        f.draw(low, "SHOP SEIZED", lx, 18, (255, 90, 70) if (strikes or final) else P["danger"])
+        # the day-1 card, hung off the bar
+        if self.card_on:
+            l1, l2 = "PAY THE RENT BY MIDNIGHT.", "MISS IT TWICE AND YOU LOSE THE SHOP."
+            w = max(f.width(l1), f.width(l2)) + 14
+            low.blit(self._panel(w, self.CARD_H - 1, 225), (6, TOP_H))
+            low.fill(P["gold"], (6, TOP_H, w, 1))
+            low.fill(P["gold"], (6, TOP_H, 1, self.CARD_H - 1))
+            f.draw(low, l1, 12, TOP_H + 4, P["gold"])
+            f.draw(low, l2, 12, TOP_H + 13, P["white"])
 
     def _inspect_card(self, low, snap, now):
         """(v0.9) Look at a car and size it up: the engine, the box, the good bits, how
@@ -862,7 +1062,7 @@ class DoomHud:
             f.draw(low, "THE CREW PAYS THE HOSPITAL. YOU WAKE UP AT THE SHOP.", W // 2, VIEW_H // 2 + 12,
                    P["white"], align="center")
             return
-        oy = 62                                 # (under the toasts, over the action)
+        oy = 80                                 # (under the toasts and the compass lines, over the action)
         if f2 & PR.PF2_JAILED:
             low.blit(self._panel(400, 12, 170), (W // 2 - 200, oy - 2))
             msg = "IN THE LOCKUP: OPEN THE GATE!" if f2 & PR.PF2_KEYS else \
@@ -882,7 +1082,7 @@ class DoomHud:
                    align="center")
 
     def _toasts(self, low, now):
-        y = 3
+        y = TOP_PAD + self.top_extra
         for text, col, t0 in list(self.toasts):
             if now - t0 > C.TOAST_TIME:
                 continue
@@ -922,6 +1122,21 @@ class DoomHud:
             out.append(line)
         return out
 
+    def _portrait(self, speaker):
+        """(v0.15) the speaker's face, 24x24, from fpart.portrait (cached; None if there isn't one)."""
+        if not speaker:
+            return None
+        if speaker not in self._portraits:
+            fn = getattr(FA, "portrait", None)
+            img = None
+            if fn is not None:
+                try:
+                    img = fn(speaker, 24)
+                except Exception:
+                    img = None
+            self._portraits[speaker] = img
+        return self._portraits[speaker]
+
     def _speech(self, low, now):
         """(v0.12.1) someone talking to you: a box low in the middle of the view. (v0.13) a
         queue: a story scene is a conversation, so each speaker gets the box in turn, paced
@@ -936,16 +1151,22 @@ class DoomHud:
         f = self.font
         speaker, lines = self.dlg[0], self.dlg[1]
         width = W - 60
+        face = self._portrait(speaker)
+        tx = 36 if face is not None else 5            # text column: past the 24 px portrait and its frame
         body = []
         for t in lines:
-            body.extend(self._wrap_px(t, width - 10))
-        h = 8 * len(body) + 14
+            body.extend(self._wrap_px(t, width - tx - 6))
+        h = max(8 * len(body) + 14, 34 if face is not None else 0)
         x, y = W // 2 - width // 2, VIEW_H - 22 - h
         low.blit(self._panel(width, h, 200), (x, y))
         low.fill(P["gold"], (x, y, width, 1))
-        f.draw(low, speaker, x + 5, y + 3, P["gold"])
+        if face is not None:
+            low.fill(P["ink"], (x + 4, y + 4, 26, 26))                       # the same 1 px frame as the HUD face
+            low.fill(P["gold"], (x + 4, y + 4, 26, 1))
+            low.blit(face, (x + 5, y + 5))
+        f.draw(low, speaker, x + tx, y + 3, P["gold"])
         for i, t in enumerate(body):
-            f.draw(low, t, x + 5, y + 12 + i * 8, P["white"])
+            f.draw(low, t, x + tx, y + 12 + i * 8, P["white"])
         if self.dialogue:
             f.draw(low, "ENTER: NEXT (%d)" % len(self.dialogue), x + width - 5, y + 3, P["metal_l"], align="right")
 
@@ -996,7 +1217,7 @@ class DoomHud:
         small = self._panels.get(key)
         if small is None:
             small = self._panels[key] = pygame.transform.scale(mm, (mw, mh))
-        mx, my = W - mw - 3, 3
+        mx, my = W - mw - 3, TOP_PAD             # (v0.15) under the day bar
         self.mm_left = mx - 1          # top-right text (compasses, crewmates) stops short of this
         low.fill(P["ink"], (mx - 1, my - 1, mw + 2, mh + 2))
         low.blit(small, (mx, my))
@@ -1024,7 +1245,9 @@ class DoomHud:
         self._quest_panel(low, view.snap, W - 3, my + mh + 3)
 
     def _quest_panel(self, low, snap, x, y):
-        """Under the radar: today's 3 jobs and the crew's reputation/act. Nothing but
+        """Under the radar. (v0.15) Compact by default -- the story goal, one line of job/REP
+        count and at most two business rows -- and the whole list (today's 3 jobs, every order)
+        while you're in the shop or holding J. Old text: today's 3 jobs and the crew's reputation/act. Nothing but
         ids and a done bitmask rides the wire (protocol.SNAP_HDR) -- names, briefs and
         rewards come from quests.QUESTS, the same fixed table on both ends. Right-aligned
         to the screen edge (v0.12.1: it used to start at the radar's left edge and run off
@@ -1032,17 +1255,30 @@ class DoomHud:
         f = self.font
         rows = self._story_rows(snap)
         act = ("I", "II", "III")[max(0, min(2, snap.act - 1))]
-        rows.append(("REP %d - ACT %s" % (snap.story_points, act), P["gold"]))
-        for i, idx in enumerate(snap.today_quests):
-            if idx == PR.NO_QUEST or idx >= len(QUEST_ORDER):
-                continue
-            name, brief, diff, cash, rep, minp, tlim, coop = QUESTS[QUEST_ORDER[idx]]
-            done = bool(snap.quest_done & (1 << i))
-            rows.append((("%s $%d" % (name, cash)) if not done else "%s DONE" % name,
-                         P["money"] if done else P["white"]))
-        rows.extend(self._biz_rows(snap))
+        full = self.quests_full
+        if not full:
+            rows = [r for r in rows if r[0]]
+            valid = [i for i, idx in enumerate(snap.today_quests) if idx != PR.NO_QUEST and idx < len(QUEST_ORDER)]
+            n_done = sum(1 for i in valid if snap.quest_done & (1 << i))
+            rows.append(("JOBS %d/%d - REP %d - ACT %s" % (n_done, len(valid), snap.story_points, act),
+                         P["money"] if valid and n_done == len(valid) else P["metal_l"]))
+            biz = [r for r in self._biz_rows(snap) if r[0]]
+            rows.extend(biz[:2])
+            if len(biz) > 2:
+                rows.append(("+%d MORE" % (len(biz) - 2), P["metal_l"]))
+            rows.append(("HOLD J: ALL JOBS", (110, 108, 120)))
+        else:
+            rows.append(("REP %d - ACT %s" % (snap.story_points, act), P["gold"]))
+            for i, idx in enumerate(snap.today_quests):
+                if idx == PR.NO_QUEST or idx >= len(QUEST_ORDER):
+                    continue
+                name, brief, diff, cash, rep, minp, tlim, coop = QUESTS[QUEST_ORDER[idx]]
+                done = bool(snap.quest_done & (1 << i))
+                rows.append((("%s $%d" % (name, cash)) if not done else "%s DONE" % name,
+                             P["money"] if done else P["white"]))
+            rows.extend(self._biz_rows(snap))
         width = max(f.width(t) for t, _ in rows) + 6
-        low.blit(self._panel(width, 8 * len(rows) + 3, 150), (x - width + 2, y - 2))
+        low.blit(self._panel(width, 8 * len(rows) + 3, 150 if full else 115), (x - width + 2, y - 2))
         for t, col in rows:
             if t:
                 f.draw(low, t, x, y, col, align="right")
@@ -1137,7 +1373,7 @@ class DoomHud:
             f.draw(low, str(k + 1), BX // 2 - 36 + k * 9, by + 4, col, scale=1)
         name = S.ARM_NAMES[cur] if S.arsenal_owns(ars, cur) else "FISTS"
         f.draw(low, name, BX // 2, by + 13, P["gold"], align="center")
-        f.draw(low, "ARMS", BX // 2, by + 23, P["white"], align="center")
+        f.draw(low, "ARMS", BX // 2, by + 23, (214, 212, 222), align="center")
 
     def _gear_panel(self, low, snap, me, view, by):
         """Right of the bar: what's in your pockets (traps) -- or your trunk, in a car."""
@@ -1161,7 +1397,7 @@ class DoomHud:
             f.draw(low, "%d/%d" % (used, cap), cx, by + 4, P["gold"], align="center")
             for k, (tid, style) in enumerate(items[:5]):
                 low.blit(self.icons_small6[PART_INDEX[tid]], (x0 + 6 + k * 14, by + 12))
-            f.draw(low, "TRUNK", cx, by + 23, P["white"], align="center")
+            f.draw(low, "TRUNK", cx, by + 23, (214, 212, 222), align="center")
             return
         ars = snap.arsenal or (0, 1) + (0,) * (S.ARSENAL_LEN - 2)
         names = ("SPIKES", "BLOCKS", "BANANA", "DONUTS", "WHOOPEE")
@@ -1172,14 +1408,15 @@ class DoomHud:
             f.draw(low, r, cx, by + 2 + i * 7, P["gold"], align="center")
         if not rows:
             f.draw(low, "-", cx, by + 8, (70, 68, 76), align="center")
-        f.draw(low, "GEAR", cx, by + 23, P["white"], align="center")
+        f.draw(low, "GEAR", cx, by + 23, (214, 212, 222), align="center")
 
     def _compass_y(self, now):
         """(v0.12.1) the compass line sat at y=14 -- which is exactly where the SECOND toast
         goes, so any busy moment ("HOTWIRED IT" + "JOB DONE" + ...) printed two lines on top
         of each other. It now ducks under however many toasts are showing."""
         live = sum(1 for t in self.toasts if now - t[2] <= C.TOAST_TIME)
-        return 14 if live <= 1 else 3 + 8 * live + 3
+        # (v0.15) the toasts now start under the day bar (and under the day-1 card while it's up)
+        return TOP_PAD + self.top_extra + (11 if live <= 1 else 8 * live + 3)
 
     def _story_compass(self, low, view, info, now, key="story_target", dy=16, col=None):
         """(v0.13) a gold arrow to whoever the story wants you to talk to next. (v0.14: also,
@@ -1303,11 +1540,15 @@ class DoomHud:
                 self.day_banner_until = now + 3.5
             self.day_seen = snap.day
         if now < self.day_banner_until and snap.gameover <= 0:
-            low.blit(self._panel(W, 40, 170), (0, 60))
+            strikes = int(getattr(snap, "strikes", 0) or 0)
+            low.blit(self._panel(W, 53 if strikes else 43, 170), (0, 76))
             num = self.big("DAY %d" % snap.day, BIG_GOLD)
             num = pygame.transform.scale(num, (num.get_width() * 2, num.get_height() * 2))
-            low.blit(num, (W // 2 - num.get_width() // 2, 62))
-            f.draw(low, "RENT AT MIDNIGHT: $%d" % snap.rent_due, W // 2, 90, P["white"], align="center")
+            low.blit(num, (W // 2 - num.get_width() // 2, 78))
+            f.draw(low, "RENT AT MIDNIGHT: $%d" % snap.rent_due, W // 2, 109, P["white"], align="center")
+            if strikes:
+                f.draw(low, "YOU ALREADY MISSED ONE. MISS THE NEXT AND THE SHOP IS GONE.", W // 2, 119,
+                       P["danger"] if flash else P["gold"], align="center")
         if me is not None and me[2] == S.CUFFED:
             f.draw(low, "BUSTED", W // 2, VIEW_H // 2 - 50, P["danger"] if flash else (130, 170, 255),
                    scale=5, align="center")
@@ -1315,18 +1556,23 @@ class DoomHud:
                    P["white"], align="center")
             f.draw(low, "NEXT STOP: THE PRECINCT LOCKUP.", W // 2, VIEW_H // 2 - 8, P["gold"], align="center")
         if snap.gameover > 0:
-            low.blit(self._panel(W, 60, 190), (0, VIEW_H // 2 - 40))
+            low.blit(self._panel(W, 86, 190), (0, VIEW_H // 2 - 40))
             f.draw(low, "SHOP SEIZED", W // 2, VIEW_H // 2 - 34, P["danger"], scale=5, align="center")
-            f.draw(low, "TWO MINUTES IN THE RED. THE LANDLORD HAS YOUR KEYS.", W // 2, VIEW_H // 2 - 2,
-                   P["white"], align="center")
+            f.draw(low, "MISSED RENT TWICE", W // 2, VIEW_H // 2 + 0, P["white"], scale=2, align="center")
+            f.draw(low, "THE LANDLORD HAS YOUR KEYS.", W // 2, VIEW_H // 2 + 20, P["white"], align="center")
             f.draw(low, "NEW RUN IN %d... (YOUR RIDE KEEPS ITS MODS)" % (int(snap.gameover) + 1), W // 2,
-                   VIEW_H // 2 + 8, P["gold"], align="center")
+                   VIEW_H // 2 + 30, P["gold"], align="center")
 
     # (v0.13, Bryce: "put the instructions in a hidden window unless you press on the instructions
     # button in the paused screen") the pause screen is a menu now -- three buttons -- and the
     # wall of controls lives behind INSTRUCTIONS instead of being the first thing you see.
-    PAUSE_BUTTONS = (("resume", "RESUME", "ESC"), ("help", "INSTRUCTIONS", "I"), ("leave", "LEAVE TO MENU", "Q"))
+    PAUSE_BUTTONS = (("resume", "RESUME", "ESC"), ("help", "INSTRUCTIONS", "I"),
+                     ("settings", "SETTINGS", "S"), ("leave", "LEAVE TO MENU", "Q"))
     HELP_SECTIONS = (
+        ("THE RENT (HOW YOU LOSE)",
+         ("RENT IS TAKEN AT MIDNIGHT. THE BAR AT THE TOP SHOWS YOUR CASH AGAINST THE BILL, AND HOW LONG YOU'VE GOT",
+          "CAN'T COVER IT? THAT'S A STRIKE, AND THE BILL CARRIES OVER. PAY IT IN FULL AND THE STRIKES GO AWAY",
+          "TWO STRIKES IN A ROW AND THE SHOP IS SEIZED: NEW RUN (YOUR OWN CAR KEEPS ITS MODS)")),
         ("MOVING", ("MOUSE / ARROWS: LOOK (UP AND DOWN TOO)     WASD: MOVE / DRIVE     SPACE: JUMP",
                     "SHIFT: SPRINT (IN A CAR WITH NOS: BOOST)     E: USE (HOLD FOR TIMED ACTIONS)     F: EXIT CAR",
                     "IN A CAR: SPACE HANDBRAKE, W+S BURNOUT (+STEER: DONUTS), X HYDRAULIC HOP (IF FITTED)",
@@ -1339,19 +1585,21 @@ class DoomHud:
                    "X AT A LOCKED CAR: CUT THE WIRES (QUIET, IF YOU GUESS RIGHT). X ON FOOT: THE PROMPT'S OTHER OPTION")),
         ("THE SHOP", ("PARK A STOLEN CAR INSIDE TO DELIVER IT. HOLD E ON IT TO STRIP PARTS. ENGINES NEED THE DOLLY",
                       "E AT THE TUNE-UP COUNTER: MOD SHOP (X: TALK TO MO ABOUT A BIGGER DOLLY). E AT A BOOT: TRUNK",
-                      "E AT A CRATE: THE BLACK MARKET.  RENT IS DUE AT MIDNIGHT.  F5: SAVE (HOST)")),
+                      "E AT A CRATE: THE BLACK MARKET.  F5: SAVE (HOST)")),
         ("BUSINESS", ("DAVE AUCTIONS WHAT YOU BRING HIM: X SETS THE PRICE. THE MONEY COMES WHEN THE HAMMER FALLS",
                       "SELL A CAR WHOLE: PAPERS FROM THE PRECINCT'S RECORDS HATCH, AUCTION IT, DRIVE IT TO THE BUYER",
                       "CONTACTS ROUND TOWN WANT PARTS (GOLD MARKERS): HAND THEM OVER IN PERSON FOR BETTER MONEY",
                       "BUY A GARAGE AT ITS SIGN, CLEAR THE JUNK (OR PAY A CREW): BETTER CRATES, A BETTER MOD SHOP")),
-        ("STORY", ("THE STORY PANEL (UNDER THE RADAR) SAYS WHO TO TALK TO NEXT. WALK UP AND PRESS E.",
-                   "DAILY JOBS EARN REP, AND REP OPENS THE NEXT CHAPTER.  ENTER: SKIP A LINE OF DIALOGUE")),
+        ("STORY", ("THE STORY PANEL (UNDER THE RADAR) SAYS WHO TO TALK TO NEXT. HOLD J FOR TODAY'S FULL JOB LIST.",
+                   "WALK UP AND PRESS E. DAILY JOBS EARN REP, AND REP OPENS THE NEXT CHAPTER.  ENTER: SKIP A LINE OF DIALOGUE",
+                   "CHARACTERS: PICK ONE ON THE MAIN MENU (A/D). EACH HAS A PERK, SHOWN ON THE PAUSE SCREEN")),
         ("THE LAW", ("OFFICERS CUFF YOU ON FOOT: PUNCH THEM OR MASH SPACE.  SHOOT AT COPS AND THEY SHOOT BACK",
                      "BUSTED: HE CARRIES YOU TO HIS CAR AND DRIVES YOU IN. YOUR CREW CAN STOP THE CAR ON THE WAY",
                      "THEN A CELL: PICK THE LOCK OR PUNCH THE DOOR, AND KNOCK OUT THE BIG GUARD FOR HIS KEYS",
                      "COP CARS CARJACK LIKE TRAFFIC: STOP ONE, HOLD E, DRAG THE OFFICER OUT (+30 HEAT)",
                      "THE IMPOUND BIKES OUTSIDE THE PRECINCT HAVE THE KEYS IN.  H: HORN (CONFUSES COPS)")),
-        ("SILLY", ("V CHASE CAM   TAB MAP   T DANCE   M MUSIC   F8 FISHEYE   F9 BIG HEADS   F10 DISCO   C BOX",)),
+        ("SILLY", ("V CHASE CAM   TAB MAP   T DANCE   M MUSIC   F8 FISHEYE   F9 BIG HEADS   F10 DISCO   C BOX",
+                  "PAUSE (ESC): I INSTRUCTIONS   S SETTINGS (FOV, RENDER SCALE, VOLUMES)   Q LEAVE TO MENU")),
     )
 
     def pause_hit(self, pos):
@@ -1364,6 +1612,10 @@ class DoomHud:
     def draw_pause(self, low, info):
         f = self.font
         low.blit(self._panel(W, H, 222), (0, 0))
+        if info.get("settings") is not None:          # (v0.17) ui.SettingsPanel draws and handles itself
+            self.pause_rects = {}
+            info["settings"].draw(low, info.get("mouse"))
+            return
         if info.get("help"):
             self._draw_instructions(low, info)
             return
@@ -1374,6 +1626,8 @@ class DoomHud:
             f.draw(low, line, W // 2, y, col, align="center")
             y += 9
         y = max(y + 14, 150)
+        self._pause_perk(low, info.get("char", 0), y - 12)
+        y += 30
         mouse = info.get("mouse")
         self.pause_rects = {}
         for name, label, key in self.PAUSE_BUTTONS:
@@ -1386,24 +1640,36 @@ class DoomHud:
             f.draw(low, key, r.right - 6, y + 8, P["metal_l"], align="right")
             y += 28
 
+    def _pause_perk(self, low, char, y):
+        """(v0.16) who you are and what your perk does: a 32 px portrait, NAME - TITLE, the perk."""
+        ch = U.char_info(char)
+        w = 260
+        x = W // 2 - w // 2
+        low.fill((40, 36, 58), (x, y, w, 36))
+        low.fill(P["gold"], (x, y, w, 1))
+        low.fill(P["ink"], (x + 3, y + 2, 32, 32))
+        low.blit(U.char_portrait(char, 30), (x + 4, y + 3))
+        self.font.draw(low, "%s - %s" % (ch["name"], ch["title"]), x + 42, y + 7, P["gold"])
+        self.font.draw(low, ("PERK: " + ch["perk"])[:52], x + 42, y + 19, P["money"])
+
     def _draw_instructions(self, low, info):
         f = self.font
-        w, h = W - 40, H - 24
-        x0, y0 = 20, 12
+        w, h = W - 40, H - 12          # (v0.17: 6 px more room for the pause-keys line)
+        x0, y0 = 20, 6
         low.blit(self._panel(w, h, 235), (x0, y0))
         low.fill(P["gold"], (x0, y0, w, 1))
         f.draw(low, "INSTRUCTIONS", W // 2, y0 + 6, P["gold"], scale=2, align="center")
-        y = y0 + 26
+        y = y0 + 20
         for title, lines in self.HELP_SECTIONS:
             f.draw(low, title, x0 + 10, y, P["gold"])
             y += 9
             for l in lines:
                 f.draw(low, l, x0 + 18, y, P["white"])
                 y += 8
-            y += 4
+            y += 1          # (was 2; the CHARACTERS line needed the room to keep SILLY on the page)
         mouse = info.get("mouse")
-        r = pygame.Rect(W // 2 - 60, y0 + h - 22, 120, 16)
+        r = pygame.Rect(x0 + 8, y0 + 4, 96, 14)          # (top-left: the bottom is full of sections now)
         self.pause_rects = {"back": r}
         hot = mouse is not None and r.collidepoint(mouse)
         low.fill((70, 60, 100) if hot else (40, 36, 58), r)
-        f.draw(low, "BACK (ESC)", W // 2, r.y + 5, P["gold"] if hot else P["white"], align="center")
+        f.draw(low, "BACK (ESC)", r.centerx, r.y + 4, P["gold"] if hot else P["white"], align="center")

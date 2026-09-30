@@ -41,11 +41,12 @@ class PredCar(Car):
 class Body:
     """Just enough of a Player for Physics._walk and the collision helpers."""
     __slots__ = ("x", "y", "vx", "vy", "ang", "stamina", "exhausted", "regen_delay",
-                 "sprinting", "moving", "load", "mult", "z", "vz")
+                 "sprinting", "moving", "load", "mult", "z", "vz", "char")
 
     def __init__(self):
         self.x = self.y = self.vx = self.vy = self.ang = 0.0
         self.z = self.vz = 0.0
+        self.char = 0                 # (v0.16) rides the SELF block: DASH's lungs are bigger
         self.stamina = C.STAMINA_MAX
         self.exhausted = False
         self.regen_delay = 0.0
@@ -155,7 +156,7 @@ class Predictor(Physics):
             self.pending.popleft()
         old = self.pose()
         old_mode, old_car = self.mode, self.car_id
-        (mode, load, car_id, x, y, vx, vy, ang, w, stamina, regen, mult, power, pull, flags) = snap.me
+        (mode, load, car_id, x, y, vx, vy, ang, w, stamina, regen, mult, power, pull, flags, char) = snap.me
         (e0, e1, e2, e3, e4, e5, e6, eflags) = snap.me2
         row = snap.cars.get(car_id) if mode == ME_DRIVER else None
         if mode == ME_DRIVER and row is None:
@@ -191,6 +192,7 @@ class Predictor(Physics):
             b.stamina, b.regen_delay = stamina, regen
             b.exhausted = bool(flags & SF_EXHAUSTED)
             b.load, b.mult = load, mult
+            b.char = char
             b.z, b.vz = e0, e1
         for _seq, buttons, yaw in self.pending:
             self.tick(buttons, yaw)

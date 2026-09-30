@@ -8,10 +8,11 @@ art team; we have for-loops.
 
 import math
 import random
+import zlib
 
 import pygame
 
-from .art import P, ROOF_COLORS, CAR_COLORS, PLAYER_COLORS, SKINS, shade
+from .art import P, ROOF_COLORS, CAR_COLORS, PLAYER_COLORS, SKINS, HAIRS, SHIRTS, shade
 from .parts import SLOT_INDEX
 from .sim import COP
 from . import vehicles as V
@@ -311,7 +312,9 @@ def render_boxes(boxes, az, ppm, el=0.24, outline=True):
     as seen from direction az (model frame, x forward, y right, z up), looking
     down by el. Orthographic, painter's algorithm, flat shading, 1 px outline.
     Returns (surface, anchor_x, anchor_y) where the anchor is the model origin
-    on the ground -- that's the point the renderer plants on the floor."""
+    on the ground -- that's the point the renderer plants on the floor.
+    (v0.17) outline can be a width in px: the 4x-detail mips use 2, so the dark edges that make
+    it read as boxes don't thin out to a hairline when the pixels get four times smaller."""
     ca, sa, ce, se = math.cos(az), math.sin(az), math.cos(el), math.sin(el)
     f = (ca * ce, sa * ce, -se)
     r = (-sa, ca, 0.0)
@@ -355,7 +358,8 @@ def render_boxes(boxes, az, ppm, el=0.24, outline=True):
             xs.extend(p[0] for p in pts)
             ys.extend(p[1] for p in pts)
             polys.append((depth, pts, shade(c, k)))
-    pad = 2
+    ow = int(outline)
+    pad = 2 + ow // 2
     minx, miny = math.floor(min(xs)) - pad, math.floor(min(ys)) - pad
     w, h = int(math.ceil(max(xs)) - minx + pad), int(math.ceil(max(ys)) - miny + pad)
     surf = pygame.Surface((max(1, w), max(1, h)), pygame.SRCALPHA)
@@ -363,8 +367,8 @@ def render_boxes(boxes, az, ppm, el=0.24, outline=True):
     for _, pts, c in polys:
         pts = [(x - minx, y - miny) for x, y in pts]
         pygame.draw.polygon(surf, c, pts)
-        if outline:
-            pygame.draw.polygon(surf, shade(c, 0.6), pts, 1)
+        if ow:
+            pygame.draw.polygon(surf, shade(c, 0.6), pts, ow)
     return surf, -minx, -miny
 
 
@@ -844,15 +848,26 @@ OUTFITS = {
     "records": ((150, 170, 200), (40, 44, 70), None),          # the civilian clerk: pale blue shirt, lanyard
 }
 CONTACT_OUTFITS = ("coat", "velour", "shades")
+
+
+def contact_outfit(name):
+    """A contact's outfit, picked from their NAME (not the shuffled slot they landed in this
+    seed) so the world model and their dialogue portrait always agree on what they're wearing."""
+    return CONTACT_OUTFITS[zlib.crc32(name.strip().upper().encode()) % len(CONTACT_OUTFITS)]
 BOXER_WHITE, BOXER_HEART = (240, 236, 240), (220, 50, 80)
 
 
-def person_boxes(shirt, skin, hair, frame, extra=None, pants=(52, 56, 78), gun=0, outfit=None):
+def person_boxes(shirt, skin, hair, frame, extra=None, pants=(52, 56, 78), gun=0, outfit=None, char=None):
     """A little blocky crook, about 1.75 m, facing +x. frame 0/1 = legs
     together/apart for the walk cycle. gun 1/2 = pistol/shotgun out in front,
     3 = a taser. outfit (v0.8): "officer", "guard", "keyguard", "jumpsuit",
     "streaker" (a censor bar and a smile) or "pantsed" (boxers, trousers at
-    the ankles, dignity elsewhere)."""
+    the ankles, dignity elsewhere). char (v0.16): a player character id (CHAR_LOOKS) -- overrides
+    skin and hair and adds the accessory (the shirt stays whatever crew colour you pass)."""
+    look = None
+    if char is not None:
+        look = char_look(char)
+        skin, hair = look["skin"], look["hair"]
     swing = 0.16 if frame else 0.0
     shoe = (30, 26, 30)
     b = []
@@ -937,8 +952,8 @@ def person_boxes(shirt, skin, hair, frame, extra=None, pants=(52, 56, 78), gun=0
             b.append((sw - 0.07, sw + 0.07, y0, y1, 0.9, 1.38, shirt))
             b.append((sw - 0.06, sw + 0.06, y0, y1, 0.8, 0.9, skin))
     b.append((-0.14, 0.14, -0.13, 0.13, 1.42, 1.72, skin))                                # head
-    b.append((0.14, 0.15, -0.08, -0.03, 1.56, 1.61, P["ink"]))                            # eyes
-    b.append((0.14, 0.15, 0.03, 0.08, 1.56, 1.61, P["ink"]))
+    # (no eyes on purpose: two ink pixels side by side read as ONE eye at this res, and everyone
+    # looked like a cyclops. Flat skin + hair reads as a face; the portrait() bust has real eyes.)
     if hat is not None:
         # a peaked cap. Authority, in box form.
         b.append((-0.16, 0.16, -0.16, 0.16, 1.7, 1.82, hat))
@@ -952,12 +967,78 @@ def person_boxes(shirt, skin, hair, frame, extra=None, pants=(52, 56, 78), gun=0
     elif outfit == "mime":
         b.append((-0.2, 0.12, -0.18, 0.18, 1.72, 1.8, (20, 20, 24)))                      # the beret
         b.append((-0.03, 0.03, -0.03, 0.03, 1.8, 1.86, (20, 20, 24)))
+    elif look is not None:
+        b.extend(_char_boxes(look))
     else:
         b.append((-0.16, 0.08, -0.15, 0.15, 1.66, 1.78, hair))
         b.append((-0.16, -0.12, -0.15, 0.15, 1.46, 1.7, hair))
         if civhat is not None:
             b.extend((x0, x1, y0, y1, z0 + 1.72, z1 + 1.72, c) for x0, x1, y0, y1, z0, z1, c in civ_hat_boxes(civhat))
     return b
+
+
+# ---------------------------------------------------------------------------
+# (v0.16) The player characters. LOOK data only: who they ARE (perk, blurb) lives in characters.py.
+# ids 0-3 are fixed and match characters.CHARACTERS; anything else falls back to 0 (DASH).
+# The shirt is NOT here on purpose: it stays the crew colour so four DASHes can still tell each
+# other apart. Skin + hair + ONE accessory is what makes a character, and each accessory is picked
+# to survive both a 30-pixel-tall world sprite and a 26x30 HUD face.
+# ---------------------------------------------------------------------------
+CHAR_LOOKS = (
+    dict(name="DASH", skin=(232, 186, 146), hair=(96, 64, 34), style="short", acc="band",
+         port=dict(headband=(220, 40, 44))),                          # red sweatband, short hair
+    dict(name="SPANNER", skin=(150, 104, 70), hair=(62, 40, 26), style="short", acc="goggles",
+         port=dict(goggles=True, beard=True)),                        # goggles on the forehead, bushy beard
+    dict(name="SLIM", skin=(244, 214, 184), hair=(24, 24, 30), style="short", acc="beanie",
+         port=dict(hat="beanie", hatc=(26, 26, 32), nopom=True, shades=True)),   # black beanie + shades
+    dict(name="SMOOTH", skin=(100, 68, 48), hair=(18, 18, 24), style="slick", acc="slick",
+         port=dict(stache=True, chain=True)),                         # slicked hair, gold chain, tache
+)
+_BRASS, _LENS = (196, 156, 60), (150, 210, 235)
+
+
+def char_look(char):
+    """CHAR_LOOKS[char], with any unknown / None id meaning DASH (0)."""
+    try:
+        return CHAR_LOOKS[char] if 0 <= char < len(CHAR_LOOKS) else CHAR_LOOKS[0]
+    except TypeError:
+        return CHAR_LOOKS[0]
+
+
+def _char_boxes(look):
+    """Hair (or hat) and the accessory for one character, on the standard head (x -0.14..0.14,
+    y +-0.13, z 1.42..1.72, face towards +x). Everything sticks out a little past the head so
+    it reads from the side as well as the front."""
+    hair, acc = look["hair"], look["acc"]
+    if acc == "beanie":
+        black = look["port"]["hatc"]
+        return [(-0.17, 0.15, -0.16, 0.16, 1.68, 1.84, black),                         # the beanie, pulled low
+                (-0.175, 0.155, -0.165, 0.165, 1.68, 1.74, (96, 100, 122)),            # its turned-up cuff (light, so it reads)
+                (-0.16, -0.12, -0.15, 0.15, 1.46, 1.68, hair),                         # hair peeking out the back
+                (0.13, 0.19, -0.125, 0.125, 1.5, 1.6, P["ink"]),                       # SHADES, indoors, at night
+                (0.19, 0.2, -0.1, -0.03, 1.57, 1.59, (150, 160, 200)),                 # a glint on each lens
+                (0.19, 0.2, 0.03, 0.1, 1.57, 1.59, (150, 160, 200))]
+    if acc == "slick":
+        return [(-0.16, 0.13, -0.145, 0.145, 1.68, 1.76, {"*": hair, "+z": (84, 84, 120)}),   # combed flat, shiny on top
+                (-0.16, -0.12, -0.145, 0.145, 1.46, 1.68, hair),
+                (0.14, 0.18, -0.08, 0.08, 1.5, 1.55, hair),                            # moustache
+                (0.13, 0.15, -0.12, 0.12, 1.24, 1.34, _GOLD_CHAIN),                    # gold chain on the chest
+                (0.13, 0.18, -0.06, 0.06, 1.1, 1.26, _GOLD_CHAIN)]                     # and the medallion (it's big. it's the point)
+    out = [(-0.16, 0.08, -0.15, 0.15, 1.66, 1.78, hair), (-0.16, -0.12, -0.15, 0.15, 1.46, 1.7, hair)]
+    if acc == "band":
+        out.append((-0.16, 0.16, -0.155, 0.155, 1.6, 1.68, (220, 40, 44)))             # red sweatband, all round
+        out.append((-0.2, -0.16, -0.05, 0.05, 1.58, 1.66, (220, 40, 44)))              # the knot's tails
+    elif acc == "goggles":
+        out.append((-0.16, 0.16, -0.155, 0.155, 1.6, 1.65, (40, 36, 34)))              # strap
+        for y0, y1 in ((-0.12, -0.01), (0.01, 0.12)):
+            out.append((0.1, 0.2, y0, y1, 1.6, 1.72, _BRASS))                          # brass rims
+            out.append((0.2, 0.21, y0 + 0.02, y1 - 0.02, 1.62, 1.7, _LENS))            # lenses
+        out.append((0.12, 0.2, -0.13, 0.13, 1.42, 1.56, hair))                         # BUSHY beard...
+        out.append((0.0, 0.2, -0.15, 0.15, 1.4, 1.5, hair))                            # ...that overhangs the chin
+    return out
+
+
+_GOLD_CHAIN = (255, 214, 60)
 
 
 CIV_HATS = 5
@@ -1444,36 +1525,68 @@ def make_camera_pole():
 # ---------------------------------------------------------------------------
 # The HUD face: our crook, getting more stressed as the heat rises
 # ---------------------------------------------------------------------------
-def make_face(mood, look, color_idx, t_flash=0):
+def make_face(mood, look, color_idx, t_flash=0, char=0):
     """26x30. mood: calm / tense / sweaty / panic / grin / dazed / busted /
-    winded. look: -1, 0, 1 (eyes left/centre/right, like a certain space marine)."""
+    winded. look: -1, 0, 1 (eyes left/centre/right, like a certain space marine).
+    (v0.16) char: player character id (CHAR_LOOKS). Skin, hair and the accessory are theirs; the
+    crew colour (color_idx) is the shirt collar along the bottom, so you can still tell who's who."""
     s = pygame.Surface((26, 30), pygame.SRCALPHA)
     f = s.fill
-    skin = SKINS[1]
+    cl = char_look(char)
+    acc = cl["acc"]
+    skin = cl["skin"]
     if mood in ("sweaty", "panic"):
-        skin = (226, 150, 118)
-    beanie = PLAYER_COLORS[color_idx % 4]
+        skin = tuple(int(a * 0.6 + b * 0.4) for a, b in zip(skin, (226, 130, 110)))   # flushed (a bit, on dark skin)
+    hair = cl["hair"]
     f(shade(skin, 0.8), (4, 9, 18, 19))
     f(skin, (5, 8, 16, 19))
     f(shade(skin, 1.08), (6, 9, 6, 6))
-    f(beanie, (3, 2, 20, 8))                                  # beanie
-    f(shade(beanie, 0.75), (3, 8, 20, 2))
-    f(shade(beanie, 1.2), (5, 3, 6, 2))
-    f(P["white"], (11, 0, 4, 3))                              # pom-pom
-    f(shade(skin, 0.65), (5, 22, 16, 5))                      # stubble
+    shirt = PLAYER_COLORS[color_idx % 4]
+    f(shade(shirt, 0.75), (3, 28, 20, 2)); f(shirt, (4, 28, 18, 1))           # the crew-coloured collar
     f(shade(skin, 0.8), (3, 14, 2, 5))                        # ears
     f(shade(skin, 0.8), (21, 14, 2, 5))
+    shades = acc == "beanie"
+    # --- hair / headgear (all above the brows at y 9-10, so the mood still reads) ---
+    if acc == "beanie":
+        f(P["ink"], (3, 2, 20, 7)); f((40, 40, 50), (5, 3, 6, 1))            # black beanie...
+        f((70, 70, 84), (3, 7, 20, 2))                                        # ...with a grey turned-up cuff
+    elif acc == "slick":
+        f(hair, (4, 2, 18, 7)); f((72, 72, 100), (7, 3, 9, 1)); f((60, 60, 84), (6, 5, 12, 1))   # combed back, shiny
+        f(hair, (4, 8, 2, 5)); f(hair, (20, 8, 2, 5))                         # sideburns
+    else:
+        f(hair, (4, 2, 18, 6)); f(shade(hair, 1.3), (6, 3, 6, 1))            # short hair
+        f(hair, (4, 8, 2, 3)); f(hair, (20, 8, 2, 3))
+        if acc == "band":
+            f((220, 40, 44), (3, 6, 20, 3)); f((250, 90, 90), (5, 6, 8, 1)) # the sweatband
+            f((220, 40, 44), (1, 8, 3, 2)); f((190, 30, 36), (0, 10, 3, 2))  # the knot's tails, flapping
+        elif acc == "goggles":
+            f((40, 36, 34), (3, 5, 20, 2))                                    # strap
+            for gx in (5, 14):
+                f(_BRASS, (gx, 3, 7, 5)); f(shade(_BRASS, 0.7), (gx, 7, 7, 1))   # welding goggles, up on the forehead
+                f(_LENS, (gx + 1, 4, 5, 3)); f(P["white"], (gx + 1, 4, 2, 1))
+            f(_BRASS, (12, 5, 2, 2))
     if mood == "dazed":
         for cx in (9, 16):
-            f(P["ink"], (cx - 1, 13, 1, 1)); f(P["ink"], (cx + 1, 13, 1, 1))
-            f(P["ink"], (cx, 14, 1, 1))
-            f(P["ink"], (cx - 1, 15, 1, 1)); f(P["ink"], (cx + 1, 15, 1, 1))
+            c = (170, 180, 210) if shades else P["ink"]
+            if shades:
+                f(P["ink"], (cx - 3, 12, 7, 5))
+            f(c, (cx - 1, 13, 1, 1)); f(c, (cx + 1, 13, 1, 1))
+            f(c, (cx, 14, 1, 1))
+            f(c, (cx - 1, 15, 1, 1)); f(c, (cx + 1, 15, 1, 1))
         f(P["gold"], (2, 1, 2, 2)); f(P["gold"], (22, 4, 2, 2))
+    elif shades:
+        wide = mood in ("panic", "sweaty")
+        h = 5 if wide else 4
+        f(P["ink"], (5, 12, 7, h)); f(P["ink"], (14, 12, 7, h)); f(P["ink"], (12, 12, 2, 1))
+        f((110, 122, 160), (6, 12, 2, 1)); f((110, 122, 160), (15, 12, 2, 1))   # glint
+        f((60, 66, 90), (7 + look, 14, 2, 1)); f((60, 66, 90), (16 + look, 14, 2, 1))   # (eyes, barely)
+        f(P["ink"], (4, 12, 1, 1)); f(P["ink"], (21, 12, 1, 1))
     else:
         wide = mood in ("panic", "sweaty")
         for bx in (7, 15):
             f(P["white"], (bx, 12, 4, 4 if wide else 3))
             f(P["ink"], (bx + 1 + look, 13, 2, 2))
+    if mood != "dazed":
         # brows
         if mood in ("tense", "sweaty", "panic"):
             f(P["ink"], (6, 10, 5, 1)); f(P["ink"], (15, 10, 5, 1))
@@ -1498,6 +1611,13 @@ def make_face(mood, look, color_idx, t_flash=0):
         f(P["ink"], (9, 23, 8, 1)); f(P["ink"], (8, 22, 1, 1)); f(P["ink"], (17, 22, 1, 1))
     else:
         f(P["ink"], (9, 22, 8, 1)); f(P["ink"], (17, 21, 1, 1))  # smirk
+    if acc == "goggles":
+        f(hair, (4, 15, 5, 13)); f(hair, (17, 15, 5, 13)); f(hair, (4, 25, 18, 4))   # the BUSH, around the mouth
+        f(shade(hair, 1.4), (5, 17, 1, 3)); f(shade(hair, 1.4), (19, 22, 1, 3))
+    elif acc == "slick":
+        f(hair, (8, 18, 10, 2)); f(hair, (7, 19, 2, 2)); f(hair, (17, 19, 2, 2))    # the moustache
+        f(_GOLD_CHAIN, (7, 27, 12, 1)); f(_GOLD_CHAIN, (8, 28, 1, 1)); f(_GOLD_CHAIN, (17, 28, 1, 1))
+        f(_GOLD_CHAIN, (11, 28, 4, 2)); f(shade(_GOLD_CHAIN, 0.7), (12, 29, 2, 1))   # chain + medallion
     if mood in ("sweaty", "panic", "winded"):
         f((150, 200, 255), (4, 11, 1, 3)); f((150, 200, 255), (21, 15, 1, 3))
     if mood == "busted":
@@ -1508,3 +1628,230 @@ def make_face(mood, look, color_idx, t_flash=0):
         tint.fill((255, 60, 60, 60) if t_flash == 1 else (70, 120, 255, 60))
         s.blit(tint, (0, 0))
     return s
+
+
+# ---------------------------------------------------------------------------
+# Dialogue portraits: a front-on bust for whoever is talking
+# ---------------------------------------------------------------------------
+# The world models have no eyes (two ink pixels side by side read as ONE), but up close in
+# the dialogue box a face needs them. Skin and hair use the SAME picks as the world sprite
+# (fp.py: SKINS/HAIRS indexed by the sum of the name's letters) and shirt/hat come from
+# OUTFITS, so the portrait is recognisably the person you just walked up to.
+PORTRAIT_BG = (30, 32, 44)
+_INK, _GOLD, _WHITE = (20, 20, 28), (236, 190, 60), (240, 240, 240)
+_GOLD_BRASS = (196, 156, 60)
+
+# speakers that aren't named NPCs but do talk: the law and the records clerk
+_ROLE_OUTFITS = {"OFFICER": "officer", "COP": "officer", "POLICE OFFICER": "officer",
+                 "GUARD": "guard", "KEY GUARD": "keyguard", "KEYGUARD": "keyguard",
+                 "CLERK": "records", "RECORDS": "records", "RECORDS CLERK": "records"}
+# the one distinguishing detail each named character gets, on top of their outfit
+_NAMED_LOOKS = {
+    "DAVE": dict(outfit="clerk", style="comb", stache=True, apron=True),
+    "MO": dict(outfit="mechanic", style="short", stubble=True),
+    "PAIGE": dict(outfit="paige", style="long", collar=_WHITE, ear=True),
+    "THE FIXER": dict(outfit="fixer", style="short", scar=True, scarf=(120, 40, 40)),
+    "TOMMY": dict(outfit="tommy", style="slick", chain=True),
+    "THE KINGPIN": dict(outfit="kingpin", style="short", cigar=True, tie=(170, 30, 40)),
+}
+# the contacts (lines.CONTACT_NAMES): one gimmick each. hat=None strips the outfit's hat.
+_CONTACT_LOOKS = {
+    "RAZOR": dict(hat=None, style="mohawk", scar=True),
+    "BIG SHEILA": dict(hat=None, style="big", ear=True),
+    "THE DENTIST": dict(hat=None, style="comb", glasses=True, collar=_WHITE),
+    "NAN": dict(hat=None, style="bun", glasses=True, hair=(226, 226, 230)),
+    "VIC THE VAN": dict(hat="cap"),
+    "LITTLE KEV": dict(hat="beanie"),
+    "MADAME OOH": dict(hat=None, style="big", hair=(150, 60, 160), ear=True),
+    "GRAVY": dict(hat=None, beard=True),
+    "DOUBLE DENISE": dict(hat=None, style="short", hair2=(230, 60, 150)),
+    "THE REVEREND": dict(hat=None, style="comb", collar=_WHITE, shirt=(28, 28, 34)),
+}
+_HAT_COLOURS = {"cap": (60, 100, 170), "flat": (84, 82, 90), "trilby": (24, 24, 28), "beanie": (200, 60, 70)}
+_OUTFIT_HATS = {"officer": "cap", "guard": "cap", "keyguard": "cap", "mechanic": "cap", "fixer": "flat",
+                "kingpin": "trilby", "shades": "trilby"}
+_STYLES = ("short", "short", "comb", "long", "slick", "mohawk", "big", "bun")
+_portraits = {}
+
+
+def _look(key):
+    """Everything the painter needs for one speaker name, as a dict. Deterministic."""
+    h = sum(map(ord, key))                                   # exactly how fp.py picks skin/hair
+    crc = zlib.crc32(key.encode())                           # never hash(): it is salted per run
+    L = dict(skin=SKINS[h % len(SKINS)], hair=HAIRS[h % len(HAIRS)], shirt=SHIRTS[(crc >> 6) % len(SHIRTS)],
+             style=_STYLES[(crc >> 9) % len(_STYLES)])
+    outfit = None
+    if key in _NAMED_LOOKS:
+        L.update(_NAMED_LOOKS[key])
+        outfit = L["outfit"]
+    elif key in _ROLE_OUTFITS:
+        outfit = _ROLE_OUTFITS[key]
+        L["style"] = "short"
+    elif key in _CONTACT_LOOKS:
+        outfit = contact_outfit(key)
+        L.update(_CONTACT_LOOKS[key])
+    else:                                                     # a stranger: a stable look from their name
+        L["stubble"] = (crc >> 12) % 4 == 0
+        L["glasses"] = (crc >> 14) % 5 == 0
+        if (crc >> 16) % 4 == 0:
+            L["hat"] = ("cap", "flat", "beanie")[(crc >> 18) % 3]
+    if outfit in OUTFITS:
+        shirt, _pants, hatc = OUTFITS[outfit]
+        if "shirt" not in _CONTACT_LOOKS.get(key, ()):
+            L["shirt"] = shirt
+        if hatc is not None and "hat" not in L:
+            L["hat"], L["hatc"] = _OUTFIT_HATS.get(outfit, "cap"), hatc
+        if outfit in ("officer", "guard", "keyguard"):
+            L["badge"] = True
+        elif outfit == "shades":
+            L["shades"] = True
+        elif outfit == "velour":
+            L["chain"] = True
+        elif outfit == "coat":
+            L["popcollar"] = True
+    return L
+
+
+def _paint_portrait(L):
+    """24x24 bust, painted with fills like make_face: the same chunky rectangles, no AA."""
+    s = pygame.Surface((24, 24))
+    s.fill(PORTRAIT_BG)
+    f = s.fill
+    skin, hair, shirt = L["skin"], L["hair"], L["shirt"]
+    sd = shade(skin, 0.8)
+    f(shirt, (2, 18, 20, 6))                                                  # shoulders
+    f(shade(shirt, 0.72), (2, 18, 2, 6)); f(shade(shirt, 0.72), (20, 18, 2, 6))
+    f(sd, (9, 16, 6, 3)); f(shade(skin, 0.7), (10, 18, 4, 1))                 # neck
+    if L.get("apron"):
+        f(shade(shirt, 0.8), (7, 20, 10, 4)); f(shade(shirt, 0.8), (7, 18, 1, 2)); f(shade(shirt, 0.8), (16, 18, 1, 2))
+    if L.get("collar"):
+        f(L["collar"], (9, 18, 6, 2)); f(sd, (11, 18, 2, 1))
+    if L.get("tie"):
+        f(shade(shirt, 0.82), (6, 18, 3, 6)); f(shade(shirt, 0.82), (15, 18, 3, 6))   # lapels
+        f(L["tie"], (11, 19, 2, 5))
+    if L.get("scarf"):
+        f(L["scarf"], (6, 17, 12, 3)); f(shade(L["scarf"], 0.7), (6, 19, 4, 3))
+    if L.get("popcollar"):
+        f(shade(shirt, 1.25), (5, 16, 4, 4)); f(shade(shirt, 1.25), (15, 16, 4, 4))
+    if L.get("chain"):
+        f(_GOLD, (8, 18, 8, 1)); f(_GOLD, (9, 19, 1, 1)); f(_GOLD, (14, 19, 1, 1)); f(_GOLD, (11, 20, 2, 2))
+    if L.get("badge"):
+        f(_GOLD, (15, 20, 3, 3))
+    style = L["style"]
+    if style == "long":                                       # hair behind the head goes down first
+        f(hair, (3, 3, 18, 3)); f(hair, (3, 5, 3, 14)); f(hair, (18, 5, 3, 14))
+    elif style == "big":
+        f(hair, (1, 1, 22, 7)); f(hair, (1, 6, 4, 9)); f(hair, (19, 6, 4, 9))
+    f(sd, (4, 4, 16, 13)); f(skin, (5, 4, 14, 13))                            # head
+    f(shade(skin, 1.08), (6, 5, 5, 3))
+    f(sd, (3, 9, 2, 4)); f(sd, (19, 9, 2, 4))                                 # ears
+    if style in ("short", "long", "slick"):
+        f(hair, (4, 2, 16, 4)); f(hair, (4, 4, 2, 5)); f(hair, (18, 4, 2, 5))
+        if style == "slick":
+            f(shade(hair, 1.4), (7, 3, 6, 1))
+    elif style == "comb":
+        f(hair, (5, 3, 14, 2)); f(hair, (4, 4, 2, 5)); f(hair, (18, 4, 2, 5))
+    elif style == "mohawk":
+        f(hair, (10, 0, 4, 5)); f(shade(hair, 0.8), (5, 4, 2, 2)); f(shade(hair, 0.8), (17, 4, 2, 2))
+    elif style == "big":
+        f(hair, (5, 3, 14, 3))
+    elif style == "bun":
+        f(hair, (4, 2, 16, 4)); f(hair, (4, 4, 2, 6)); f(hair, (18, 4, 2, 6)); f(hair, (9, 0, 6, 3))
+    if L.get("hair2"):
+        f(L["hair2"], (4, 2, 7, 4))
+    if L.get("headband"):                                     # (v0.16) DASH: sweatband, knot tails and all
+        hb = L["headband"]
+        f(hb, (4, 5, 16, 2)); f(shade(hb, 1.3), (6, 5, 6, 1)); f(hb, (2, 6, 3, 2)); f(shade(hb, 0.75), (1, 8, 3, 2))
+    if L.get("goggles"):                                      # (v0.16) SPANNER: welding goggles pushed up
+        f((40, 36, 34), (3, 4, 18, 2))
+        for gx in (5, 13):
+            f(_GOLD_BRASS, (gx, 2, 6, 5)); f(shade(_GOLD_BRASS, 0.7), (gx, 6, 6, 1))
+            f((150, 210, 235), (gx + 1, 3, 4, 3)); f(_WHITE, (gx + 1, 3, 2, 1))
+        f(_GOLD_BRASS, (11, 3, 2, 2))
+    f(shade(hair, 0.7), (6, 8, 4, 1)); f(shade(hair, 0.7), (14, 8, 4, 1))       # brows
+    if L.get("shades"):
+        f(_INK, (6, 9, 5, 3)); f(_INK, (13, 9, 5, 3)); f(_INK, (11, 9, 2, 1))
+        f((90, 100, 130), (7, 9, 1, 1)); f((90, 100, 130), (14, 9, 1, 1))
+    else:                                                     # two clear eyes with a gap between
+        for ex in (7, 14):
+            f(_WHITE, (ex, 10, 3, 2)); f(_INK, (ex + 1, 10, 1, 2))
+        if L.get("glasses"):
+            for gx in (6, 13):
+                f(_INK, (gx, 9, 5, 1)); f(_INK, (gx, 12, 5, 1)); f(_INK, (gx, 9, 1, 4)); f(_INK, (gx + 4, 9, 1, 4))
+            f(_INK, (11, 10, 2, 1))
+    f(shade(skin, 0.72), (11, 12, 2, 3))                                        # nose
+    if L.get("beard"):
+        f(hair, (5, 13, 14, 4)); f(hair, (5, 12, 2, 2)); f(hair, (17, 12, 2, 2))
+        f((140, 70, 70), (10, 14, 4, 1))
+    else:
+        if L.get("stubble"):
+            f(shade(skin, 0.68), (6, 14, 12, 3))
+        f((150, 64, 64), (9, 15, 6, 1)); f(sd, (8, 15, 1, 1)); f(sd, (15, 15, 1, 1))
+        if L.get("stache"):
+            f(hair, (8, 13, 8, 2))
+    if L.get("cigar"):
+        f((130, 84, 50), (13, 15, 7, 1)); f((255, 150, 40), (20, 15, 1, 1)); f((190, 190, 190), (21, 14, 1, 1))
+    if L.get("scar"):
+        f((214, 120, 120), (16, 9, 1, 5))
+    if L.get("ear"):
+        f(_GOLD, (3, 13, 1, 2)); f(_GOLD, (20, 13, 1, 2))
+    hat = L.get("hat")                                        # hats last: they sit on the hair
+    if hat:
+        c = L.get("hatc") or _HAT_COLOURS[hat]
+        d = shade(c, 0.7)
+        if hat == "cap":
+            f(c, (4, 1, 16, 4)); f(d, (3, 5, 18, 1)); f(d, (13, 5, 8, 2))
+        elif hat == "flat":
+            f(c, (3, 2, 18, 3)); f(d, (3, 5, 18, 1)); f(shade(c, 1.2), (5, 2, 6, 1))
+        elif hat == "trilby":
+            f(c, (6, 0, 12, 4)); f((90, 90, 96) if c[0] < 60 else shade(c, 1.4), (6, 3, 12, 1)); f(d, (2, 4, 20, 2))
+        elif hat == "beanie":
+            f(c, (4, 1, 16, 5)); f(shade(c, 1.25) if c[0] > 60 else (60, 60, 72), (4, 5, 16, 2))
+            if not L.get("nopom"):
+                f(_WHITE, (11, 0, 2, 1))
+        if L.get("badge") and hat == "cap":
+            f(_GOLD, (10, 2, 4, 2))
+    return s
+
+
+def portrait(speaker, size=24):
+    """A front-on face for whoever is speaking, an opaque size x size Surface (cached per
+    (speaker, size)). speaker is the name string the dialogue box shows; case and a stray colon
+    do not matter. Named NPCs match their world model; anyone else gets a look from a crc32 of
+    their name, stable between frames, runs and machines."""
+    key = " ".join(str(speaker or "").replace(":", " ").upper().split())
+    ck = (key, int(size))
+    s = _portraits.get(ck)
+    if s is None:
+        s = _paint_portrait(_look(key))
+        if size != 24:
+            s = pygame.transform.scale(s, (size, size))
+        _portraits[ck] = s
+    return s
+
+
+_char_portraits = {}
+
+
+def char_portrait(char, size=48, color_idx=None):
+    """(v0.16) A bigger front-on bust of a player character for the character-select menu, same
+    chunky style as portrait() with the accessory (goggles, band, beanie + shades, chain) front and
+    centre. An opaque size x size Surface, cached per (char, size, color_idx). color_idx=None gives a
+    neutral grey shirt; pass a crew slot to tint the shoulders like the in-world sprite."""
+    cl = char_look(char)
+    ck = (CHAR_LOOKS.index(cl), int(size), color_idx)
+    s = _char_portraits.get(ck)
+    if s is None:
+        shirt = (84, 90, 108) if color_idx is None else PLAYER_COLORS[color_idx % 4]
+        L = dict(skin=cl["skin"], hair=cl["hair"], shirt=shirt, style=cl["style"])
+        L.update(cl["port"])
+        s = _paint_portrait(L)
+        if size != 24:
+            s = pygame.transform.scale(s, (size, size))
+        _char_portraits[ck] = s
+    return s
+
+
+def portrait_names():
+    """Every speaker portrait() knows by name (everyone else is hashed from theirs)."""
+    return tuple(_NAMED_LOOKS) + tuple(_CONTACT_LOOKS) + tuple(_ROLE_OUTFITS)

@@ -9,12 +9,18 @@ the walls. All of it in plain pygame, so it runs from the same one-file exe.
 Performance notes: ~4 ms a frame at 480x238 on a laptop. The expensive
 things (texture shading, sprite rotations) are done once and cached; the
 per-frame work is arithmetic, subsurface() and transform.scale().
+
+(v0.17) Hi-res: the view is `scale` x 640x328 (config.RENDER_SCALE_DEFAULT). The walls are
+still cast one ray per 640-wide column and drawn `scale` px wide -- a 32-texel brick wall
+has nothing more to show, and the Python ray loop is the one cost that grows with width.
+Sprites, the floor, the roof, particles and tracers get the full resolution.
 """
 
 import colorsys
 import math
 import random
 import time
+from collections import OrderedDict
 
 import pygame
 
@@ -45,6 +51,14 @@ MARK_JACK = (255, 150, 40)      # orange arrow: traffic that's stopped. Drag the
 TRACER_COL = (255, 240, 170)
 
 
+PLAYER_ROW_LEN = 19          # decode_snapshot's player tuple before (v0.16) `char` was appended as its LAST item
+
+
+def _pchar(p):
+    """A decoded player row's character id (0 if the row predates the char field)."""
+    return p[-1] if len(p) > PLAYER_ROW_LEN else 0
+
+
 def time_of_day(day_left):
     """0 = dawn ... 1 = midnight. Days run from morning to midnight."""
     return C.clamp(1.0 - day_left / C.DAY_LENGTH, 0.0, 1.0)
@@ -68,17 +82,57 @@ def darkness(tod):
     return C.clamp((tod - 0.62) / 0.3, 0.0, 1.0)
 
 
+class SpriteCache:
+    """(v0.17) Every rendered sprite angle, evicted least-recently-used by pixel bytes rather
+    than by count: at 4x detail one chase-cam car angle weighs as much as a hundred far-away
+    people, so "4000 entries" could mean 40 MB or 4 GB depending on what you'd been looking at."""
+
+    def __init__(self, budget_mb):
+        self.budget = int(budget_mb * 1024 * 1024)
+        self.bytes = 0
+        self.d = OrderedDict()           # key -> (sprite, bytes)
+
+    def __len__(self):
+        return len(self.d)
+
+    def get(self, key):
+        hit = self.d.get(key)
+        if hit is None:
+            return None
+        self.d.move_to_end(key)
+        return hit[0]
+
+    def put(self, key, spr):
+        surf = spr[0] if isinstance(spr, tuple) else spr
+        n = surf.get_width() * surf.get_height() * surf.get_bytesize()
+        old = self.d.pop(key, None)
+        if old is not None:
+            self.bytes -= old[1]
+        self.d[key] = (spr, n)
+        self.bytes += n
+        while self.bytes > self.budget and len(self.d) > 1:
+            _k, (_s, m) = self.d.popitem(last=False)
+            self.bytes -= m
+        return spr
+
+    def clear(self):
+        self.d.clear()
+        self.bytes = 0
+
+
 class FPRenderer:
-    def __init__(self, cmap, map_surf, vw, vh):
+    def __init__(self, cmap, map_surf, vw, vh, scale=1):
         self.map = cmap
         self.cam_inside = False       # (v0.12.1) camera under the shop roof: skip what the ceiling hides
         self.vw, self.vh = vw, vh
+        self.ks = max(1, int(scale))  # (v0.17) render scale: vw is ks x 640. Text, lines and marks grow by it
+        self.cstep = self.ks          # screen columns per wall ray (one ray per 640-wide column, see top)
         self.hor0 = vh // 2
         self.hor = self.hor0          # moves with pitch (looking up/down: Build-engine y-shearing)
         self.fov = math.radians(C.FP_FOV)
-        self._cur_fov = self.fov      # (v0.12) F8 fisheye wobbles this away from self.fov and back
-        self.tanh = math.tan(self.fov / 2)
-        self.D = (vw / 2) / self.tanh
+        self._cur_fov = None          # (v0.12) F8 fisheye wobbles this away from self.fov and back
+        self._apply_fov(self.fov)
+        self._spx = 0.0               # (v0.17) screen px per metre of the sprite being fetched: picks its mip
         self.view = pygame.Surface((vw, vh)).convert()
         self.font = PixelFont()
         self.rng = random.Random(9)
@@ -120,16 +174,21 @@ class FPRenderer:
         # (v0.10) one fraction per front tile-column (7: a walking door, 4 bays, 2 solid
         # piers) instead of one shared value -- each of the shop's 5 doors moves on its own.
         self.door_open = [1.0] * (C.BLOCK_TILES - 2)
-        self.sky_h = int(vh * 0.95)   # tall enough to look up into
-        self.skies = {k: FA.make_sky(k, 4 * vw, self.sky_h) for k in FA.SKY_KEYS}
+        # tall enough to look up into. (v0.17) Painted at the old 640-wide size and blown up by ks
+        # the first time it's needed: a hi-res sky is just the same clouds with thinner edges
+        self._sky_base_h = int(vh // self.ks * 0.95)
+        self.sky_h = self._sky_base_h * self.ks
+        self._sky_base = {k: FA.make_sky(k, 4 * (vw // self.ks), self._sky_base_h) for k in FA.SKY_KEYS}
+        self.skies = {}
         self.hires = None             # the car the chase camera is following: drawn in more detail
         self.big_heads = False        # F9. You know you want to.
         self.disco = False            # F10: the floor gets a hue-cycling tint. Purely cosmetic.
         self.fisheye = False          # F8: a wider, wobblier FOV, like a cheap dashcam.
         self._build_static_sprites()
-        self.car_cache = {}
-        self.person_cache = {}
-        self.model_cache = {}
+        # (v0.17) cars, people and props share one byte-budgeted cache (they used to be three
+        # dicts, two of them cleared wholesale at 4000 entries and one never cleared at all)
+        self.sprites = SpriteCache(C.SPRITE_CACHE_MB)
+        self.car_cache = self.person_cache = self.model_cache = self.sprites
         self.icon_big = {}
         self.particles = []
         self.explosions = []
@@ -138,7 +197,6 @@ class FPRenderer:
         self.flash = None          # (colour, strength)
         self.shake = 0.0
         self.zbuf = [1e9] * vw
-        self.ray_k = [(2.0 * (x + 0.5) / vw - 1.0) * self.tanh for x in range(vw)]
         # per-frame fog/darkness overlay for the floor and for sprites
         self._fog_rows = None
         self._fog_key = None
@@ -152,6 +210,41 @@ class FPRenderer:
         self._init_pigeons()
 
     # ------------------------------------------------------------------ setup
+    def set_fov(self, degrees):
+        """(v0.17) The settings slider: horizontal field of view in degrees, clamped to
+        FOV_MIN..FOV_MAX. The F8 fisheye wobbles around whatever this is."""
+        self.fov = math.radians(clamp(float(degrees), C.FOV_MIN, C.FOV_MAX))
+        self._apply_fov(self.fov)
+
+    def set_scale(self, scale):
+        """(v0.17) Change the render scale in place (the settings screen, mid-game). Keeps the
+        skid marks, the particles and the sprite cache (it's keyed by px/m, not screen size)."""
+        scale = max(1, int(scale))
+        if scale == self.ks:
+            return
+        bw, bh = self.vw // self.ks, self.vh // self.ks
+        self.ks = self.cstep = scale
+        self.vw, self.vh = bw * scale, bh * scale
+        self.hor0 = self.hor = self.vh // 2
+        self.view = pygame.Surface((self.vw, self.vh)).convert()
+        self.roof_layer = pygame.Surface((self.vw, self.vh)).convert()
+        self.roof_layer.set_colorkey(ROOF_KEY)
+        self.roof_clip = None
+        self.zbuf = [1e9] * self.vw
+        self.sky_h = self._sky_base_h * scale
+        self.skies = {}
+        self._fog_key = None
+        self._apply_fov(self._cur_fov)
+
+    def _apply_fov(self, fov):
+        """Everything that hangs off the FOV: the focal length D and one ray slope per wall column
+        (a ray per cstep screen columns, aimed through the middle of its block)."""
+        self._cur_fov = fov
+        self.tanh = math.tan(fov / 2)
+        self.D = (self.vw / 2) / self.tanh
+        cs, vw = self.cstep, self.vw
+        self.ray_k = [(2.0 * (x + cs / 2.0) / vw - 1.0) * self.tanh for x in range(0, vw, cs)]
+
     def _build_walls(self):
         """Every wall tile gets a texture id and a height. Buildings keep one
         height and style across all their tiles, so they read as buildings."""
@@ -334,7 +427,7 @@ class FPRenderer:
                 bx, by, bw, bh = fs["bench"]
                 self.benches.append((bx + bw / 2, by + bh / 2, False, bw, bh))
         # (v0.14) the contacts (drop-off orders, car buyers) and the records clerk at the precinct
-        self.contacts = [(nm, x, y, f, FA.CONTACT_OUTFITS[i % len(FA.CONTACT_OUTFITS)], i)
+        self.contacts = [(nm, x, y, f, FA.contact_outfit(nm), i)
                          for i, (nm, x, y, f) in enumerate(getattr(cm, "contacts", ()))]
         rec = getattr(cm, "records", None)
         if rec is not None:
@@ -358,7 +451,21 @@ class FPRenderer:
             self.desk = (bx + bw / 2, by + bh / 2, bw, bh)
 
     # ------------------------------------------------------------------ sprites
-    def _car_sprite(self, row, az, steps=None, ppm=12):
+    def _mip(self, base):
+        """(v0.17) Which pixels-per-metre to build a box sprite at: its old density (`base`)
+        doubled until it covers what the screen shows (self._spx, set by the draw loop), up to
+        SPRITE_DETAIL x. Returns (ppm, outline px): the top mip gets a 2 px outline so the
+        boxes keep their dark edges instead of a hairline."""
+        want = self._spx * C.SPRITE_MIP_BIAS
+        top = base * C.SPRITE_DETAIL
+        ppm = base
+        while ppm < want and ppm < top:
+            ppm *= 2
+        ppm = min(ppm, top)
+        return ppm, max(1, ppm // (2 * base))
+
+    def _car_sprite(self, row, az, steps=None, base=12):
+        ppm, ow = self._mip(base)
         steps = steps or C.CAR_ANGLES
         (cid, kind, color, state, flags, mask, styles, x, y, vx, vy, ang, drv, psg, dmg,
          model, livery, extras, extras2) = row[:19]
@@ -376,13 +483,11 @@ class FPRenderer:
             lights |= 4                                  # NOS: blue fire out the back
         key = (kind, color, mask, styles, dmg, lights, idx, model, livery, extras & 0xF8, extras2 & 1, steps, ppm)
         # (the hop: hydraulics are drawn as the whole sprite bouncing, see the car loop)
-        spr = self.car_cache.get(key)
+        spr = self.sprites.get(key)
         if spr is None:
-            if len(self.car_cache) > C.SPRITE_CACHE_CARS:
-                self.car_cache.clear()
-            spr = self.car_cache[key] = FA.render_boxes(
+            spr = self.sprites.put(key, FA.render_boxes(
                 FA.car_boxes(kind, color, mask, styles, dmg, lights, model, livery, extras, extras2),
-                idx * TWO_PI / steps, ppm)
+                idx * TWO_PI / steps, ppm, outline=ow))
         return spr, ppm
 
     OUTFIT_OF = {S.OFFICER: "officer", S.GUARD: "guard", S.KEYGUARD: "keyguard", S.STREAKER: "streaker"}
@@ -442,43 +547,46 @@ class FPRenderer:
             img = self.sign_cache[key] = img
         return img
 
-    def _person_sprite(self, shirt, skin, hair, frame, extra, down, az, gun=0, outfit=None):
+    def _person_sprite(self, shirt, skin, hair, frame, extra, down, az, gun=0, outfit=None, char=None):
         n = C.PERSON_ANGLES
         idx = int(round(az / (TWO_PI / n))) % n
-        key = (shirt, skin, hair, frame, extra, down, idx, gun, self.big_heads, outfit)
-        spr = self.person_cache.get(key)
+        ppm, ow = self._mip(16)
+        key = (shirt, skin, hair, frame, extra, down, idx, gun, self.big_heads, outfit, char, ppm)
+        spr = self.sprites.get(key)
         if spr is None:
-            if len(self.person_cache) > C.SPRITE_CACHE_PEOPLE:
-                self.person_cache.clear()
-            boxes = FA.person_boxes(shirt, skin, hair, 0 if frame == 2 else frame, extra, gun=gun, outfit=outfit)
+            boxes = FA.person_boxes(shirt, skin, hair, 0 if frame == 2 else frame, extra, gun=gun, outfit=outfit, char=char)
             if frame == 2:
                 boxes = FA.seated(boxes)                # (v0.13) frame 2 = on a motorbike
             if self.big_heads:
                 boxes = FA.big_head(boxes)
             if down:
                 boxes = FA.lying(boxes)
-            spr = self.person_cache[key] = FA.render_boxes(boxes, idx * TWO_PI / n, 16)
-        return spr, 16
+            spr = self.sprites.put(key, FA.render_boxes(boxes, idx * TWO_PI / n, ppm, outline=ow))
+        return spr, ppm
 
     def _dog_sprite(self, frame, trousers, down, az):
         n = C.PERSON_ANGLES
         idx = int(round(az / (TWO_PI / n))) % n
-        key = ("dog", frame, trousers, down, idx)
-        spr = self.model_cache.get(key)
+        ppm, ow = self._mip(20)
+        key = ("dog", frame, trousers, down, idx, ppm)
+        spr = self.sprites.get(key)
         if spr is None:
             boxes = FA.dog_boxes(frame, trousers)
             if down:
                 boxes = [(x0, x1, y0, y1, z0 * 0.4, z1 * 0.4, c) for x0, x1, y0, y1, z0, z1, c in boxes]
-            spr = self.model_cache[key] = FA.render_boxes(boxes, idx * TWO_PI / n, 20)
-        return spr, 20
+            spr = self.sprites.put(key, FA.render_boxes(boxes, idx * TWO_PI / n, ppm, outline=ow))
+        return spr, ppm
 
-    def _model_sprite(self, name, boxes_fn, az, steps=None, ppm=16):
+    def _model_sprite(self, name, boxes_fn, az, steps=None, base=16):
+        """A prop's box model from the angle it's seen at. `base` is its old px per metre:
+        (v0.17) the mip it's actually built at is up to SPRITE_DETAIL x that (see _mip)."""
         steps = C.PROP_ANGLES if not steps or steps == 8 else steps     # (v0.8: 8 was choppy up close)
         idx = int(round(az / (TWO_PI / steps))) % steps
-        key = (name, idx, steps)
-        spr = self.model_cache.get(key)
+        ppm, ow = self._mip(base)
+        key = (name, idx, steps, ppm)
+        spr = self.sprites.get(key)
         if spr is None:
-            spr = self.model_cache[key] = FA.render_boxes(boxes_fn(), idx * TWO_PI / steps, ppm)
+            spr = self.sprites.put(key, FA.render_boxes(boxes_fn(), idx * TWO_PI / steps, ppm, outline=ow))
         return spr, ppm
 
     def _icon(self, bank, idx):
@@ -584,13 +692,11 @@ class FPRenderer:
         # (v0.12, F8) fisheye: a wider FOV that wobbles like a cheap dashcam suction mount.
         # Recomputing ray_k (one float per column) is cheap enough to do every frame; snaps
         # straight back to self.fov -- and only rebuilds once more -- the moment it's off.
-        want_fov = self.fov + math.radians(35.0 + 18.0 * math.sin(time.perf_counter() * 1.3)) \
+        # (v0.17: around the settings FOV, and capped at 170 -- tan() of 180 is a very bad day)
+        want_fov = min(math.radians(170.0), self.fov + math.radians(35.0 + 18.0 * math.sin(time.perf_counter() * 1.3))) \
             if self.fisheye else self.fov
         if want_fov != self._cur_fov:
-            self._cur_fov = want_fov
-            self.tanh = math.tan(want_fov / 2)
-            self.D = (self.vw / 2) / self.tanh
-            self.ray_k = [(2.0 * (x + 0.5) / self.vw - 1.0) * self.tanh for x in range(self.vw)]
+            self._apply_fov(want_fov)
         if self.shake > 0.05:
             yaw += self.rng.uniform(-0.01, 0.01) * self.shake
             eye += self.rng.uniform(-0.02, 0.02) * self.shake
@@ -601,8 +707,6 @@ class FPRenderer:
         night = dark > 0.55
         self._skids(view)
         surf = self.view
-        self._sky(surf, yaw, tod)
-        self._floor(surf, cx, cy, yaw, eye, dark)
         for t in getattr(view, "traps", {}).values():
             if t[1] == S.TRAP_DOOR:
                 i = t[0] - C.DOOR_ID
@@ -613,8 +717,10 @@ class FPRenderer:
         # the frame in there, all of it painted over a moment later by _roof)
         self.cam_box = self._roof_box(cx, cy)
         self.cam_inside = self.cam_box is not None
-        self._walls(surf, cx, cy, yaw, eye, dark, night)
-        self._roof(surf, cx, cy, yaw, eye)
+        if self.ks > 1 and not C.FP_HIRES_WORLD:
+            self._world_lowres(cx, cy, yaw, eye, dark, night, tod)
+        else:
+            self._world(surf, cx, cy, yaw, eye, dark, night, tod)
         self._sprites(surf, view, cx, cy, yaw, eye, me_pid, now, dt, dark, night, bank, hide_car)
         self._tracers(surf, cx, cy, yaw, eye, dt)
         self._particles(surf, cx, cy, yaw, eye, dt)
@@ -627,6 +733,62 @@ class FPRenderer:
             self.flash = (col, a) if a > 4 else None
         return surf
 
+    def _world(self, surf, cx, cy, yaw, eye, dark, night, tod):
+        """The static world: sky, street, walls, ceilings. Fills self.zbuf and roof_clip."""
+        self._sky(surf, yaw, tod)
+        self._floor(surf, cx, cy, yaw, eye, dark)
+        self._walls(surf, cx, cy, yaw, eye, dark, night)
+        self._roof(surf, cx, cy, yaw, eye)
+
+    def _world_lowres(self, cx, cy, yaw, eye, dark, night, tod):
+        """(v0.17) The static world at the old 640x328, blown up ks x into the view; the sprites,
+        hands and particles then go on top at full res. The street is a 4 px/m texture and the
+        walls 8 px/m, so at 2x there's nothing sharper to show -- but their Python loops (a ray per
+        column, a mode-7 slice per row) are most of the frame, and at full res they cost ~8 ms
+        more in the shop. C.FP_HIRES_WORLD = True draws them at full res anyway.
+        Works by pointing the renderer's screen geometry at the small surface for the duration."""
+        ks = self.ks
+        bw, bh = self.vw // ks, self.vh // ks
+        lo = self.__dict__.get("_lo")
+        if lo is None or lo["surf"].get_size() != (bw, bh):
+            lo = self._lo = {"surf": pygame.Surface((bw, bh)).convert(), "zbuf": [1e9] * bw,
+                             "roof": pygame.Surface((bw, bh)).convert(), "fog": (None, None)}
+            lo["roof"].set_colorkey(ROOF_KEY)
+        hi = (self.vw, self.vh, self.hor, self.D, self.zbuf, self.roof_layer, self.sky_h,
+              self._fog_key, self._fog_rows)
+        hor_lo = self.hor // ks
+        self.vw, self.vh, self.hor, self.D = bw, bh, hor_lo, self.D / ks
+        self.zbuf, self.roof_layer, self.sky_h = lo["zbuf"], lo["roof"], self._sky_base_h
+        self._fog_key, self._fog_rows = lo["fog"]
+        self.ks = self.cstep = 1                 # (ray_k is already one ray per 640-wide column)
+        try:
+            self._world(lo["surf"], cx, cy, yaw, eye, dark, night, tod)
+        finally:
+            lo["fog"] = (self._fog_key, self._fog_rows)
+            (self.vw, self.vh, _h, self.D, self.zbuf, self.roof_layer, self.sky_h,
+             self._fog_key, self._fog_rows) = hi
+            self.ks = self.cstep = ks
+        self.hor = hor_lo * ks                   # the sprites plant themselves on the same horizon
+        pygame.transform.scale(lo["surf"], (self.vw, self.vh), self.view)
+        zlo = lo["zbuf"]
+        self.zbuf = [z for z in zlo for _ in range(ks)]
+        if self.roof_clip is not None:
+            ends, rows = self.roof_clip
+            self.roof_clip = (ends, [r * ks for r in rows])
+        self.lintels = {x * ks: (d, y * ks) for x, (d, y) in self.lintels.items()}   # (in view px)
+
+    def _sky_img(self, key):
+        """The panorama at render scale, made on first use. Only the (at most two) skies on
+        show are kept: at 3x one is 30 MB."""
+        sky = self.skies.get((key, self.ks))
+        if sky is None:
+            base = self._sky_base[key]
+            sky = base if self.ks == 1 else pygame.transform.scale_by(base, self.ks).convert()
+            if len(self.skies) >= 2:
+                self.skies.clear()
+            self.skies[(key, self.ks)] = sky
+        return sky
+
     def _sky(self, surf, yaw, tod):
         a, b, t = sky_mix(tod)
         sw = 4 * self.vw
@@ -634,7 +796,7 @@ class FPRenderer:
         for key, alpha in ((a, 255), (b, int(255 * t))):
             if alpha <= 3:
                 continue
-            sky = self.skies[key]
+            sky = self._sky_img(key)
             sky.set_alpha(None if alpha >= 255 else alpha)
             # the sky's bottom edge sits on the horizon, wherever pitch put it
             h = min(self.hor, self.sky_h)
@@ -644,7 +806,7 @@ class FPRenderer:
             surf.blit(sky, (0, dy), pygame.Rect(off, sy, min(self.vw, sw - off), h))
             if sw - off < self.vw:
                 surf.blit(sky, (sw - off, dy), pygame.Rect(0, sy, self.vw - (sw - off), h))
-        self.skies[b].set_alpha(None)
+            sky.set_alpha(None)
 
     def _floor(self, surf, cx, cy, yaw, eye, dark):
         R = int(C.FP_FLOOR_DIST * FLOOR_PPM)
@@ -713,7 +875,9 @@ class FPRenderer:
         walk_col, walk_cx, half_walk = self.walk_col, self.walk_cx, C.WALK_DOOR_W / 2
         lintels = self.lintels = {}          # (v0.12.1) column -> (lintel distance, its bottom row)
         fence_gap = self.fence_gap
-        for x, k in enumerate(self.ray_k):
+        cs = self.cstep                      # (v0.17) screen columns per ray: each slice is cs wide
+        for i, k in enumerate(self.ray_k):
+            x = i * cs
             dx, dy = ca + rx * k, sa + ry * k
             mx, my = mx0, my0
             ddx = abs(1.0 / dx) if dx else 1e30
@@ -773,7 +937,7 @@ class FPRenderer:
                     did = self.edge_def
                     break
             if not did:
-                zbuf[x] = 1e9
+                zbuf[x:x + cs] = (1e9,) * cs
                 if door_at is not None:
                     self._door_slice(surf, x, dx, dy, door_at, cx, cy, eye, base_level, night)
                 if lintel is not None:
@@ -782,7 +946,7 @@ class FPRenderer:
             dist = ((sdx - ddx) if side == 0 else (sdy - ddy)) * T
             if dist < 0.05:
                 dist = 0.05
-            zbuf[x] = dist
+            zbuf[x:x + cs] = (dist,) * cs
             hit = (cy + dist * dy) if side == 0 else (cx + dist * dx)
             u = int((hit % T) / T * FA.TEX)
             if (side == 0 and dx < 0) or (side == 1 and dy > 0):
@@ -807,7 +971,7 @@ class FPRenderer:
             if h < 1:
                 continue
             if top >= 0 and bot <= vh:
-                blit(scale(col, (1, int(bot) - int(top) or 1)), (x, int(top)))
+                blit(scale(col, (cs, int(bot) - int(top) or 1)), (x, int(top)))
             else:
                 # up close: only scale the part of the texture that's on screen
                 y0, y1 = max(0.0, top), min(float(vh), bot)
@@ -821,7 +985,7 @@ class FPRenderer:
                 # stretch so texel edges land where they should
                 py0 = top + ti0 / th * h
                 ph = (ti1 - ti0) / th * h
-                blit(scale(piece, (1, max(1, int(ph)))), (x, int(py0)))
+                blit(scale(piece, (cs, max(1, int(ph)))), (x, int(py0)))
             if door_at is not None:
                 self._door_slice(surf, x, dx, dy, door_at, cx, cy, eye, base_level, night)
             if lintel is not None or self.wall_def[did][0] == "door":
@@ -859,6 +1023,7 @@ class FPRenderer:
         if y1 - y0 < 1:
             return
         self.lintels[x] = (dist, y1)         # the roof mustn't show through it (see _roof)
+        cs = self.cstep
         u = int(((cx + dist * dx) % T) / T * FA.TEX)
         did = self.walk_def if h0 < C.ROOF_H else self.jamb_def
         wt = self._wall_tex(did, night)
@@ -870,13 +1035,14 @@ class FPRenderer:
         h = bot - top
         ta = t0 + max(0, int((y0 - top) / h * (t1 - t0)))
         tb = max(ta + 1, min(t1, t0 + int(math.ceil((y1 - top) / h * (t1 - t0)))))
-        surf.blit(pygame.transform.scale(col.subsurface((0, ta, 1, tb - ta)), (1, y1 - y0)), (x, y0))
+        surf.blit(pygame.transform.scale(col.subsurface((0, ta, 1, tb - ta)), (cs, y1 - y0)), (x, y0))
 
     def _door_slice(self, surf, x, dx, dy, door_at, cx, cy, eye, base_level, night):
         """A half-open roller door, drawn over whatever the ray found behind it."""
         did, dist, up = door_at
         dist = max(0.05, dist)
-        self.zbuf[x] = min(self.zbuf[x], dist)
+        cs = self.cstep
+        self.zbuf[x:x + cs] = (min(self.zbuf[x], dist),) * cs
         u = int(((cx + dist * dx) % T) / T * FA.TEX)
         if dy > 0:
             u = FA.TEX - 1 - u                 # (the same flip rule as the walls: side 1)
@@ -896,13 +1062,13 @@ class FPRenderer:
         if y1 - y0 < 1:
             return
         if top >= 0 and bot <= vh:
-            surf.blit(pygame.transform.scale(col, (1, y1 - y0)), (x, y0))
+            surf.blit(pygame.transform.scale(col, (cs, y1 - y0)), (x, y0))
         else:
             h = bot - top
             t0 = int((y0 - top) / h * (th - cut))
             t1 = max(t0 + 1, min(th - cut, int(math.ceil((y1 - top) / h * (th - cut)))))
             piece = col.subsurface((0, t0, 1, t1 - t0))
-            surf.blit(pygame.transform.scale(piece, (1, y1 - y0)), (x, y0))
+            surf.blit(pygame.transform.scale(piece, (cs, y1 - y0)), (x, y0))
 
     def _roof(self, surf, cx, cy, yaw, eye):
         """(v0.9) The shop's roof: a mode-7 ceiling, the floor trick upside down. Drawn
@@ -978,20 +1144,21 @@ class FPRenderer:
             return
         # the walls that are nearer than the roof keep their pixels
         zbuf = self.zbuf
-        for x in range(vw):
+        cs = self.cstep                        # (v0.17) the walls come in cs-wide slices
+        for x in range(0, vw, cs):
             z = zbuf[x]
             if z < 1e8:
                 rz = int(hor - rh * D / z)
                 if rz < r_hi:
                     rz = max(r_lo, rz)
-                    layer.fill(ROOF_KEY, (x, rz, 1, r_hi - rz))
+                    layer.fill(ROOF_KEY, (x, rz, cs, r_hi - rz))
         # (v0.12.1) ...and so does the brick over a doorway: ceiling that's further off than the
         # lintel is behind it (from the street you only see the ceiling *under* the lintel)
         for x, (d0, bot) in getattr(self, "lintels", {}).items():
             a = max(r_lo, int(hor - rh * D / d0))
             b = min(r_hi, bot)
             if b > a:
-                layer.fill(ROOF_KEY, (x, a, 1, b - a))
+                layer.fill(ROOF_KEY, (x, a, cs, b - a))
         surf.blit(layer, (0, r_lo), pygame.Rect(0, r_lo, vw, r_hi - r_lo))
         if inside:
             # and the sprites out past the front edge (lamp posts, trees) go behind it
@@ -1179,8 +1346,8 @@ class FPRenderer:
                     col = PLAYER_COLORS[drv[1] % 4]
                     az2 = math.atan2(row[8] - cy, row[7] - cx) - row[11]
                     add(row[7] - math.cos(row[11]) * 0.2, row[8] - math.sin(row[11]) * 0.2,
-                        lambda s=col, k=SKINS[drv[0] % 4], h=HAIRS[drv[0] % 6], a=az2:
-                        self._person_sprite(s, k, h, 0, None, False, a), z=0.25)
+                        lambda s=col, c=_pchar(drv), a=az2:
+                        self._person_sprite(s, None, None, 0, None, False, a, 0, None, c), z=0.25)
             elif V.is_bike(row[15]) and row[0] != hide_car:
                 # (v0.13) a bike's rider (and pillion) sit on top of it, hunched over the bars
                 seat_z = 0.42 if row[15] == V.SPORTBIKE else 0.5
@@ -1191,8 +1358,8 @@ class FPRenderer:
                         continue
                     col = PLAYER_COLORS[rider[1] % 4]
                     add(row[7] - math.cos(row[11]) * back, row[8] - math.sin(row[11]) * back,
-                        lambda s=col, k=SKINS[rider[0] % 4], h=HAIRS[rider[0] % 6], a=az2:
-                        self._person_sprite(s, k, h, 2, "fists", False, a), z=seat_z)
+                        lambda s=col, c=_pchar(rider), a=az2:
+                        self._person_sprite(s, None, None, 2, "fists", False, a, 0, None, c), z=seat_z)
             if row[1] == S.COP and row[18] & PR.CX_DONUT:
                 add(row[7], row[8], None, z=2.2, tag=("say", "NOM NOM"))
             hop = 0.0
@@ -1281,8 +1448,9 @@ class FPRenderer:
                     ("cbox", f if m_ else 0, m_), lambda: FA.cardboard_box_boxes(f, m_), a, None, 16), z=z,
                     tag=None if f2 & PR.PF2_HIDDEN else ("name", p))
                 continue
-            add(p[4], p[5], lambda s=shirt, k=SKINS[p[0] % 4], h=HAIRS[p[0] % 6], f=fr, e=extra,
-                dn=down, a=az, g=gun, o=outfit: self._person_sprite(s, k, h, f, e, dn, a, g, o), z=z, tag=("name", p))
+            add(p[4], p[5], lambda s=shirt, c=_pchar(p), f=fr, e=extra,
+                dn=down, a=az, g=gun, o=outfit: self._person_sprite(s, None, None, f, e, dn, a, g, o, c), z=z,
+                tag=("name", p))
             if flags & PR.PF_CHUTE:
                 add(p[4], p[5], lambda: (self.chute_img, 12), z=z + 1.9)
         for pk in view.pickups.values():
@@ -1310,6 +1478,9 @@ class FPRenderer:
         items.sort(key=lambda it: -it[0])
         zbuf = self.zbuf
         hor, D, vw = self.hor, self.D, self.vw
+        ks = self.ks                                   # (v0.17) labels, arrows and outlines grow with it
+        cs = self.cstep
+        text = self.font.draw
         for depth, lat, img_fn, z, tag in items:
             sx = vw / 2 + lat / depth * D
             if tag is not None and tag[0] == "boom":
@@ -1319,8 +1490,9 @@ class FPRenderer:
                 # floating words over something ("NOM NOM"), if it's not behind a wall
                 col_ = int(sx)
                 if tag is not None and tag[0] == "say" and depth < 50 and 0 <= col_ < vw and depth < zbuf[col_]:
-                    self.font.draw(surf, tag[1], col_, int(hor + (eye - z) * D / depth), P["gold"], align="center")
+                    text(surf, tag[1], col_, int(hor + (eye - z) * D / depth), P["gold"], scale=ks, align="center")
                 continue
+            self._spx = D / depth                      # (v0.17) screen px per metre here: picks the mip
             img, ppm = img_fn()
             if isinstance(img, tuple):                 # (surface, anchor_x, anchor_y)
                 img, ax, ay = img
@@ -1336,13 +1508,14 @@ class FPRenderer:
             x0, x1 = max(0, left), min(vw, left + sw)
             if x0 >= x1:
                 continue
-            # which columns are in front of the walls?
+            # which columns are in front of the walls? (v0.17: the zbuf only changes every cs
+            # columns -- one wall ray each -- so step through it a slice at a time)
             runs = []
             start = None
-            for col in range(x0, x1):
+            for col in range(x0 - x0 % cs, x1, cs):
                 if depth < zbuf[col]:
                     if start is None:
-                        start = col
+                        start = max(x0, col)
                 elif start is not None:
                     runs.append((start, col))
                     start = None
@@ -1360,7 +1533,7 @@ class FPRenderer:
             for a, b in runs:
                 cut = 0
                 if clip is not None:
-                    mid = (a + b) // 2
+                    mid = (a + b) // 2 // cs              # (one clip entry per wall ray)
                     if depth > clip[0][mid]:
                         cut = clip[1][mid] - top          # (v0.9) behind the roof's edge up there
                         if cut >= sh:
@@ -1371,37 +1544,37 @@ class FPRenderer:
                 if tag[0] == "name" and depth < 40 and runs:
                     p = tag[1]
                     col = PLAYER_COLORS[p[1] % 4]
-                    self.font.draw(surf, p[13], int(sx), top - 8, col, align="center")
+                    text(surf, p[13], int(sx), top - 8 * ks, col, scale=ks, align="center")
                     if p[2] == S.CUFFED:
-                        self.font.draw(surf, "BUSTED", int(sx), top - 15, P["danger"], align="center")
+                        text(surf, "BUSTED", int(sx), top - 15 * ks, P["danger"], scale=ks, align="center")
                 elif tag[0] == "mark" and depth < 70:
                     bob = math.sin(now * 4 + tag[2]) * 0.12
                     my = int(ground - (2.3 + bob) * D / depth)
-                    r = max(3, min(8, int(0.35 * D / depth)))
-                    pygame.draw.polygon(surf, P["ink"], [(sx - r - 1, my - r - 1), (sx + r + 1, my - r - 1), (sx, my + 1)])
+                    r = max(3 * ks, min(8 * ks, int(0.35 * D / depth)))
+                    pygame.draw.polygon(surf, P["ink"], [(sx - r - ks, my - r - ks), (sx + r + ks, my - r - ks), (sx, my + ks)])
                     pygame.draw.polygon(surf, tag[1], [(sx - r, my - r), (sx + r, my - r), (sx, my)])
                 elif tag[0] == "contact":
                     # (v0.14) a contact: their name up close, and a marker from down the street if
                     # they've got an order in (gold) or a car coming to them (green)
                     if depth < 22:
-                        self.font.draw(surf, tag[1], int(sx), top - 8, P["gold"], align="center")
+                        text(surf, tag[1], int(sx), top - 8 * ks, P["gold"], scale=ks, align="center")
                     if tag[2] is not None and depth < 90:
                         bob = math.sin(now * 4 + tag[3]) * 0.12
                         my = int(ground - (2.5 + bob) * D / depth)
-                        r = max(3, min(8, int(0.35 * D / depth)))
-                        pygame.draw.polygon(surf, P["ink"], [(sx - r - 1, my - r - 1), (sx + r + 1, my - r - 1),
-                                                             (sx, my + 1)])
+                        r = max(3 * ks, min(8 * ks, int(0.35 * D / depth)))
+                        pygame.draw.polygon(surf, P["ink"], [(sx - r - ks, my - r - ks), (sx + r + ks, my - r - ks),
+                                                             (sx, my + ks)])
                         pygame.draw.polygon(surf, tag[2], [(sx - r, my - r), (sx + r, my - r), (sx, my)])
                 elif tag[0] == "label" and depth < 22:
-                    self.font.draw(surf, tag[1], int(sx), top - 8, P["gold"] if tag[2] else P["white"],
-                                   align="center")
+                    text(surf, tag[1], int(sx), top - 8 * ks, P["gold"] if tag[2] else P["white"],
+                         scale=ks, align="center")
                 elif tag[0] == "locked" and depth < 4.5:
-                    self.font.draw(surf, "LOCKED - BUY THE LOT", int(sx), int(ground - 1.3 * D / depth),
-                                   P["danger"], align="center")
+                    text(surf, "LOCKED - BUY THE LOT", int(sx), int(ground - 1.3 * D / depth),
+                         P["danger"], scale=ks, align="center")
                 elif tag[0] == "crate" and depth < 9:
                     label, price = S.MARKET[tag[1]]
-                    self.font.draw(surf, "%s $%d" % (label.split(" (")[0], price), int(sx),
-                                   int(ground - 1.3 * D / depth), P["gold"], align="center")
+                    text(surf, "%s $%d" % (label.split(" (")[0], price), int(sx),
+                         int(ground - 1.3 * D / depth), P["gold"], scale=ks, align="center")
                 elif tag[0] == "dolly" and tag[1] != 255:
                     ic = self._icon(bank, tag[1])
                     kk = D / depth / 14
@@ -1584,11 +1757,11 @@ class FPRenderer:
                             max(-5000, min(5000, int(hor + (eye - z) * D / d)))))
             if tr[4] == S.TRACER_TASER:
                 # two wiggly yellow wires
-                mx = (pts[0][0] + pts[1][0]) // 2 + self.rng.randint(-3, 3)
-                my = (pts[0][1] + pts[1][1]) // 2 + self.rng.randint(-3, 3)
-                pygame.draw.lines(surf, (255, 230, 80), False, [pts[0], (mx, my), pts[1]], 1)
+                mx = (pts[0][0] + pts[1][0]) // 2 + self.rng.randint(-3, 3) * self.ks
+                my = (pts[0][1] + pts[1][1]) // 2 + self.rng.randint(-3, 3) * self.ks
+                pygame.draw.lines(surf, (255, 230, 80), False, [pts[0], (mx, my), pts[1]], self.ks)
             else:
-                pygame.draw.line(surf, TRACER_COL, pts[0], pts[1], 1)
+                pygame.draw.line(surf, TRACER_COL, pts[0], pts[1], self.ks)
         self.tracers = keep
 
     def _draw_boom(self, surf, e, sx, depth, eye, dt):

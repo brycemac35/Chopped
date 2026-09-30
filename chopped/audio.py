@@ -45,6 +45,7 @@ class Audio:
         self.whistle = []             # turbo whistle bands
         self.whistle_state = [None, None]
         self.oneshots = {}
+        self.vol = dict(C.VOLUME_DEFAULTS)   # slider positions 0..1: master, music, sfx, engine
         if not enabled:
             return
         try:
@@ -72,6 +73,31 @@ class Audio:
                 threading.Thread(target=self._compose, name="chopped-beat", daemon=True).start()
         except Exception:
             self.ok = False       # no sound card, no problem. Imagine the crunches.
+
+    # ------------------------------------------------------------------ volume buses
+    def set_volumes(self, master=None, music=None, sfx=None, engine=None):
+        """Live volume sliders, 0..1 each (clamped; None leaves a bus alone). Nothing is
+        re-synthesised: the gain is applied at Channel.set_volume time, and looping sounds
+        are re-set every frame by the game, so changes land within a frame."""
+        for k, v in (("master", master), ("music", music), ("sfx", sfx), ("engine", engine)):
+            if v is not None:
+                try:
+                    v = float(v)
+                except (TypeError, ValueError):
+                    continue
+                self.vol[k] = 0.0 if v != v else max(0.0, min(1.0, v))
+
+    def get_volumes(self):
+        return dict(self.vol)
+
+    def gain(self, bus):
+        """Final linear gain for a bus ('music'/'sfx'/'engine') = curve(master) * curve(bus).
+        Slider -> gain is v**VOLUME_CURVE (2.0): loudness is roughly logarithmic, so a linear
+        slider's midpoint (0.5 -> 0.25 = -12 dB) sounds about half as loud. No device or
+        --mute means ok is False and nothing ever plays, so mute always wins."""
+        if not self.ok:
+            return 0.0
+        return (self.vol["master"] * self.vol[bus]) ** C.VOLUME_CURVE
 
     # ------------------------------------------------------------------ synthesis
     def _mk(self, samples, vol=1.0):
@@ -359,6 +385,7 @@ class Audio:
         if not self.ok:
             return
         chans, state = self.eng_ch[slot], self.eng_state[slot]
+        vol *= self.gain("engine")
         bank = self._bank((voice, sc)) if vol > 0.02 else None
         if bank is None:
             for k in (0, 1):
@@ -367,10 +394,10 @@ class Audio:
                     state[k] = None
             if slot == 0:
                 # not rendered yet (first second of the game): the old buzz
-                self.set_loop("engine", vol * 0.8 if vol > 0.02 else 0, min(9, int(rpm / 800)))
+                self.set_loop("engine", vol * 0.8 if vol > 0.02 else 0, min(9, int(rpm / 800)), bus="engine", pregained=True)
             return
         if slot == 0:
-            self.set_loop("engine", 0)
+            self.set_loop("engine", 0, bus="engine")
         rpms, sounds = bank
         i, wi, j, wj = DT.band_weights(rpms, rpm)
         for band, w in ((i, wi), (j, wj)):
@@ -385,6 +412,7 @@ class Audio:
     def turbo_whistle(self, boost, vol):
         if not self.ok or not self.whistle:
             return
+        vol *= self.gain("engine")
         state = self.whistle_state
         if vol * boost <= 0.02:
             for k in (0, 1):
@@ -404,7 +432,11 @@ class Audio:
             ch.set_volume(min(1.0, vol * boost * bw))
 
     def oneshot(self, name, vol=1.0, pick=0):
-        if not self.ok or vol <= 0.02:
+        """Engine-derived one-shots (pops, shifts, flutter, bov) ride the engine bus."""
+        if not self.ok:
+            return
+        vol *= self.gain("engine")
+        if vol <= 0.02:
             return
         snd = self.oneshots.get(name)
         if isinstance(snd, list):
@@ -460,7 +492,13 @@ class Audio:
             self.music_level = None
             return
         level = max(0, min(len(self.music_tracks) - 1, level))
-        ch.set_volume(C.MUSIC_VOLUME)
+        g = self.gain("music")
+        if g <= 0.0005:                    # slider at zero: keep it silent, cost nothing
+            if ch.get_busy():
+                ch.stop()
+            self.music_level = None
+            return
+        ch.set_volume(min(1.0, C.MUSIC_VOLUME * g))
         if not ch.get_busy():
             ch.play(self.music_tracks[level])
             self.music_level = level
@@ -479,7 +517,7 @@ class Audio:
         snd = self.sounds.get(sid)
         if snd is None:
             return
-        vol = max(0.0, 1.0 - dist / 90.0)
+        vol = max(0.0, 1.0 - dist / 90.0) * self.gain("sfx")
         if vol <= 0.02:
             return
         ch = pygame.mixer.find_channel()
@@ -487,10 +525,12 @@ class Audio:
             ch.set_volume(vol)
             ch.play(snd)
 
-    def set_loop(self, name, vol, variant=0):
-        """Keep a named loop running at `vol` (0 stops it)."""
+    def set_loop(self, name, vol, variant=0, bus="sfx", pregained=False):
+        """Keep a named loop running at `vol` (0 stops it). Scaled by its bus."""
         if not self.ok:
             return
+        if not pregained:
+            vol *= self.gain(bus)
         ch = self.channels[name]
         snd = self.engine[variant] if name == "engine" else \
             self.horns[variant % len(self.horns)] if name == "horn" else self.loops[name]
@@ -510,8 +550,9 @@ class Audio:
         if not self.ok:
             return
         ch = pygame.mixer.find_channel()
-        if ch:
-            ch.set_volume(0.8)
+        g = self.gain("sfx")
+        if ch and g > 0.0005:
+            ch.set_volume(0.8 * g)
             ch.play(self.horns[h % len(self.horns)], maxtime=1400)
 
     def stop_all(self):

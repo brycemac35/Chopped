@@ -12,6 +12,7 @@ import time
 import pygame
 
 from . import config as C
+from . import settings as SET
 from . import sim as S
 from . import protocol as PR
 from . import vehicles as V
@@ -28,7 +29,7 @@ from .render import Renderer
 from .fp import FPRenderer
 from .doomhud import DoomHud, VIEW_H
 from .modshop import ModShop
-from .ui import Menu
+from .ui import Menu, SettingsPanel
 from .upnp import UPnP
 
 W, H = C.LOW_W, C.LOW_H
@@ -106,15 +107,32 @@ class App:
         except Exception:
             pass
         self.screen = pygame.display.set_mode(self.window_size, pygame.RESIZABLE)
-        self.low = pygame.Surface((W, H)).convert()
+        # (v0.17) two layers. `low` is the 640x360 canvas every menu, panel and HUD line draws on,
+        # as ever -- but see-through now: in first person it's only the HUD, laid over `frame`, the
+        # 3D view rendered at render_scale x the size. _present scales low up by the whole number
+        # render_scale (chunky pixels, same as they always were) and puts it on top.
+        self.low = pygame.Surface((W, H), pygame.SRCALPHA).convert_alpha()
         self.scaled = None
+        self.render_scale = 0
+        self.frame = None              # the hi-res world layer (render_scale x W x H)
+        self._hud_up = None            # low, blown up to frame size (reused every frame)
+        self._world = False            # did this frame draw the hi-res world? (menus don't)
+        self.set_render_scale(C.RENDER_SCALE_DEFAULT)
         self.clock = pygame.time.Clock()
         self.font = PixelFont()
         self.audio = Audio(enabled=not getattr(args, "mute", False),
                            music=not getattr(args, "no_music", False))
-        self.menu = Menu(self.font, (getattr(args, "name", None) or os.environ.get("USERNAME")
-                                     or os.environ.get("USER") or "CROOK")[:12].upper(),
-                         save_file=getattr(args, "save", None))
+        # (v0.17) remembered settings; --name / --char on the command line still win over them
+        # (the selftest always runs on defaults: a player's saved 3x scale shouldn't move its fps)
+        self.settings = SET.defaults() if self.selftest else SET.load()
+        self._saved_settings = dict(self.settings)
+        cli_char = getattr(args, "char", None)
+        self.menu = Menu(self.font, (getattr(args, "name", None) or self.settings["name"]
+                                     or os.environ.get("USERNAME") or os.environ.get("USER") or "CROOK")[:12].upper(),
+                         save_file=getattr(args, "save", None),
+                         char=cli_char if cli_char is not None else (self.settings["char"] or 0))
+        self._menu_seed_id = (self.menu.name, self.menu.char)    # so a --name/--char isn't saved as your choice
+        self.settings_panel = None     # the SETTINGS screen, when open (main menu or pause)
         self.state = "menu"
         self.server = None
         self.client = None
@@ -161,6 +179,46 @@ class App:
         self.menu_map = CityMap(self.menu_seed)
         self.menu_surf = art.render_map(self.menu_map).convert()
         self.host_banner_until = 0.0
+        self._apply_setting()
+
+    # ------------------------------------------------------------------ settings (v0.17)
+    def _apply_setting(self, key=None):
+        """Push a setting (or all of them) to the piece that uses it. Every call is guarded: the
+        FPRenderer, the audio object and the render-scale hook are written by other hands."""
+        s = self.settings
+        if key in (None, "fov"):
+            fn = getattr(getattr(self, "fp", None), "set_fov", None)
+            if callable(fn):
+                fn(s["fov"])
+        if key in (None, "render_scale"):
+            fn = getattr(self, "set_render_scale", None)
+            if callable(fn):
+                fn(s["render_scale"])
+        if key in (None, "master", "music", "sfx", "engine"):
+            fn = getattr(getattr(self, "audio", None), "set_volumes", None)
+            if callable(fn):
+                fn(*SET.volumes(s))
+
+    def _open_settings(self):
+        self.settings_panel = SettingsPanel(self.font, self.settings, self._apply_setting)
+        self._grab_mouse(False)
+
+    def _close_settings(self):
+        self.settings_panel = None
+        self._save_settings()
+
+    def _save_settings(self):
+        """Write settings.json if anything changed. Name and character are only remembered once
+        you've picked them in the menu (a --name on the command line isn't your choice)."""
+        if self.selftest:
+            return
+        s = self.settings
+        if self.menu.name != self._menu_seed_id[0]:
+            s["name"] = self.menu.name
+        if self.menu.char != self._menu_seed_id[1]:
+            s["char"] = self.menu.char
+        if s != self._saved_settings and SET.save(s):
+            self._saved_settings = dict(s)
 
     def _default_window(self):
         try:
@@ -174,6 +232,7 @@ class App:
 
     # ------------------------------------------------------------------ flow
     def host(self):
+        self._save_settings()
         port = getattr(self.args, "port", None) or C.DEFAULT_PORT
         try:
             # (v0.12.1) the main menu's save slot (or --save FILE). The selftest bot never
@@ -191,17 +250,25 @@ class App:
         self.server.start()
         if not self.selftest and not getattr(self.args, "no_upnp", False):
             self.upnp = UPnP(self.server.port).start()
-        self.client = Client("127.0.0.1", self.server.port, self.menu.name, local=True,
-                             predict=not getattr(self.args, "no_predict", False))
+        self.client = self._make_client("127.0.0.1", self.server.port, local=True,
+                                        predict=not getattr(self.args, "no_predict", False))
         self.state = "connecting"
         self.connect_started = time.perf_counter()
         self.host_banner_until = time.perf_counter() + 12.0
 
+    def _make_client(self, host, port, **kw):
+        """(v0.16) the menu's character rides along with the name (older net.Client: no char kwarg)."""
+        try:
+            return Client(host, port, self.menu.name, char=self.menu.char, **kw)
+        except TypeError:
+            return Client(host, port, self.menu.name, **kw)
+
     def join(self, text):
+        self._save_settings()
         host, port = parse_addr(text)
         lag = max(0.0, getattr(self.args, "fake_lag", 0.0) or 0.0) / 1000.0
-        self.client = Client(host, port, self.menu.name, local=False, fake_lag=lag / 2,
-                             predict=not getattr(self.args, "no_predict", False))
+        self.client = self._make_client(host, port, local=False, fake_lag=lag / 2,
+                                        predict=not getattr(self.args, "no_predict", False))
         if self.client.state == "failed":
             self.menu.set_error(self.client.error)
             self.client = None
@@ -225,6 +292,7 @@ class App:
         self.hud = None
         self.paused = False
         self.show_help = False
+        self.settings_panel = None
         self.state = "menu"
         self._grab_mouse(False)
         self.menu.refresh_slots()            # (the slot's DAY/CASH just changed)
@@ -237,7 +305,9 @@ class App:
         cm = self.client.map
         surf = self.menu_surf if cm.seed == self.menu_seed else None
         self.renderer = Renderer(cm, surf)
-        self.fp = FPRenderer(cm, self.renderer.map_surf, W, VIEW_H)
+        k = self.render_scale
+        self.fp = FPRenderer(cm, self.renderer.map_surf, W * k, VIEW_H * k, scale=k)
+        self._apply_setting("fov")
         self.hud = DoomHud(self.font, self.renderer.bank, self.renderer.minimap)
         self.hud.contacts = getattr(cm, "contacts", ())      # (v0.14) names for the order/sale rows
         me = self.client.latest.players.get(self.client.pid) if self.client.latest else None
@@ -294,6 +364,7 @@ class App:
                 break
             self.clock.tick(C.FPS)
         self.leave()
+        self._save_settings()
         pygame.quit()
 
     def _events(self):
@@ -305,13 +376,21 @@ class App:
                 self.screen = pygame.display.set_mode(self.window_size, pygame.RESIZABLE)
             elif ev.type == pygame.KEYDOWN and ev.key == pygame.K_F11:
                 self.toggle_fullscreen()
+            elif self.settings_panel is not None and (self.state == "menu" or (self.state == "play" and self.paused)):
+                if self.settings_panel.handle(ev, self._to_canvas) == "back":
+                    self._close_settings()
             elif self.state == "menu":
+                if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                    self.menu.click(self._to_canvas(ev.pos))
                 act = self.menu.handle(ev)
                 if act == "host":
                     self.host()
                 elif act == "join":
                     self.join(self.menu.join_addr)
+                elif act == "settings":
+                    self._open_settings()
                 elif act == "quit":
+                    self._save_settings()
                     self.running = False
             elif self.state == "connecting":
                 if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
@@ -336,6 +415,8 @@ class App:
                     self._pause_action("back" if self.show_help else "resume" if self.paused else "pause")
                 elif self.paused and ev.key == pygame.K_q and not self.show_help:
                     self._pause_action("leave")
+                elif self.paused and ev.key == pygame.K_s and not self.show_help:
+                    self._pause_action("settings")
                 elif self.paused and ev.key == pygame.K_i:
                     self._pause_action("back" if self.show_help else "help")
                 elif ev.key in (pygame.K_RETURN, pygame.K_KP_ENTER) and not self.paused:
@@ -501,6 +582,8 @@ class App:
             snap = self.client.latest
             level = 2 if (snap.heat >= 35 or snap.cops) else 1
         self.audio.update_music(level)
+        if self.settings_panel is not None:
+            self.settings_panel.tick(dt, pygame.key.get_pressed())      # held A/D keeps stepping
         if self.state == "connecting":
             self.client.update(now)
             if self.client.state == "connected" and self.client.latest is not None:
@@ -538,6 +621,7 @@ class App:
     # ------------------------------------------------------------------ draw
     def _draw(self, now, dt):
         low = self.low
+        self._world = False            # (v0.17) set by whatever puts the hi-res world in self.frame
         if self.state in ("menu", "connecting"):
             mw, mh = self.menu_surf.get_size()
             t = now * 12
@@ -545,7 +629,10 @@ class App:
             y = int((mh - H) / 2 + math.cos(t / 131.0) * (mh / 2 - H))
             low.blit(self.menu_surf, (0, 0), pygame.Rect(x, y, W, H))
             if self.state == "menu":
-                self.menu.draw(low, now)
+                if self.settings_panel is not None:
+                    self.settings_panel.draw(low, self._canvas_mouse(), shade=True)
+                else:
+                    self.menu.draw(low, now)
             else:
                 low.fill(P["ink"], (0, H // 2 - 20, W, 40))
                 dots = "." * (int(now * 3) % 4)
@@ -559,6 +646,7 @@ class App:
             self.font.draw(low, "WAITING FOR THE WORLD...", W // 2, H // 2, P["gold"], align="center")
             return
         self.frames_in_play += 1
+        low.fill((0, 0, 0, 0))         # (v0.17) the HUD layer starts see-through every frame
         r = self.renderer
         me = view.me
         for kind, payload in self.client.pop_events():
@@ -577,7 +665,9 @@ class App:
                 "menu": self.modshop.open,
                 "fp": self.fp_mode, "yaw": self.yaw, "garage": self.client.map.garage_center,
                 "in_garage": self.client.map.in_garage(me[4], me[5]), "weapon": self._held_weapon(),
-                "story_target": self._story_target(view.snap), "biz_target": self._biz_target(view)}
+                "story_target": self._story_target(view.snap), "biz_target": self._biz_target(view),
+                "quests_open": bool(pygame.key.get_pressed()[pygame.K_j]),
+                "char": me[-1] if len(me) >= 20 and isinstance(me[-1], int) else 0}   # (v0.16: char is the last element; v0.15: HOLD J = full job list)
         if not self.modshop.open:
             self.ms_backdrop = None
         if self.ms_backdrop is not None:
@@ -586,7 +676,11 @@ class App:
             # radar, compass, toasts and Mo's idle animation all kept twitching away underneath
             # the text. Now the world is photographed once, darkened, and held still like a
             # waiting-room poster. Bonus: no raycasting while you're choosing hubcaps.
-            low.blit(self.ms_backdrop, (0, 0))
+            if self.frame is not None and self.ms_backdrop.get_size() == self.frame.get_size():
+                self.frame.blit(self.ms_backdrop, (0, 0))      # (v0.17: a hi-res photo)
+                self._world = True
+            else:
+                low.blit(self.ms_backdrop, (0, 0))
         else:
             if self.fp_mode:
                 self._draw_fp(low, view, now, dt)
@@ -597,13 +691,21 @@ class App:
                 shade_ = pygame.Surface((W, H), pygame.SRCALPHA)
                 shade_.fill((12, 10, 20, 225))
                 low.blit(shade_, (0, 0))
-                self.ms_backdrop = low.copy()
+                if self._world:
+                    # (v0.17) photograph the composed hi-res frame; the menu goes on a clean layer
+                    self._compose()
+                    self.ms_backdrop = self.frame.copy()
+                    low.fill((0, 0, 0, 0))
+                else:
+                    self.ms_backdrop = low.copy()
         if self.server and now < self.host_banner_until and not self.paused and not self.modshop.open:
             lines = self._host_lines()
-            # just under the help card (which ends at y=73), so neither covers the other
-            low.blit(self.hud._panel(300, 8 * len(lines) + 4, 170), (W // 2 - 150, 78))
+            # just under the help card (which ends at y=73), so neither covers the other. The
+            # day-change banner (doomhud, y 76..126) owns that spot for 3.5 s, so we sit below it then.
+            by = 130 if now < self.hud.day_banner_until else 78
+            low.blit(self.hud._panel(300, 8 * len(lines) + 4, 170), (W // 2 - 150, by))
             for i, (l, col) in enumerate(lines):
-                self.font.draw(low, l, W // 2, 81 + i * 8, col, align="center")
+                self.font.draw(low, l, W // 2, by + 3 + i * 8, col, align="center")
         if self.modshop.open:
             self.modshop.draw(low, view.snap.cash, now)
             # the world's frozen now, so the host's replies ("CAN'T AFFORD THAT", "FITTED")
@@ -617,10 +719,8 @@ class App:
                     self.audio.play_horn(self.horn_heard)       # try before you buy
         if self.paused:
             info["help"] = self.show_help
-            try:
-                info["mouse"] = self._to_canvas(pygame.mouse.get_pos())
-            except pygame.error:
-                info["mouse"] = None
+            info["settings"] = self.settings_panel
+            info["mouse"] = self._canvas_mouse()
             self.hud.draw_pause(low, info)
         self._audio_loops(view)
 
@@ -666,15 +766,18 @@ class App:
         self.fp.smoke_clouds(view)
         self.fp._clear_pops()
         surf = self.fp.draw(view, cam, self.client.pid, now, dt, view.snap.rent, self.renderer.bank, hide,
-                            pitch=int(pitch), hires=hires)
+                            pitch=int(pitch * self.fp.ks), hires=hires)     # (pitch is in 640-wide px)
         steer = 0.0
         if self.client.inp is not None:
             b = self.client.inp.buttons
             steer = (1.0 if b & S.B_RIGHT else 0.0) - (1.0 if b & S.B_LEFT else 0.0)
+        # (v0.17) hands, guns and the dashboard draw on the hi-res view (Pen scales them); the drift
+        # score is HUD text, so it goes on the 640x360 layer with the rest of the HUD
         self.hud.draw_overlay(surf, view, now, moving, steer, self._held_weapon(), self.fire_anim, chase=chase,
                               tacho=self.tacho_view)
-        self.hud.drift_meter(surf, view, now, dt)
-        low.blit(surf, (0, 0))
+        self.hud.drift_meter(low, view, now, dt)
+        self.frame.blit(surf, (0, 0))
+        self._world = True
 
     def _host_lines(self):
         lines = [("YOU ARE HOSTING - TELL YOUR CREW:", P["gold"]),
@@ -789,6 +892,9 @@ class App:
             self.paused, self.show_help = False, False
         elif what == "help":
             self.show_help = True
+        elif what == "settings":
+            self._open_settings()
+            return
         elif what == "back":
             self.show_help = False
         elif what == "leave":
@@ -797,6 +903,12 @@ class App:
         else:
             return
         self._grab_mouse(not self.paused)
+
+    def _canvas_mouse(self):
+        try:
+            return self._to_canvas(pygame.mouse.get_pos())
+        except pygame.error:
+            return None
 
     def _to_canvas(self, pos):
         """Window pixels -> canvas pixels (undoes _present's scale and letterbox)."""
@@ -922,12 +1034,63 @@ class App:
             # multiple fits -- which on most window sizes left most of it black.
             s = min(sw / W, sh / H)
             size = (max(1, int(W * s)), max(1, int(H * s)))
+        # (v0.17) the frame: the hi-res world with the HUD over it, or (menus, the automap) just
+        # the 640x360 canvas. At render scale 2 in the default 2x window it's already window-sized.
+        if self._world and self.frame is not None:
+            self._compose()
+            src = self.frame
+        else:
+            src = self.low
+        if src.get_size() == size:
+            out = src
+        else:
+            out = self._scaled_for(src, size)
+            pygame.transform.scale(src, size, out)
         if self.scaled is None or self.scaled.get_size() != size:
-            self.scaled = pygame.Surface(size).convert()
             self.screen.fill((0, 0, 0))
-        pygame.transform.scale(self.low, size, self.scaled)
-        self.screen.blit(self.scaled, ((sw - size[0]) // 2, (sh - size[1]) // 2))
+        self.scaled = out                        # (_to_canvas reads its size)
+        self.screen.blit(out, ((sw - size[0]) // 2, (sh - size[1]) // 2))
         pygame.display.flip()
+
+    def _scaled_for(self, src, size):
+        """A reusable window-sized surface in src's pixel format (transform.scale's dest must match)."""
+        key = (size, src.get_bitsize(), bool(src.get_flags() & pygame.SRCALPHA))
+        cache = self.__dict__.setdefault("_scaled_cache", {})
+        out = cache.get(key)
+        if out is None:
+            cache.clear()
+            out = cache[key] = pygame.Surface(size, src.get_flags() & pygame.SRCALPHA, src)
+        return out
+
+    def _compose(self):
+        """(v0.17) Lay the 640x360 HUD layer over the hi-res world, blown up by the whole number
+        render_scale with nearest-neighbour: the HUD's pixels stay exactly as chunky as ever.
+        (Measured: ~1.2 ms at 2x, ~2.5 ms at 3x -- an alpha layer, because the HUD's panels are
+        see-through and a colour key would have turned them magenta.)"""
+        if self._hud_up is None:
+            self.frame.blit(self.low, (0, 0))
+        else:
+            pygame.transform.scale(self.low, self._hud_up.get_size(), self._hud_up)
+            self.frame.blit(self._hud_up, (0, 0))
+
+    def set_render_scale(self, k):
+        """(v0.17) The settings screen's RENDER SCALE: the 3D view renders at k x 640x328
+        (clamped to 1..RENDER_SCALE_MAX). Safe to call any time, in a game or not."""
+        try:
+            k = int(k)
+        except (TypeError, ValueError):
+            k = C.RENDER_SCALE_DEFAULT
+        k = max(C.RENDER_SCALE_MIN, min(C.RENDER_SCALE_MAX, k))
+        if k == self.render_scale and self.frame is not None:
+            return
+        self.render_scale = k
+        self.frame = pygame.Surface((W * k, H * k)).convert()
+        self.frame.fill((0, 0, 0))
+        self._hud_up = pygame.Surface((W * k, H * k), pygame.SRCALPHA).convert_alpha() if k > 1 else None
+        self.ms_backdrop = None                  # (a photo at the old size: retake it)
+        self.scaled = None
+        if getattr(self, "fp", None) is not None:
+            self.fp.set_scale(k)
 
 
 def run_selftest(args):

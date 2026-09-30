@@ -19,6 +19,7 @@ from collections import deque
 from . import config as C
 from . import protocol as P
 from . import savefile as SF
+from .characters import clamp_char
 from .mapgen import CityMap
 from .predict import Predictor
 from .protocol import ME_FOOT, ME_DRIVER
@@ -233,13 +234,14 @@ class Server:
             if len(data) < off + P.JOIN.size:
                 return
             nonce, local = P.JOIN.unpack_from(data, off)
-            name, _ = P._text(data, off + P.JOIN.size) if len(data) > off + P.JOIN.size else ("", 0)
+            name, end = P._text(data, off + P.JOIN.size) if len(data) > off + P.JOIN.size else ("", off + P.JOIN.size)
+            char = data[end] if len(data) > end else 0        # (v0.16) older/short packets: character 0
             conn = self.clients.get(addr)
             if conn is None:
                 if len(self.clients) >= C.MAX_PLAYERS:
                     self._send(P.header(P.P_REJECT) + b"SERVER FULL (4/4)", addr)
                     return
-                p = self.world.add_player(name.strip() or None)
+                p = self.world.add_player(name.strip() or None, char)
                 if p is None:
                     self._send(P.header(P.P_REJECT) + b"SERVER FULL (4/4)", addr)
                     return
@@ -304,8 +306,9 @@ class View:
 
 class Client:
     def __init__(self, host, port=C.DEFAULT_PORT, name="PLAYER", local=False, fake_lag=0.0,
-                 fake_jitter=0.0, predict=True):
+                 fake_jitter=0.0, predict=True, char=0):
         self.name = name
+        self.char = clamp_char(char)     # (v0.16) which crook you picked: rides in the JOIN
         self.local = local
         # --fake-lag: hold every packet this long in each direction, so you can
         # feel (and test) a 150 ms ping on one PC. Jitter keeps packet order.
@@ -425,7 +428,7 @@ class Client:
             if now - self.last_join > 0.5:
                 self.last_join = now
                 self._send(P.header(P.P_JOIN) + P.JOIN.pack(self.nonce, 1 if self.local else 0) +
-                           P.encode_text(self.name, 12))
+                           P.encode_text(self.name, 12) + bytes((self.char,)))
             if now - self.started > C.TIMEOUT_S:
                 self.state = "failed"
                 self.error = "NO ANSWER FROM %s:%d" % self.addr

@@ -19,7 +19,7 @@ shortly. Size a car up before you nick it, sell it whole if you can't be
 bothered with spanners, and roll your bay's door down when the cops come
 knocking. Drift a supercharged V8, do donuts in a 4x4, listen to a rice
 rocket's VTEC kick in, hit a stunt ramp, hide in a cardboard box, watch for
-the chopper once things get hot enough. If you fall behind on rent, the
+the chopper once things get hot enough. If you miss rent twice in a row, the
 landlord takes the shop.
 
 - Pure Python 3.12 + pygame-ce. **No asset files**: every texture, sprite, font glyph, sound effect and the music are generated when the game starts. (The exe icon too, at build time.)
@@ -63,6 +63,7 @@ Command-line shortcuts:
 | `python main.py --host` | Host immediately on UDP 27015 |
 | `python main.py --join 203.0.113.7` | Join immediately (`IP[:PORT]`, default port 27015) |
 | `python main.py --name VINNIE` | Set your crook name |
+| `python main.py --char 2` | Pick your character (0 Dash, 1 Spanner, 2 Slim, 3 Smooth); normally you pick on the main menu |
 | `python main.py --server` | Headless dedicated host (no window; everyone joins as a client) |
 | `python main.py --host --save crew.json` | Host with persistence: loads `crew.json` if it exists, saves to it every 30 s and on a clean exit (normally you'd just pick a **SAVE SLOT** on the main menu instead, v0.12.1) |
 | `python main.py --selftest` | Starts headless, a bot plays for about 5 s, then exits 0 if everything worked |
@@ -75,6 +76,8 @@ Command-line shortcuts:
 ---
 
 ## Controls
+
+On the main menu, the **CHARACTER** row (or a click on the panel's arrows) picks who you are with **A / D**: Dash (more stamina), Spanner (faster stripping), Slim (faster break-ins and hotwiring), Smooth (better prices). Your perk is on the pause screen.
 
 | Key | On foot | In a car |
 |---|---|---|
@@ -100,9 +103,16 @@ Command-line shortcuts:
 | **F5** | Save now (host only; see [Save files](#save-files)) (v0.12.1) | |
 | **F8** | Fisheye lens: a wider, wobblier FOV, like a cheap dashcam (v0.12) | |
 | **F10** | Disco floor: a hue-cycling tint on the street under your feet (v0.12) | |
-| **Esc** | Pause menu: players, host IP, ping, and three buttons (click them, or use the keys): **RESUME** (Esc), **INSTRUCTIONS** (I: the full controls list, in its own window, v0.13) and **LEAVE TO MENU** (Q). Releases the mouse | |
+| **Esc** | Pause menu: players, host IP, ping, and four buttons (click them, or use the keys): **RESUME** (Esc), **INSTRUCTIONS** (I: the full controls list, in its own window, v0.13), **SETTINGS** (S: see below, v0.17) and **LEAVE TO MENU** (Q). Releases the mouse | |
 | **Enter** | Skip to the next line of dialogue (v0.13) | |
+| **Hold J** | Show today's full job list under the radar (it's a compact story goal + job count otherwise; open by itself in the shop) (v0.15) | |
 | **F11** | Toggle fullscreen | |
+
+### Settings (v0.17)
+
+**SETTINGS** is a row on the main menu and a button on the pause menu (**S**). Rows: **FOV** (60-120 degrees, default 90), **RENDER SCALE** (1x, 2x or 3x: how sharp the 3D view is; lower is faster), and four volume sliders: **MASTER**, **MUSIC**, **SFX**, **ENGINES** (0-100%). **W/S** picks a row, **A/D** changes it (hold to repeat), or click and drag a slider; **Esc**/**Enter** goes back. Changes apply immediately and are saved when you leave the screen.
+
+They live in `%APPDATA%\Chopped\settings.json` (`~/.local/share/chopped/settings.json` elsewhere; `CHOPPED_SAVE_DIR`, if set, holds it instead). The file also remembers your **name** and **character** from the main menu, so the game opens as you. `--name` and `--char` on the command line still win for that run. A missing or corrupt file just means the defaults.
 
 Being carried by a crewmate, or being cuffed by an officer? Mash **Space** to wriggle free.
 
@@ -128,7 +138,7 @@ The status bar reads, left to right: **ARMS** (the weapons you own, 1-9), **CASH
 
 6. **Mind the doors.** The shop has a roof, and a **roller door for every player's own bay**, plus a separate **walking door** so you're not forever opening a whole bay just to nip out on foot. Each one is independent: E at any door (inside or out) rolls that one down; honk near the shop and the remote on your sun visor does the nearest bay for you. Shut, a door stops cop cars and officers, and nobody can see you through it. It stops you too, so open your bay before you come home at 80 km/h. None of them come down on anything: there's a safety sensor, and it beeps. Everyone's bay has to actually be sealed -- doors down, whole crew and whatever they're driving inside -- for the shop to count as a genuine hideout: heat drops to 0 the moment it is, same as a delivery, and comes right back the moment someone pokes a wheel out.
 
-7. **Pay the rent.** A day lasts 3 minutes, from dawn to midnight, and the sky changes with it. At midnight the landlord takes the rent from the shared wallet. **(v0.12)** rent is flat now, not steeper every day: **$100/day for the home base**, and it only goes up if you buy another shop (see [Shops](#shops) below). You get a summary of the day's haul. If cash stays below $0 for 2 minutes, you get **SHOP SEIZED** and a new run starts back on day 1. Your personal car **keeps its mods** (any fences you bought don't survive the seizure).
+7. **Pay the rent.** A day lasts 3 minutes, from dawn to midnight, and the sky changes with it. At midnight the landlord takes the rent from the shared wallet. **(v0.12)** rent is flat now, not steeper every day: **$100/day for the home base**, and it only goes up if you buy another shop (see [Shops](#shops) below). You get a summary of the day's haul. **Rent strikes:** if you can't cover the bill at midnight it isn't charged, it carries over, and you get a strike; pay the whole pile and you're clear. Two missed midnights in a row (`RENT_STRIKES_MAX`) and you get **SHOP SEIZED** and a new run starts back on day 1. Your personal car **keeps its mods** (any fences you bought don't survive the seizure).
 
 ### The mod shop
 

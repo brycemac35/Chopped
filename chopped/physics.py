@@ -10,6 +10,7 @@ from . import config as C
 from .config import clamp, lerp, wrap_angle
 from .enums import *  # noqa: F401,F403
 from . import vehicles as V
+from .characters import stat, stamina_max
 
 # ---------------------------------------------------------------------------
 # Collision helpers
@@ -534,7 +535,8 @@ class Physics:
         else:
             p.regen_delay -= dt
             if p.regen_delay <= 0:
-                p.stamina = min(C.STAMINA_MAX, p.stamina + C.STAMINA_REGEN * dt)
+                p.stamina = min(stamina_max(p.char),
+                                 p.stamina + C.STAMINA_REGEN * stat(p.char, "stamina_regen") * dt)
         if p.stamina <= 0:
             p.stamina = 0.0
             p.exhausted = True

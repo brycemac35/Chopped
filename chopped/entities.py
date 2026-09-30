@@ -11,6 +11,7 @@ from .config import clamp
 from .enums import *  # noqa: F401,F403
 from .parts import WHEEL_SLOTS, DOLLY, PART_DEFS, SLOT_ANCHOR, part_power, wheel_slots
 from . import vehicles as V
+from .characters import clamp_char, stamina_max
 
 # parts counter: every category's parts, cheapest first
 TIERS = {}
@@ -218,19 +219,20 @@ class Player:
                  "trunk_view", "jailed", "keys", "jumpsuit", "head_start_t", "pants_t", "tased_t", "dead_t", "cuffer",
                  "cuff_prog", "arrests", "rap", "prev_hop", "slide_t", "prev_alt", "prev_horn", "boxed", "has_box",
                  "grace_t", "inspect", "prev_box", "still_t", "health", "hurt_t", "sneak", "prev_nos",
-                 "escort", "ask", "menu_tier")
+                 "escort", "ask", "menu_tier", "char")
 
-    def __init__(self, pid, name, color):
+    def __init__(self, pid, name, color, char=0):
         self.id = pid
         self.name = name
         self.color = color
+        self.char = clamp_char(char)   # (v0.16) who you picked: see characters.py
         self.x = self.y = 0.0
         self.vx = self.vy = 0.0
         self.ang = math.pi / 2
         self.state = FOOT
         self.car_id = None
         self.hands = []
-        self.stamina = C.STAMINA_MAX
+        self.stamina = stamina_max(self.char)
         self.exhausted = False
         self.regen_delay = 0.0
         self.tumble_t = 0.0

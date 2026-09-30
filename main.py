@@ -44,6 +44,8 @@ def parse_args(argv=None):
     ap = argparse.ArgumentParser(prog="Chopped", description="Co-op car theft. Crime pays (rent).")
     ap.add_argument("--host", action="store_true", help="host a game immediately")
     ap.add_argument("--join", metavar="IP[:PORT]", help="join a game immediately")
+    ap.add_argument("--char", type=int, default=None,
+                    help="which crook you are, 0-3: DASH, SPANNER, SLIM, SMOOTH (default: last used)")
     ap.add_argument("--name", help="your crook name (max 12 chars)")
     ap.add_argument("--port", type=int, default=None, help="UDP port to host on (default 27015)")
     ap.add_argument("--save", metavar="FILE", default=None,

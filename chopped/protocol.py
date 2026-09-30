@@ -20,6 +20,7 @@ from .sim import (COP, TRAFFIC, TUMBLE, FOOT, DRIVER, PASSENGER, DEAD, OFFICER, 
                   TRAP_GATE, TRAP_SMOKE, TRAP_CELL, TRAP_DOOR)
 from .quests import QUEST_ORDER
 from . import vehicles as V
+from .characters import stamina_max
 
 QUEST_INDEX = {qid: i for i, qid in enumerate(QUEST_ORDER)}
 
@@ -27,16 +28,16 @@ MAGIC = b"CH"
 P_JOIN, P_WELCOME, P_REJECT, P_INPUT, P_SNAPSHOT, P_LEAVE, P_SHUTDOWN = range(1, 8)
 
 HDR = struct.Struct("<2sBB")
-JOIN = struct.Struct("<IB")               # nonce, is_local
+JOIN = struct.Struct("<IB")               # nonce, is_local; then the name, then (v0.16) one char byte (absent = 0)
 WELCOME = struct.Struct("<BII")           # pid, map_seed, nonce
 INPUT = struct.Struct("<IIIHBBBHBBBBBB")  # seq, client_ms, ack_event, buttons (16 bits), use, drop, exit,
                                           # yaw16, fire (click counter), weapon slot,
                                           # mod-shop command: counter, op, arg, arg2
 
-SNAP_HDR = struct.Struct("<IIBiHHBBBBHBBIHIBHBBBBBBBBB")
-# tick, echo_ms, your_pid, cash, day_left_ds, debt_ds, heat, witness(|128 cooling),
+SNAP_HDR = struct.Struct("<IIBiHBIBBBBHBBIHIBHBBBBBBBBB")
+# tick, echo_ms, your_pid, cash, day_left_ds, strikes (v0.15, replaces the debt timer), back_rent, heat, witness(|128 cooling),
 # cops, gameover_ds, run, hold_byte, nplayers_total, ack_input (last input seq applied for you),
-# day, rent_due, (v0.8) alert bits (AL_*), (quests) story_points, act, today's 3 quest indices
+# day, rent_due (v0.15: the FULL bill, rent + back_rent), (v0.8) alert bits (AL_*), (quests) story_points, act, today's 3 quest indices
 # into quests.QUEST_ORDER (255 = none), done-today bitmask (bit i = today_quests[i] is done),
 # (v0.12.1) shops owned bitmask (bit i = World.shop_owned[i]; 0 is always set) -- so a client can
 # tell an unbought fence's locked stall from one whose crates are live, (v0.13) the story:
@@ -58,9 +59,9 @@ NO_QUEST = 255
 # Your own physics state at full precision, for client-side prediction. The
 # regular entity rows are 1/16 m fixed point; rewinding to a rounded position
 # and replaying 10 inputs on top of it would make your own car shimmer.
-SELF_MOTION = struct.Struct("<BBHfffffffffHbB")
+SELF_MOTION = struct.Struct("<BBHfffffffffHbBB")
 # mode (0 none / 1 on foot / 2 driving), walk_load, car_id, x, y, vx, vy, ang, w,
-# stamina, regen_delay, speed_mult, power, pull, flags
+# stamina, regen_delay, speed_mult, power, pull, flags, (v0.16) character id (stamina pool + regen)
 # ...followed by 6 bytes of arsenal: weapon, arms bitmask, pistol ammo, shotgun ammo, spikes, roadblocks
 # ...then (v0.7) the rest of what the tyre model and the jump need:
 SELF_EXTRA = struct.Struct("<fffffffB")
@@ -80,8 +81,9 @@ CAR = struct.Struct("<HBBBBHIHHhhHBBBBBBBBB")
 # id, kind, colour, state, flags, part mask, style word, x, y, vx, vy, ang, driver, passenger, damage,
 # model, livery, extras (horn 0-2, NOS flame 3, glow 4-7), extras2 (see CX_*),
 # (v0.8) engine byte (drivetrain.engine_byte: voice, turbo/supercharger, gearbox), drive byte (DR_*)
-PLAYER = struct.Struct("<BBBBHHhhHBBBHBBBBB")  # ... + weapon, z (0.1 m), banner, (v0.8) flags2 (PF2_*),
-                                               # (v0.10) health (0-100, see config.PLAYER_HEALTH_MAX)
+PLAYER = struct.Struct("<BBBBHHhhHBBBHBBBBBB")  # ... + weapon, z (0.1 m), banner, (v0.8) flags2 (PF2_*),
+                                               # (v0.10) health (0-100, see config.PLAYER_HEALTH_MAX), (v0.16) char; stamina is a byte ratio of
+                                               # the char's own max (characters.stamina_max)
 NPC = struct.Struct("<HBBHHBB")           # id, kind, state, x, y, ang8, z (0.1 m)
 PICKUP = struct.Struct("<HBHHBBB")        # id, part, x, y, scale, z (0.1 m), style
 DOLLY = struct.Struct("<HHHBBB")        # id, x, y, ang8, part_idx (255 empty), holder pid (0 none)
@@ -218,12 +220,12 @@ def _encode_motion(world, me):
         car = world.cars.get(me.car_id)
         if car is not None:
             return SELF_MOTION.pack(ME_DRIVER, 0, car.id, car.x, car.y, car.vx, car.vy, car.ang, car.w,
-                                    0.0, 0.0, 1.0, min(65535, car.power()), -1 if car.pull < 0 else 1, 0)
+                                    0.0, 0.0, 1.0, min(65535, car.power()), -1 if car.pull < 0 else 1, 0, me.char)
     if me is not None and me.state == FOOT:
         return SELF_MOTION.pack(ME_FOOT, me.walk_load(), 0, me.x, me.y, me.vx, me.vy, me.ang, 0.0,
                                 me.stamina, me.regen_delay, me.speed_mult(), 0, 0,
-                                SF_EXHAUSTED if me.exhausted else 0)
-    return SELF_MOTION.pack(ME_NONE, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0, 0, 0)
+                                SF_EXHAUSTED if me.exhausted else 0, me.char)
+    return SELF_MOTION.pack(ME_NONE, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0, 0, 0, 0)
 
 
 def _trap_life(t):
@@ -266,10 +268,10 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
     q_done = sum(1 << i for i in range(3) if i < len(qids) and qids[i] in world.quest_done_today)
     head = SNAP_HDR.pack(
         world.tick & 0xFFFFFFFF, echo_ms & 0xFFFFFFFF, pid, int(world.cash),
-        min(65535, max(0, int(world.day_t * 10))), min(65535, max(0, int(world.debt_t * 10))),
+        min(65535, max(0, int(world.day_t * 10))), min(255, world.strikes), min(0xFFFFFFFF, world.back_rent),
         int(round(world.heat)), wit, cops, min(255, max(0, int(world.gameover_t * 10))),
         world.run & 0xFFFF, int((me.hold_frac if me else 0) * 255), len(world.players),
-        max(0, ack_input) & 0xFFFFFFFF, min(65535, world.day), min(0xFFFFFFFF, world.rent_due()),
+        max(0, ack_input) & 0xFFFFFFFF, min(65535, world.day), min(0xFFFFFFFF, world.rent_owed()),
         (AL_LETHAL if world.lethal_t > 0 else 0) | (AL_HELI if world.heat >= C.HELI_HEAT else 0),
         min(65535, world.story_points), world.act, q_idx[0], q_idx[1], q_idx[2], q_done,
         world.shops_byte() & 0xFF,
@@ -326,9 +328,9 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
             (PF2_BOX if p.boxed else 0) | (PF2_HIDDEN if p.hidden() else 0)
         players.append(PLAYER.pack(p.id, p.color, p.state, flags, _pos(p.x), _pos(p.y),
                                    _vel(p.vx), _vel(p.vy), _ang(ang), h0, h1,
-                                   min(255, int(p.stamina * 255.0 / C.STAMINA_MAX)), p.car_id or 0, p.weapon,
+                                   min(255, int(p.stamina * 255.0 / stamina_max(p.char))), p.car_id or 0, p.weapon,
                                    _z(p.z), p.banner, flags2,
-                                   min(255, int(p.health)))
+                                   min(255, int(p.health)), p.char)
                        + encode_text(p.name, 12))
     npcs = []
     for n in world.npcs.values():
@@ -377,7 +379,7 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
         if seq <= ack_event:
             continue
         if kind == 0:
-            evs.append(EV.pack(seq, 0) + bytes((payload[0],)) + encode_text(payload[1], 60))
+            evs.append(EV.pack(seq, 0) + bytes((payload[0],)) + encode_text(payload[1], 80))
         elif kind == 1:
             evs.append(EV.pack(seq, 1) + EV_SFX.pack(payload[0], _pos(payload[1]), _pos(payload[2])))
         else:
@@ -410,7 +412,7 @@ def encode_snapshot(world, pid, echo_ms, ack_event, ack_input=0):
 
 
 class Snapshot:
-    __slots__ = ("tick", "time", "echo_ms", "pid", "cash", "rent", "debt", "heat", "witness",
+    __slots__ = ("tick", "time", "echo_ms", "pid", "cash", "rent", "strikes", "back_rent", "heat", "witness",
                  "cooling", "cops", "gameover", "run", "hold", "nplayers", "prompt", "ack_input", "day",
                  "rent_due", "alert", "story_points", "act", "today_quests", "quest_done", "shops", "story_ch", "story_st", "story_n",
                  "dolly", "ask", "lots", "hammer", "orders", "sales",
@@ -425,12 +427,12 @@ def _text(data, off):
 def decode_snapshot(payload):
     data = zlib.decompress(payload)
     s = Snapshot()
-    (s.tick, s.echo_ms, s.pid, s.cash, rent, debt, s.heat, wit, s.cops, go, s.run, hold,
+    (s.tick, s.echo_ms, s.pid, s.cash, rent, s.strikes, s.back_rent, s.heat, wit, s.cops, go, s.run, hold,
      s.nplayers, s.ack_input, s.day, s.rent_due, s.alert, s.story_points, s.act,
      q0, q1, q2, s.quest_done, s.shops, s.story_ch, s.story_st, s.story_n) = SNAP_HDR.unpack_from(data, 0)
     s.today_quests = (q0, q1, q2)
     s.time = s.tick / C.SIM_HZ
-    s.rent, s.debt, s.gameover = rent / 10.0, debt / 10.0, go / 10.0
+    s.rent, s.gameover = rent / 10.0, go / 10.0
     s.witness, s.cooling = wit & 127, bool(wit & 128)
     s.hold = hold / 255.0
     off = SNAP_HDR.size
@@ -490,10 +492,10 @@ def decode_snapshot(payload):
         off += PLAYER.size
         name, off = _text(data, off)
         # (id, color, state, flags, x, y, vx, vy, ang, h0, h1, stamina, car_id, name, weapon, z, banner,
-        #  flags2, (v0.10) health
+        #  flags2, (v0.10) health, (v0.16) char -- index 19, LAST
         s.players[f[0]] = [f[0], f[1], f[2], f[3], f[4] / 16.0, f[5] / 16.0, f[6] / 64.0, f[7] / 64.0,
-                           f[8] / 65536.0 * 2 * math.pi, f[9], f[10], f[11] * C.STAMINA_MAX / 255.0, f[12], name,
-                           f[13], f[14] / 10.0, f[15], f[16], f[17]]
+                           f[8] / 65536.0 * 2 * math.pi, f[9], f[10], f[11] * stamina_max(f[18]) / 255.0, f[12], name,
+                           f[13], f[14] / 10.0, f[15], f[16], f[17], f[18]]
     s.dollies = {}
     for _ in range(ndl):
         f = DOLLY.unpack_from(data, off)

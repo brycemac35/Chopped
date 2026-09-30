@@ -369,7 +369,7 @@ class TestPauseMenu(unittest.TestCase):
         hud = DoomHud(PixelFont(), r.bank, r.minimap)
         low = pygame.Surface((C.LOW_W, C.LOW_H))
         hud.draw_pause(low, {"lines": [], "help": False, "mouse": None})
-        self.assertEqual(set(hud.pause_rects), {"resume", "help", "leave"})
+        self.assertEqual(set(hud.pause_rects), {"resume", "help", "settings", "leave"})
         centre = hud.pause_rects["help"].center
         self.assertEqual(hud.pause_hit(centre), "help")
         hud.draw_pause(low, {"lines": [], "help": True, "mouse": None})

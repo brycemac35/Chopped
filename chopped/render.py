@@ -14,6 +14,7 @@ import pygame
 
 from . import config as C
 from . import art
+from . import fpart as FA
 from .art import P
 from . import sim as S
 from . import protocol as PR
@@ -465,7 +466,9 @@ class Renderer:
             if z > 0.1:
                 low.fill((20, 18, 26), (sx - 2, sy + 2, 5, 2))
                 sy -= int(z * PPM)
-            spr = self.bank.person((shirt, art.SKINS[pid % 4], art.HAIRS[pid % 6], fr, extra), ang)
+            look = FA.char_look(p[-1] if len(p) > 19 else 0)         # (v0.16) their skin, and hair/hat/band colour from above
+            top = {"beanie": (26, 26, 32), "band": (220, 40, 44)}.get(look["acc"], look["hair"])
+            spr = self.bank.person((shirt, look["skin"], top, fr, extra), ang)
             low.blit(spr, (sx - spr.get_width() // 2, sy - spr.get_height() // 2))
             # carried parts float in front of you (it's a stylistic choice)
             if h0 != 255 and state != S.TUMBLE:
