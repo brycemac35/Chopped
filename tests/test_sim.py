@@ -445,15 +445,14 @@ class TestCops(unittest.TestCase):
         w.unseen_t = 0.0
         step(w, 0.3)
         self.assertEqual(len(spawned), 2)
-        step(w, C.COP_SPAWN_GAP + 0.05)
-        self.assertEqual(len(spawned), 3)
-        self.assertAlmostEqual(spawned[2][0] - spawned[1][0], C.COP_SPAWN_GAP, delta=0.15)
+        self.assertAlmostEqual(spawned[1][0] - spawned[0][0], C.COP_SPAWN_GAP, delta=3.0)
         for _, d in spawned:
             self.assertGreaterEqual(d, C.COP_SPAWN_MIN_DIST)
         for _ in range(8):
             w.heat = 100.0
             step(w, 1.0)
-        self.assertEqual(len([c for c in w.cars.values() if c.kind == S.COP]), C.MAX_COPS, "a full wanted level")
+        self.assertEqual(len([c for c in w.cars.values() if c.kind == S.COP]), C.COP_CARS_MAX, "a full wanted level")
+        self.assertEqual(len(spawned), C.COP_CARS_MAX, "and no third car, however hot")
         # heat to zero -> cops leave after 3 s
         w.heat = 0.0
         p.x, p.y = w.map.player_spawns[0]

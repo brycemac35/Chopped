@@ -26,7 +26,8 @@ from .audio import Audio
 from .mapgen import CityMap
 from .net import Server, Client, get_lan_ips
 from .render import Renderer
-from .fp import FPRenderer
+from .fp import FPRenderer, time_of_day, darkness
+from . import soundscape as SC
 from .doomhud import DoomHud, VIEW_H
 from .modshop import ModShop
 from .ui import Menu, SettingsPanel
@@ -649,6 +650,7 @@ class App:
         low.fill((0, 0, 0, 0))         # (v0.17) the HUD layer starts see-through every frame
         r = self.renderer
         me = view.me
+        self._listen(view)             # (v0.18) ears first: pan and the shop's dead zone read this
         for kind, payload in self.client.pop_events():
             if kind == 0:
                 self.hud.add_toast(payload[1], payload[0], now)
@@ -659,7 +661,7 @@ class App:
                 sid, x, y = payload
                 r.on_sfx(sid, x, y, me[4], me[5])
                 self.fp.on_sfx(sid, x, y, me[4], me[5], view.my_car)
-                self.audio.play(sid, math.hypot(x - me[4], y - me[5]))
+                self.audio.play(sid, math.hypot(x - me[4], y - me[5]), src=(x, y))
         self._engines(view)            # revs first: the tachometer and the engine notes both read them
         info = {"lines": self._info_lines(), "help_until": self.hud.help_until, "paused": self.paused,
                 "menu": self.modshop.open,
@@ -808,34 +810,76 @@ class App:
             lines.append(("NOT SAVING THIS RUN (PICK A SAVE SLOT ON THE MAIN MENU)", P["metal_l"]))
         return lines
 
+    def _listen(self, view):
+        """(v0.18) tell the audio where the listener is and which way they face (a car's nose when
+        you're in one, else the look yaw), plus the door traps that say whether the shop is sealed."""
+        me, car = view.me, view.my_car
+        yaw = car[11] if (car is not None and me[2] in (S.DRIVER, S.PASSENGER)) else self.yaw
+        self.audio.listen(self.client.map, me[4], me[5], yaw, getattr(view, "traps", None))
+
     def _audio_loops(self, view):
         a = self.audio
         if not a.ok:
             return
         me = view.me
         mx, my = me[4], me[5]
+        now = time.perf_counter()
         alarm = horn = siren = fire = jingle = 0.0
         horn_type = 0
+        pans = {"alarm": (0.0, 0.0), "horn": (0.0, 0.0), "siren": (0.0, 0.0), "fire": (0.0, 0.0), "jingle": (0.0, 0.0)}
+        lx, ly, yaw = a.listener
+
+        def hear(name, v, c):
+            # remember the loudest source of each loop and where it is, for the panning
+            if v > pans[name][0]:
+                pans[name] = (v, SC.pan(lx, ly, yaw, c[7], c[8]))
+        honkers = []
         for c in view.cars.values():
             d = math.hypot(c[7] - mx, c[8] - my)
-            v = max(0.0, 1.0 - d / 60.0)
-            if c[4] & 1:
-                alarm = max(alarm, v)
-            if c[4] & 4 and v > horn:
-                horn, horn_type = v, c[17] & 7
+            occ = a.occlusion(c[7], c[8])          # (v0.18) 0 behind the shop's shut doors
+            v = max(0.0, 1.0 - d / 60.0) * occ
+            if c[4] & 1 and v > alarm:
+                alarm = v
+                hear("alarm", v, c)
+            if c[4] & 4:
+                if c[1] == S.TRAFFIC:
+                    # (v0.18) traffic honks are short beeps under a global budget (soundscape.HornBudget),
+                    # not a loop. A jam used to be one continuous horn at the loudest car's level.
+                    honkers.append((c[0], d, c))
+                elif v > horn:
+                    # a player's horn (or a stolen cop car's siren): the continuous loop, exactly as before
+                    horn, horn_type = v, c[17] & 7
+                    hear("horn", v, c)
             if c[1] == S.COP and not c[18] & PR.CX_PATROL:
-                siren = max(siren, max(0.0, 1.0 - d / 120.0))
+                sv = max(0.0, 1.0 - d / 120.0) * occ
+                if sv > siren:
+                    siren = sv
+                    hear("siren", sv, c)
             if c[4] & 2:
-                fire = max(fire, v)
+                fv = v
+                if fv > fire:
+                    fire = fv
+                    hear("fire", fv, c)
             if c[15] == V.ICECREAM and (c[12] or c[1] == S.TRAFFIC):
-                jingle = max(jingle, max(0.0, 1.0 - d / 50.0))    # it never stops. It never, ever stops.
-        a.set_loop("alarm", alarm * 0.5)
-        a.set_loop("horn", horn * 0.7, horn_type)
-        a.set_loop("siren", siren * 0.5)
-        a.set_loop("fire", fire * 0.8)
-        a.set_loop("jingle", jingle * 0.5)
+                jv = max(0.0, 1.0 - d / 50.0) * occ
+                if jv > jingle:
+                    jingle = jv                           # it never stops. It never, ever stops.
+                    hear("jingle", jv, c)
+        rows = {cid: row for cid, _d, row in honkers}
+        for cid, gain, pitch, kind in a.horn_budget.step(now, [(cid, d) for cid, d, _r in honkers]):
+            a.honk_blast(pitch, kind, gain, src=(rows[cid][7], rows[cid][8]))
+        a.set_loop("alarm", alarm * 0.5, pan=pans["alarm"][1])
+        a.set_loop("horn", horn * 0.7, horn_type, pan=pans["horn"][1])
+        a.set_loop("siren", siren * 0.5, pan=pans["siren"][1])
+        a.set_loop("fire", fire * 0.8, pan=pans["fire"][1])
+        a.set_loop("jingle", jingle * 0.5, pan=pans["jingle"][1])
         mine = view.my_car
         a.set_loop("nos", 0.6 if (mine is not None and me[2] == S.DRIVER and mine[17] & 8) else 0.0)
+        # the city's quiet bed and the chopper (both killed by the shop's dead zone inside audio)
+        snap = view.snap
+        night = darkness(time_of_day(snap.rent))                  # (snap.rent is the seconds left in the day)
+        a.update_scape(min(1.0, night * 1.2), mine is not None and me[2] in (S.DRIVER, S.PASSENGER),
+                       bool(snap.alert & PR.AL_HELI))
 
     def _biz_target(self, view):
         """(v0.14) where the green arrow points: the buyer for the sold car you're driving, or
@@ -961,7 +1005,8 @@ class App:
                 t = self.tachos[row[0]] = DT.Tacho(voice, asp, gears)
             seen.add(row[0])
             events = t.update(spd, thr, self._car_top(row), spin, burn, dt)
-            near = 1.0 if is_mine else max(0.0, 1.0 - d / C.ENGINE_HEAR_DIST)
+            # `near` feeds their engine slot, blow-offs, backfires and tyre squeal alike
+            near = a.engine_reach(d, row[7], row[8], is_mine)
             self._engine_events(row, t, events, near, is_mine, now)
             # tyre noise: sideways, spinning, or locked up
             slip = abs(-row[9] * math.sin(row[11]) + row[10] * math.cos(row[11]))
@@ -969,22 +1014,23 @@ class App:
                      0.5 if drive & PR.DR_HANDBRAKE and spd > 4 else 0.0)
             screech = max(screech, sq * near)
             if is_mine:
-                a.engine_note(0, voice, asp == ASP_SC, t.rpm, 0.55 * (0.65 + 0.35 * thr) if me[2] == S.DRIVER
-                              else 0.4)
-                if asp == ASP_TURBO:
-                    a.turbo_whistle(t.boost, 0.5)
+                # (v0.18) the loop pair already gets thin off the throttle (t.load crossfades them),
+                # so the volume no longer dips with thr as well
+                a.engine_note(0, voice, asp == ASP_SC, t.rpm, 0.55 if me[2] == S.DRIVER else 0.4,
+                              t.load, t.redline)
+                a.induction(t.induction(), 0.5)         # turbo whistle (lags) or supercharger whine (locked)
                 self.tacho_view = (t.rpm, t.redline, t.gear, t.gears, t.boost, asp, t.vtec)
             else:
                 v = near * (0.5 + 0.5 * thr) * 0.45
                 if v > loud_v:
-                    loud, loud_v = (voice, asp, t.rpm), v
+                    loud, loud_v = (voice, asp, t.rpm, t.load, t.redline), v
         if not in_car:
             a.engine_note(0, 0, False, 0, 0.0)
-            a.turbo_whistle(0.0, 0.0)
-        elif self.tacho_view is None or self.tacho_view[5] != ASP_TURBO:
-            a.turbo_whistle(0.0, 0.0)
+            a.induction(None, 0.0)
+        elif self.tacho_view is None:
+            a.induction(None, 0.0)
         if loud is not None:
-            a.engine_note(1, loud[0], loud[1] == ASP_SC, loud[2], loud_v)
+            a.engine_note(1, loud[0], loud[1] == ASP_SC, loud[2], loud_v, loud[3], loud[4])
         else:
             a.engine_note(1, 0, False, 0, 0.0)
         a.set_loop("screech", screech * 0.6)
@@ -1008,7 +1054,8 @@ class App:
             if ev == "shift" and is_mine:
                 a.oneshot("shift", 0.35)
             elif ev == "bov" and t.asp == ASP_TURBO:
-                a.oneshot("flutter" if t.voice in (V_I6, V_DIESEL) else "bov", 0.7 * near)
+                # a bigger dump is a bigger pssh (t.bov_level = the boost that just vented)
+                a.oneshot("flutter" if t.voice in (V_I6, V_DIESEL) else "bov", (0.35 + 0.5 * t.bov_level) * near)
             elif ev == "lift" and drive & PR.DR_POPS:
                 for k in range(random.randrange(2, 5)):
                     self.pops_due.append((now + 0.05 + k * random.uniform(0.07, 0.16), 0.8 * near, row[0]))

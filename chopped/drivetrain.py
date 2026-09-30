@@ -12,6 +12,7 @@ No pygame in here: tests poke it directly.
 import math
 
 from . import config as C
+from . import enginesynth as ES
 from .parts import (ENGINE_SPECS, NO_ENGINE_SPEC, ASP_NA, ASP_TURBO, ASP_SC, V_ELECTRIC, V_VTEC,
                     V_DIESEL)
 
@@ -54,6 +55,9 @@ class Tacho:
         self.prev_thr = 0.0
         self.vtec = False             # above the cam changeover?
         self.limiter_t = 0.0
+        self.load = 0.0               # smoothed engine load 0..1: throttle, minus the throttle cut mid-shift
+        self.turbo_n = 0.0            # turbine speed 0..1 (lags the revs; coasts down slowly)
+        self.bov_level = 0.0          # boost the last "bov" event dumped (how big a pssh)
 
     def set_engine(self, voice, asp, gears):
         self.voice, self.asp = voice, asp
@@ -110,20 +114,38 @@ class Tacho:
                 self.limiter_t = 0.0
                 self.rpm = red * 0.93
                 events.append("limiter")
+        # engine load: the intake manifold fills and empties, and a shift cuts the throttle
+        cut = 0.0 if (self.shift_t > 0 or self.rpm >= red * 0.995) else thr
+        lk = min(1.0, (C.ENGINE_LOAD_ATTACK if cut > self.load else C.ENGINE_LOAD_RELEASE) * dt)
+        self.load += (cut - self.load) * lk
         # boost
         if self.asp == ASP_TURBO:
-            want = thr * min(1.0, max(0.0, (self.rpm - red * 0.3) / (red * 0.45)))
+            frac = min(1.0, self.rpm / red)
+            # the turbine is driven by exhaust ENERGY = flow (rpm) x pressure (load). It has inertia,
+            # so it spools up over ~1 s and, with the flow gone, coasts down over ~2: the whistle
+            # follows THIS, not the throttle. Below ~20% of the redline there's nothing to spin it.
+            flow = min(1.0, max(0.0, (frac - 0.2) / 0.6))
+            drive = self.load * (0.15 + 0.85 * flow) + (1.0 - self.load) * 0.12 * frac
+            if burnout:
+                drive = 0.9
+            rate = C.TURBO_SPOOL if drive > self.turbo_n else C.TURBO_COAST
+            self.turbo_n += (drive - self.turbo_n) * min(1.0, rate * dt)
+            # pressure: whatever the turbine can push, while the throttle is open; vented when you lift
+            want = thr * self.turbo_n
             if burnout:
                 want = 0.9
-            rate = C.TURBO_SPOOL if want > self.boost else C.TURBO_DUMP
+            rate = C.TURBO_BOOST_RISE if want > self.boost else C.TURBO_DUMP
             self.boost += (want - self.boost) * min(1.0, rate * dt)
             if self.prev_thr > 0.5 and thr < 0.1 and self.boost > 0.4:
                 events.append("bov")
+                self.bov_level = self.boost
                 self.boost *= 0.3
         elif self.asp == ASP_SC:
             self.boost = min(1.0, self.rpm / red)
+            self.turbo_n = 0.0
         else:
             self.boost = 0.0
+            self.turbo_n = 0.0
         if self.prev_thr > 0.5 and thr < 0.1 and self.rpm > red * 0.6:
             events.append("lift")               # (pops and bangs, on cars that have them)
         if self.voice == V_VTEC:
@@ -137,19 +159,46 @@ class Tacho:
     def frac(self):
         return self.rpm / float(self.redline) if self.redline else 0.0
 
+    def induction(self):
+        """What the forced induction sounds like right now: (kind, whine Hz, level 0..1, air 0..1),
+        or None for a naturally aspirated engine.
+        TURBO: the whistle is the compressor's blade-pass frequency, proportional to TURBINE speed
+        (turbo_n, which lags the revs), and it's quieter as the compressor unloads off the throttle;
+        the airflow rush follows mass flow (turbine speed x load).
+        SUPERCHARGER: a belt drives it, so no lag at all: the whine is exactly crank speed x pulley
+        ratio x lobes, and it gets louder as the throttle opens."""
+        if self.asp == ASP_TURBO:
+            n = self.turbo_n
+            hz = C.TURBO_HZ_TOP * n
+            level = n ** 2.2 * (0.45 + 0.55 * self.load)
+            air = n * (0.2 + 0.8 * self.load) * 0.8
+            return "turbo", hz, level, air
+        if self.asp == ASP_SC:
+            frac = min(1.0, self.rpm / float(self.redline))
+            return "sc", ES.sc_hz(self.rpm), frac ** 1.2 * (0.25 + 0.75 * self.load), 0.35 * self.load * frac
+        return None
+
 
 def is_diesel(voice):
     return voice == V_DIESEL
 
 
-def band_rpms(voice):
-    """The rpm points each engine voice is pre-rendered at (the audio crossfades
-    between neighbours). Spread evenly on a log scale from idle to past the redline."""
-    red = max(spec[2] for spec in ENGINE_SPECS.values() if spec[0] == voice) \
-        if any(spec[0] == voice for spec in ENGINE_SPECS.values()) else 7000
-    idle = min((spec[3] for spec in ENGINE_SPECS.values() if spec[0] == voice and spec[3] > 0), default=800)
+def layout_span(voice, redline=None):
+    """(idle, redline) covering every catalogue engine that shares this voice's layout."""
+    lname = ES.layout_name(voice, redline or 0)
+    specs = [sp for sp in ENGINE_SPECS.values() if sp[0] == voice and ES.layout_name(voice, sp[2]) == lname]
+    red = max((sp[2] for sp in specs), default=7000)
+    idle = min((sp[3] for sp in specs if sp[3] > 0), default=800)
     if voice == V_ELECTRIC:
         idle = 600
+    return idle, red
+
+
+def band_rpms(voice, redline=None):
+    """The rpm points each engine layout is pre-rendered at (the audio crossfades between
+    neighbours). Spread evenly on a log scale from idle to past the redline. `redline` picks the
+    layout when a voice id covers several engines (the bikes are V_I4 too)."""
+    idle, red = layout_span(voice, redline)
     n = C.ENGINE_BANDS
     lo, hi = math.log(idle), math.log(red * 1.03)
     return [math.exp(lo + (hi - lo) * i / (n - 1)) for i in range(n)]

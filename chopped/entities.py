@@ -67,7 +67,8 @@ class Car:
                  "glow", "nos", "nos_fuel", "boosting", "ejector", "gnome", "grip", "top_mult", "spin_t",
                  "donut_t", "patrol", "beat", "gun_cd", "burnout", "wheelspin", "hydraulics", "hop_t",
                  "smoke_t", "officer", "copcar", "cash_hits", "burst", "air_t", "bay", "owner",
-                 "papers", "lot", "sale", "prisoner", "ride_t")
+                 "papers", "lot", "sale", "prisoner", "ride_t", "idle_t", "idle_pos", "jam_n",
+                 "honk_t", "honk_cd", "bailed", "ride_best")
 
     def __init__(self, cid, kind, x, y, ang, parts, color=0, model=None):
         self.id = cid
@@ -153,6 +154,13 @@ class Car:
         self.sale = None              # (v0.14) sold at auction: (contact index, price, value when sold)
         self.prisoner = None          # (v0.14) cops: the player id cuffed in the back, off to the precinct
         self.ride_t = 0.0             # (v0.14) ...and how long this ride's been going (a stuck one gives up)
+        self.ride_best = 0.0          # (v0.18) ...and the closest to the precinct it has got, minus this ride's slack
+        self.idle_t = 0.0             # (v0.18) traffic: seconds without getting TRAFFIC_IDLE_RADIUS from idle_pos
+        self.idle_pos = None          # (v0.18) ...where that wait started
+        self.jam_n = 0                # (v0.18) back-outs tried so far in this wait
+        self.honk_t = 0.0             # (v0.18) seconds of this beep left
+        self.honk_cd = 0.0            # (v0.18) seconds until this driver may beep again
+        self.bailed = False           # (v0.18) a traffic car its driver ran from: towed after WRECK_CLEAR_TIME
         self.refresh()
 
     def refresh(self):

@@ -1,17 +1,42 @@
 """
-enginesynth.py -- engine notes from first principles-ish (v0.8, Bryce: "better
-engine sounds", "turbo noises on the cars with turbos", "super chargers").
+enginesynth.py -- engine notes from physics, roughly (v0.8; rebuilt in v0.18, Bryce: "a better
+algorithm for the car engine, turbo, and supercharger noises, with realism in mind").
 
-An engine is a row of explosions. Each cylinder firing is a thump that rings
-at the exhaust's resonant pitch and dies away; a four-stroke fires every
-cylinder once per two revolutions. So a 4-cylinder at 3,000 rpm thumps 100
-times a second and an 8-cylinder 200 -- and a cross-plane V8 doesn't space
-them evenly, which is where the burble comes from. We render each engine
-voice at ENGINE_BANDS rpm points, every loop a whole number of engine cycles
-long so it repeats without a click, and audio.py crossfades neighbours as
-the revs move. A supercharger's whine is baked into its engine's loops (it's
-belt-driven: its pitch IS the revs); a turbo's whistle is its own loop,
-because it lags behind the revs and dies when you lift.
+The old voices were "a decaying sine per cylinder, low-passed": fine, but every band was a
+different cartoon. What actually makes an engine sound like an OBJECT is this chain:
+
+  1. PULSES. Every time an exhaust valve cracks open, a slug of hot gas hits the pipe: a sharp
+     pressure step that decays. A four-stroke fires each cylinder once per two revolutions, so the
+     pulse train runs at f = rpm / 60 * cylinders / 2. WHEN each cylinder fires (the firing order and
+     crank layout) is the engine's character: an inline-4 is evenly spaced (strong 2nd order), an
+     inline-6 is smoother still, a cross-plane V8 fires L R R L R L L R so each header sees
+     lumpy spacing (the burble), a 90-degree odd-fire V6 alternates 90 and 150 degrees, a flat-4
+     boxer has unequal-length headers (the Subaru rumble), a single fires once per two revs.
+  2. PIPES. The pulse rings the exhaust like a quarter-wave organ pipe: modes at c/4L * (1, 3, 5, 7).
+     Those frequencies belong to the PIPE, not to the rpm, so they stay put while the firing
+     frequency sweeps through them. That is the whole difference between an engine and a
+     pitch-shifted sample of one. So the pulse's impulse response (pipe modes + a unipolar
+     "pressure step" thump + a blowdown hiss, then the muffler's low-pass) is rendered once per
+     layout/load and STAMPED at each firing time. Convolution is linear, so this is the same as
+     filtering the pulse train, at a fraction of the cost.
+  3. NOISE THAT SCALES WITH REVS: intake roar (air pulled through the throttle in gulps, one per
+     cylinder, louder on throttle) and valvetrain/mechanical broadband (grows with rpm, whatever
+     the throttle). Off throttle the pulses get small and dull (little gas flow) and the mechanical
+     noise is what you hear: that's the overrun.
+  4. IMPERFECTION. Cycle-to-cycle combustion varies: small random amplitude and timing wobble per
+     firing, worse at idle and off load, plus a rare weak "misfire" at idle. Seeded, so it's the
+     same engine every run.
+
+Each layout is rendered at ENGINE_BANDS rpm points, twice (on load, off load), every loop a whole
+number of engine cycles so it repeats without a click; audio.py crossfades neighbouring rpm bands
+and the on/off pair. (pygame can't pitch-shift a playing Sound, so the alternative -- one loop
+resampled across the range -- would drag the pipe modes with it, which is the toy-car failure.)
+
+Forced induction is NOT baked into the engine loops any more, because both are separate physical
+sources with their own pitch laws: a turbo's whistle follows the TURBINE's speed, which lags the revs
+(drivetrain.Tacho.turbo_n); a supercharger's whine is a belt-driven gear/lobe mesh locked to the
+crank (Tacho.sc_hz). Each is a bank of finely spaced pure-ish tones (render_tone) plus a shared
+airflow hiss (render_air); audio.py picks the bank by frequency.
 
 Pure Python, no pygame: returns lists of floats in -1..1.
 """
@@ -23,34 +48,119 @@ from .parts import (V_I4, V_I4T, V_ELECTRIC, V_V8, V_ROTARY, V_I6, V_DIESEL, V_V
 from . import config as C
 
 LOOP_S = 0.3            # target loop length. Whole engine cycles, so it's never exactly this.
+SOUND_C = 520.0         # m/s: speed of sound in ~600 C exhaust gas (343 in cold air)
+H_MAX_S = 0.06          # s: longest pulse response we stamp (the ring is ~9% left by then; tapered)
+JITTER_TAPER = 0.35     # last share of a pulse response that fades to zero (no click at the cut)
 
 
-class Voice:
-    """How one engine layout sounds.
-    cyl: firings per engine cycle (2 revs); res: exhaust ring in Hz; decay: 1/s;
-    rasp: noise in each thump (diesels clatter, rotaries buzz); body: the plain
-    fundamental under it; pattern: relative loudness of successive firings (uneven
-    = burble); lp: low-pass smoothing, 0..1 (1 = none)."""
-    __slots__ = ("cyl", "res", "decay", "rasp", "body", "pattern", "lp", "gain")
+class Layout:
+    """How one engine is put together.
+    angles: crank angle in degrees (0..720) of each firing, in the order they happen; banks: which
+    exhaust bank each firing goes to; pipe: tailpipe length in m (sets the quarter-wave modes);
+    split: how much longer bank 1's pipe is (a flat-4's unequal headers are 0.35, a cross-plane V8's
+    are a hair different); muffle: the exhaust+cabin low-pass corner in Hz; modes: relative gain of
+    each odd pipe mode; ring: mode decay 1/s; thump: unipolar pressure-step weight; rasp: blowdown
+    hiss weight; intake / mech: broadband noise weights; jit: cycle-to-cycle spread; gain: voice loudness."""
+    __slots__ = ("name", "angles", "banks", "pipe", "split", "muffle", "modes", "ring", "thump", "rasp",
+                 "intake", "mech", "jit", "gain", "index")
 
-    def __init__(self, cyl, res, decay, rasp, body, pattern, lp, gain=1.0):
-        self.cyl, self.res, self.decay, self.rasp = cyl, res, decay, rasp
-        self.body, self.pattern, self.lp, self.gain = body, pattern, lp, gain
+    def __init__(self, name, angles, banks, pipe, muffle, modes=(1.0, 0.6, 0.4, 0.25), ring=48.0,
+                 thump=0.8, rasp=0.25, intake=0.5, mech=0.25, jit=0.05, gain=1.0, split=0.02):
+        self.name, self.angles, self.banks = name, tuple(angles), tuple(banks)
+        self.pipe, self.muffle, self.modes, self.ring = pipe, muffle, modes, ring
+        self.thump, self.rasp, self.intake, self.mech = thump, rasp, intake, mech
+        self.jit, self.gain, self.split = jit, gain, split
+        self.index = 0
+
+    @property
+    def cyl(self):
+        """Firings per engine cycle (two revolutions)."""
+        return len(self.angles)
 
 
-VOICES = {
-    V_I4: Voice(4, 230, 70, 0.18, 0.35, (1.0, 0.92, 0.97, 0.9), 0.55),
-    V_I4T: Voice(4, 210, 60, 0.12, 0.4, (1.0, 0.95, 0.98, 0.93), 0.4),      # the turbo muffles it
-    V_V8: Voice(8, 140, 42, 0.12, 0.5, (1.0, 0.62, 0.92, 0.55, 0.98, 0.7, 0.88, 0.6), 0.35, 1.1),
-    V_ROTARY: Voice(4, 380, 95, 0.4, 0.25, (1.0, 0.85), 0.8),               # two rotors: brap
-    V_I6: Voice(6, 280, 75, 0.1, 0.4, (1.0,) * 6, 0.45),                   # smooth as butter
-    V_DIESEL: Voice(4, 150, 38, 0.6, 0.45, (1.0, 0.9, 1.0, 0.85), 0.5, 1.1),  # tractor energy
-    V_V6: Voice(6, 200, 55, 0.14, 0.4, (1.0, 0.82, 0.95, 0.78, 1.0, 0.86), 0.45),
-    V_VTEC: Voice(4, 240, 72, 0.18, 0.35, (1.0, 0.92, 0.97, 0.9), 0.55),
-}
-SC_WHINE = 0.42          # supercharger whine Hz per rpm (a belt-driven screw: ~2.8 kHz at 6,600)
+def _even(n):
+    return tuple(720.0 * k / n for k in range(n))
 
 
+LAYOUTS = {}
+
+
+def _add(lay):
+    lay.index = len(LAYOUTS) + 1
+    LAYOUTS[lay.name] = lay
+    return lay
+
+
+_add(Layout("i4", _even(4), (0, 0, 0, 0), 1.9, 2600, ring=52, thump=0.8, rasp=0.22, intake=0.55, mech=0.3, jit=0.05))
+_add(Layout("i4t", _even(4), (0, 0, 0, 0), 2.2, 2000, ring=46, thump=0.85, rasp=0.14, intake=0.45, mech=0.22,
+            jit=0.04))                                              # the turbine muffles the pipe
+# 1-5-3-6-2-4 alternates the two 3-cylinder headers: silky, 3rd order
+_add(Layout("i6", _even(6), (0, 1, 0, 1, 0, 1), 2.1, 2300, ring=50, thump=0.7, rasp=0.12, intake=0.5, mech=0.2,
+            jit=0.025, gain=1.0))
+# 90-degree odd-fire V6 (Buick-style): 90/150 spacing, lumpy
+_add(Layout("v6", (0, 90, 240, 330, 480, 570), (0, 1, 0, 1, 0, 1), 2.0, 2400, ring=46, thump=0.85, rasp=0.18,
+            intake=0.5, mech=0.25, jit=0.06, split=0.05))
+# cross-plane V8, firing order 1-8-4-3-6-5-7-2 with 1,3,5,7 on the left bank: L R R L R L L R.
+# Even 90 degrees in time, but each header sees 90/180/270 -- that's the burble
+_add(Layout("v8", _even(8), (0, 1, 1, 0, 1, 0, 0, 1), 2.6, 1900, ring=40, thump=1.0, rasp=0.15, intake=0.6,
+            mech=0.2, jit=0.07, gain=1.1, split=0.06))
+_add(Layout("rotary", _even(4), (0, 1, 0, 1), 1.0, 4200, modes=(1.0, 0.8, 0.6, 0.5), ring=80, thump=0.35, rasp=0.6,
+            intake=0.35, mech=0.15, jit=0.05, split=0.1))          # short open pipe: the brap
+_add(Layout("diesel", _even(4), (0, 0, 0, 0), 2.8, 1500, ring=34, thump=1.1, rasp=0.85, intake=0.3, mech=0.7,
+            jit=0.12, gain=1.1))                                    # combustion knock: rasp, thump, clatter
+_add(Layout("vtec", _even(4), (0, 0, 0, 0), 1.7, 2800, ring=54, thump=0.75, rasp=0.2, intake=0.55, mech=0.3,
+            jit=0.05))
+_add(Layout("vtec_hi", _even(4), (0, 0, 0, 0), 1.3, 4600, modes=(1.0, 0.85, 0.65, 0.45), ring=70, thump=0.65,
+            rasp=0.45, intake=0.85, mech=0.4, jit=0.04, gain=1.1))  # the second cam: shorter, brighter, angrier
+_add(Layout("bike_i4", _even(4), (0, 0, 0, 0), 0.9, 4400, modes=(1.0, 0.8, 0.6, 0.4), ring=75, thump=0.55,
+            rasp=0.4, intake=0.7, mech=0.35, jit=0.04))            # 13,000 rpm of short pipe: the scream
+_add(Layout("single", (0.0,), (0,), 1.4, 2200, ring=36, thump=1.1, rasp=0.3, intake=0.6, mech=0.25, jit=0.10,
+            gain=1.1))                                              # one bang per two revs: the thumper
+# flat-4 boxer, firing order 1-3-2-4 with UNEQUAL-length headers (bank 1 is 35% longer): the two
+# banks ring at different pitches and beat against each other. No voice id yet, so nothing plays
+# it, but it's here so the next voice slot costs one line.
+_add(Layout("boxer", _even(4), (0, 1, 0, 1), 1.7, 2400, ring=44, thump=0.9, rasp=0.2, intake=0.5, mech=0.25,
+            jit=0.05, split=0.35))
+
+_VOICE_LAYOUT = {V_I4: "i4", V_I4T: "i4t", V_V8: "v8", V_ROTARY: "rotary", V_I6: "i6", V_DIESEL: "diesel",
+                 V_V6: "v6", V_VTEC: "vtec"}
+VOICES = {v: LAYOUTS[n] for v, n in _VOICE_LAYOUT.items()}       # (kept: voice id -> layout)
+BIKE_REDLINE = 9500.0     # a V_I4 that revs past this is a motorbike, not a hatchback...
+SCREAMER_REDLINE = 12000.0   # ...and past this it's a four-cylinder superbike; below it, a thumper
+
+
+def layout_name(voice, redline=0):
+    """Which layout a car row's voice id means. (Voice ids are 4 bits on the wire, and a new one
+    would bump the protocol, so the two bike engines -- both V_I4 -- are told apart by redline.)"""
+    if voice == V_ELECTRIC:
+        return "electric"
+    if voice == V_I4 and redline >= BIKE_REDLINE:
+        return "bike_i4" if redline >= SCREAMER_REDLINE else "single"
+    return _VOICE_LAYOUT.get(voice, "i4")
+
+
+# what to hand layout_name to get each PLAYED layout back (audio pre-renders these; boxer has no voice id yet;
+# vtec_hi is not a bank of its own: the vtec bank switches to it above the cam changeover)
+LAYOUT_VOICE = {"i4": (V_I4, 0), "i4t": (V_I4T, 0), "v8": (V_V8, 0), "rotary": (V_ROTARY, 0), "i6": (V_I6, 0),
+                "diesel": (V_DIESEL, 0), "v6": (V_V6, 0), "vtec": (V_VTEC, 0), "electric": (V_ELECTRIC, 0),
+                "bike_i4": (V_I4, 13000), "single": (V_I4, 10500)}
+
+
+def firing_hz(layout, rpm):
+    """The pulse train's frequency: rpm/60 revs a second, cyl/2 firings per rev (four-stroke)."""
+    n = layout.cyl if isinstance(layout, Layout) else LAYOUTS[layout].cyl
+    return rpm / 60.0 * n / 2.0
+
+
+def pipe_modes(layout, bank=0):
+    """[(Hz, gain)] of a layout's exhaust: quarter-wave organ pipe, f = c/4L * (1, 3, 5, 7)."""
+    lay = layout if isinstance(layout, Layout) else LAYOUTS[layout]
+    length = lay.pipe * (1.0 + (lay.split if bank else 0.0))
+    f1 = SOUND_C / (4.0 * length)
+    return [(f1 * (2 * k + 1), g) for k, g in enumerate(lay.modes)]
+
+
+# ---------------------------------------------------------------- small DSP helpers
 def _lowpass_loop(x, k):
     """One-pole low-pass, run twice round the loop so the end joins the start."""
     if k >= 0.999:
@@ -65,89 +175,297 @@ def _lowpass_loop(x, k):
     return out
 
 
+def _pole(cut_hz, rate):
+    """One-pole coefficient for a corner in Hz."""
+    return 1.0 - math.exp(-2.0 * math.pi * cut_hz / rate)
+
+
 def _normalise(x, peak):
     m = max(1e-9, max(abs(v) for v in x))
     k = peak / m
     return [v * k for v in x]
 
 
-def render_engine(voice, rpm, rate, supercharged=False, redline=7000, vtec_rpm=None, seed=0):
-    """One loop of an engine at a steady rpm. Returns (samples, actual_rpm)."""
-    rng = random.Random(seed * 1000 + int(rpm))
-    if voice == V_ELECTRIC:
-        return _render_electric(rpm, rate, redline), rpm
-    v = VOICES.get(voice, VOICES[V_I4])
-    cyc_n = max(8, int(round(120.0 / rpm * rate)))       # samples per engine cycle (two revolutions)
-    rpm = 120.0 * rate / cyc_n                             # (the rpm we actually hit, to the sample)
+def _fit_rms(x, rms):
+    """Remove DC, scale to an RMS, and soft-limit with tanh: loudness is set by RMS (what you hear),
+    and the limiter keeps a crest-heavy V8 from ever clipping the mixer. Peak < 1 by construction."""
+    n = len(x)
+    mean = sum(x) / n
+    x = [v - mean for v in x]
+    cur = math.sqrt(sum([v * v for v in x]) / n) or 1e-9
+    k = rms / cur
+    th = math.tanh
+    return [th(v * k) for v in x]
+
+
+_SINE = {}
+
+
+def _sine_table(n):
+    t = _SINE.get(n)
+    if t is None:
+        w = 2.0 * math.pi / n
+        t = _SINE[n] = [math.sin(w * i) for i in range(n)]
+    return t
+
+
+# ---------------------------------------------------------------- the pulse response
+_H_CACHE = {}
+
+
+def _pulse_response(lay, bank, load, rate):
+    """[variants] of one exhaust pulse's response at this load: thump (the pressure step) + pipe modes
+    + blowdown hiss, through the muffler. Independent of rpm -- that's the point. Three variants
+    differ only in their hiss, so successive firings aren't sample-identical."""
+    key = (lay.name, bank, round(load, 2), rate)
+    got = _H_CACHE.get(key)
+    if got is not None:
+        return got
+    H = int(H_MAX_S * rate)
+    rng = random.Random(9000 + lay.index * 17 + bank * 5)
+    modes = [0.0] * H
+    for k, (f, g) in enumerate(pipe_modes(lay, bank)):
+        if f > rate * 0.45:
+            continue
+        # damped resonator by recurrence: y[n] = 2 r cos(w) y[n-1] - r^2 y[n-2]. Higher modes die faster.
+        r = math.exp(-lay.ring * (1.0 + 0.5 * k) / rate)
+        w = 2.0 * math.pi * f / rate
+        a1, a2 = 2.0 * r * math.cos(w), -r * r
+        y2, y1 = 0.0, r * math.sin(w)                       # y[0], y[1]
+        modes[1] += g * y1
+        for i in range(2, H):
+            y = a1 * y1 + a2 * y2
+            y2, y1 = y1, y
+            modes[i] += g * y
+    tau = 0.004
+    ex = math.exp(-1.0 / (tau * rate))
+    thump, e = [], 1.0
+    for _ in range(H):
+        thump.append(e)
+        e *= ex
+    # load: on throttle the blowdown is violent (big step, full ring, bright); off throttle the
+    # cylinders are pumping air, the pulse is a small dull "pft"
+    lg = 0.28 + 0.72 * load
+    tg = lay.thump * (0.3 + 0.7 * load)
+    rg = lay.rasp * (0.25 + 0.75 * load)
+    cut = lay.muffle * (0.55 + 0.45 * load)
+    k = _pole(cut, rate)
+    tap0 = int(H * (1.0 - JITTER_TAPER))
+    taper = [1.0] * tap0 + [0.5 + 0.5 * math.cos(math.pi * (i - tap0) / (H - tap0)) for i in range(tap0, H)]
+    hx = math.exp(-1.0 / (0.005 * rate))
+    variants = []
+    for _v in range(3):
+        env, h = 1.0, []
+        for i in range(H):
+            h.append(lg * modes[i] + tg * thump[i] + rg * env * rng.uniform(-1.0, 1.0))
+            env *= hx
+        y1 = y2 = 0.0
+        out = []
+        for v, tp in zip(h, taper):
+            y1 += (v - y1) * k          # muffler: two poles
+            y2 += (y1 - y2) * k
+            out.append(y2 * tp)
+        variants.append(out)
+    peak = max(max(abs(v) for v in h) for h in variants) or 1.0
+    variants = [[v / peak for v in h] for h in variants]
+    _H_CACHE[key] = variants
+    return variants
+
+
+# ---------------------------------------------------------------- the engine
+def render_engine(voice, rpm, rate, supercharged=False, redline=7000, vtec_rpm=None, seed=0, load=1.0):
+    """One loop of an engine at a steady rpm and load (1 = flat out, 0 = off the throttle).
+    Returns (samples, actual_rpm). `voice` is a parts.V_* id or a layout name.
+    supercharged mixes a belt whine into the loop (audio.py doesn't: it plays it as its own layer)."""
+    if voice == V_ELECTRIC or voice == "electric":
+        return _render_electric(rpm, rate, redline, load), rpm
+    name = voice if isinstance(voice, str) else layout_name(voice, redline if voice == V_I4 else 0)
+    lay = LAYOUTS.get(name) or LAYOUTS["i4"]
+    if name == "vtec" and vtec_rpm and rpm >= vtec_rpm:
+        lay = LAYOUTS["vtec_hi"]                     # the second cam: harder, brighter, angrier
+    cyc_n = max(8, int(round(120.0 / rpm * rate)))   # samples per engine cycle (two revolutions)
+    rpm = 120.0 * rate / cyc_n                       # (the rpm we actually hit, to the sample)
     n_cyc = max(1, int(round(LOOP_S * rate / cyc_n)))
+    if n_cyc < 2 and cyc_n * 2 <= rate * 0.5:
+        n_cyc = 2                                    # two cycles, so the wobble has something to wobble between
     n = n_cyc * cyc_n
-    frac = min(1.0, rpm / redline)
-    res, rasp, body, lp = v.res, v.rasp, v.body, v.lp
-    if voice == V_VTEC and vtec_rpm and rpm >= vtec_rpm:
-        # the second cam: harder, brighter, angrier. This is the bit people film.
-        res, rasp, body, lp = res * 1.6, rasp + 0.2, body * 1.2, min(1.0, lp + 0.3)
-    decay = v.decay * (0.7 + 0.8 * frac)                   # thumps get shorter as the revs rise...
-    res *= 0.8 + 0.5 * frac                                # ...and the pipes sing a little higher
-    interval = cyc_n / float(v.cyl)
-    plen = int(min(interval * 2.2, rate * 4.0 / decay))
-    out = [0.0] * n
-    two_pi_res = 2 * math.pi * res / rate
-    dk = math.exp(-decay / rate)
-    pat = v.pattern
-    for f in range(n_cyc * v.cyl):
-        start = int(round(f * interval))
-        amp = pat[f % len(pat)] * (1.0 + rng.uniform(-0.04, 0.04))
-        e = amp
-        nz = rasp * amp
-        for i in range(plen):
-            j = start + i
-            if j >= n:
-                j -= n
-            out[j] += e * (math.sin(two_pi_res * i) + nz * rng.uniform(-1.0, 1.0))
-            e *= dk
-            nz *= 0.985
-    # the fundamental (the bit you feel in your seat), a whole number of cycles per loop
-    fire_cycles = n_cyc * v.cyl
-    w = 2 * math.pi * fire_cycles / n
-    peak = max(1e-9, max(abs(x) for x in out))
-    b = body * peak
-    for i in range(n):
-        out[i] += b * math.sin(w * i) + b * 0.5 * math.sin(w * 0.5 * i) * (1 if v.cyl == 8 else 0)
-    out = _lowpass_loop(out, lp + (1.0 - lp) * frac * 0.5)
+    frac = min(1.0, rpm / float(max(1.0, redline)))
+    rng = random.Random(seed * 100003 + lay.index * 7919 + int(rpm) * 31 + int(load * 100))
+    on, off = load, 1.0 - load
+    # ---- pulses at the firing times
+    interval = cyc_n / float(lay.cyl)
+    H = min(int(H_MAX_S * rate), n, int(interval * 4.0))
+    variants = {}
+    for b in (0, 1):
+        if b in lay.banks:
+            base = _pulse_response(lay, b, load, rate)
+            # a shorter stamp than the full response (high revs overlap anyway): re-taper its end
+            tap0 = int(H * (1.0 - JITTER_TAPER))
+            tp = [1.0] * tap0 + [0.5 + 0.5 * math.cos(math.pi * (i - tap0) / max(1, H - tap0)) for i in range(tap0, H)]
+            variants[b] = [[x * t for x, t in zip(h[:H], tp)] for h in base]
+    rough = (1.6 - 0.9 * frac) * (1.0 + 0.35 * off)      # idle and lifted engines are lumpier
+    jit = lay.jit * rough
+    tj = 0.00022 * rate * rough * (lay.jit / 0.05)       # samples of timing wobble (~0.2 ms at idle)
+    out = [0.0] * (n + H)
+    env_i = [0.0] * (n + int(interval) + 2)
+    span = int(max(2.0, interval * 0.6))                  # intake valve's open window per cylinder
+    win = [math.sin(math.pi * i / span) ** 2 for i in range(span)]
+    last_in_bank = {}
+    ncyl = lay.cyl
+    for cyc in range(n_cyc):
+        cyc_amp = 1.0 + rng.uniform(-jit, jit) * 0.6
+        for f, ang in enumerate(lay.angles):
+            bank = lay.banks[f]
+            t0 = cyc * cyc_n + ang / 720.0 * cyc_n
+            # header spacing: a pulse close behind another in the SAME header meets a pipe still
+            # pressurised by the last one, so it hits a little softer (the V8 burble comes from this)
+            prev = last_in_bank.get(bank)
+            gap = 720.0 if prev is None else (cyc * 720.0 + ang - prev) % 1440.0
+            spacing = 0.78 + 0.22 * min(1.0, gap / 180.0)
+            last_in_bank[bank] = cyc * 720.0 + ang
+            amp = cyc_amp * spacing * (1.0 + rng.uniform(-jit, jit))
+            if frac < 0.3 and rng.random() < 0.05 * lay.jit / 0.05:
+                amp *= 0.45                                   # the odd weak firing at idle
+            s = int(round(t0 + rng.gauss(0.0, tj))) % n
+            h = variants[bank if bank in variants else 0][rng.randrange(3)]
+            seg = out[s:s + H]
+            out[s:s + H] = [o + amp * x for o, x in zip(seg, h)]
+            # intake gulp for this cylinder
+            ia = amp * on ** 1.2
+            e0 = s
+            seg = env_i[e0:e0 + span]
+            env_i[e0:e0 + span] = [o + ia * w for o, w in zip(seg, win)]
+    for i in range(H):                                        # wrap the tails round to the start
+        out[i] += out[n + i]
+    out = out[:n]
+    for i in range(min(len(env_i) - n, n)):
+        env_i[i] += env_i[n + i]
+    env_i = env_i[:n]
+    # ---- broadband: intake roar (low, in gulps, on throttle) and mechanical noise (high, with revs)
+    w = [rng.random() - 0.5 for _ in range(n)]
+    lo = _lowpass_loop(w, _pole(500.0 + 1800.0 * frac, rate))
+    intake_g = lay.intake * (0.12 + 0.88 * on) * (0.25 + 0.75 * frac ** 1.2) * 5.0
+    mech_g = lay.mech * (0.05 + 0.95 * frac ** 1.3) * 2.2
+    # a valve-cracking tick on top of the hiss, at half the crank rate per cylinder
+    out = [o + intake_g * l * (0.25 + 0.75 * e) + mech_g * (x - l)
+           for o, l, x, e in zip(out, lo, w, env_i)]
     if supercharged:
-        # belt whine: pure-ish tone locked to the crank, louder the harder it's spun
-        cycles = max(1, int(round(SC_WHINE * rpm * n / rate)))
-        ww = 2 * math.pi * cycles / n
-        pk = max(1e-9, max(abs(x) for x in out))
-        a = pk * (0.1 + 0.35 * frac)
-        for i in range(n):
-            out[i] += a * (math.sin(ww * i) + 0.3 * math.sin(2 * ww * i))
-    level = (0.55 + 0.45 * frac) * v.gain
-    return _normalise(out, 0.9 * min(1.0, level)), rpm
+        out = _add_whine(out, rate, sc_hz(rpm), 0.35 + 0.65 * frac)
+    # ---- overall loudness: absolute-ish (idle is quiet), off throttle is quieter than on
+    level = (C.ENGINE_LEVEL_IDLE + (1.0 - C.ENGINE_LEVEL_IDLE) * frac ** 0.9) * \
+            (C.ENGINE_LEVEL_OFF + (1.0 - C.ENGINE_LEVEL_OFF) * on) * lay.gain
+    return _fit_rms(out, C.ENGINE_RMS * level), rpm
 
 
-def _render_electric(rpm, rate, redline):
-    """The scooter motor: an inverter whine that climbs with speed. Terrifying at 12 m/s."""
+def _add_whine(out, rate, f1, level):
+    """Mix a Roots-style whine into a loop (whole cycles per loop so it stays seamless)."""
+    n = len(out)
+    rms = math.sqrt(sum(v * v for v in out) / n) or 1e-9
+    tone = [0.0] * n
+    for h, g in SC_PARTIALS:
+        f = f1 * h
+        if f > rate * 0.45:
+            continue
+        cyc = max(1, int(round(f * n / rate)))
+        tab = _sine_table(n)
+        tone = [t + g * tab[(cyc * i) % n] for i, t in enumerate(tone)]
+    k = rms * level * 0.6
+    return [o + k * t for o, t in zip(out, tone)]
+
+
+# ---------------------------------------------------------------- electric
+def _render_electric(rpm, rate, redline, load=1.0):
+    """The scooter/EV motor: no pulses at all. A motor's noise is orders of rotor speed (pole-pair
+    magnetic hum at 6x, the helical reduction gear at 6x and 12x and a half-order sideband), so it
+    tracks the wheels; and the inverter's PWM carrier is a FIXED tone (~5 kHz) whose loudness
+    follows torque, with sidebands at plus and minus twice the motor frequency."""
     n = int(LOOP_S * rate)
-    f = max(40.0, rpm / 60.0 * 6)
-    cycles = max(1, int(round(f * n / rate)))
-    w = 2 * math.pi * cycles / n
-    rng = random.Random(3)
-    frac = min(1.0, rpm / redline)
-    out = [0.6 * math.sin(w * i) + 0.2 * math.sin(3 * w * i) + 0.04 * rng.uniform(-1, 1) for i in range(n)]
-    return _normalise(out, 0.4 + 0.4 * frac)
+    tab = _sine_table(n)
+    frac = min(1.0, rpm / float(max(1.0, redline)))
+    f = max(40.0, rpm / 60.0 * 6.0)
+    on = load
+
+    def cyc(hz):
+        return max(1, int(round(hz * n / rate)))
+    parts = [(cyc(f), 0.6), (cyc(f * 2.0), 0.16), (cyc(f * 3.0), 0.2 * (0.3 + 0.7 * frac)),
+             (cyc(f * 0.5), 0.1)]
+    carrier = cyc(5200.0)
+    side = cyc(2.0 * f)
+    rng = random.Random(3 + int(rpm))
+    pw = 0.05 * (0.2 + 0.8 * on) * (0.4 + 0.6 * frac)
+    out = []
+    for i in range(n):
+        v = sum(g * tab[(c * i) % n] for c, g in parts)
+        v += pw * tab[(carrier * i) % n] + 0.5 * pw * (tab[((carrier + side) * i) % n] + tab[((carrier - side) * i) % n])
+        out.append(v + 0.02 * (rng.random() - 0.5))
+    level = (0.25 + 0.75 * frac ** 0.8) * (0.6 + 0.4 * on) * 0.8
+    return _fit_rms(out, C.ENGINE_RMS * level)
+
+
+# ---------------------------------------------------------------- turbo and supercharger tones
+# Roots/twin-screw lobe-pass whine: a fundamental with strong 2nd-4th harmonics (sharp pulses)
+SC_PARTIALS = ((1.0, 0.6), (2.0, 1.0), (3.0, 0.8), (4.0, 0.45), (6.0, 0.2))
+# compressor blade-pass whistle: a near-pure tone, a whisper of 2nd, and a detuned sub-synchronous
+# partner that beats against it slowly (real compressors shimmer)
+TURBO_PARTIALS = ((1.0, 1.0), (2.0, 0.16), (1.0085, 0.4), (0.5, 0.12))
+
+
+def sc_hz(rpm):
+    """Supercharger lobe-pass fundamental for a crank speed: rotor rev/s * lobes. Belt-driven,
+    so no lag and no slip: it is EXACTLY proportional to rpm."""
+    return rpm / 60.0 * C.SC_PULLEY * C.SC_LOBES
+
+
+def tone_bank(lo, hi, ratio):
+    """Log-spaced frequencies lo..hi, adjacent ones `ratio` apart (audio crossfades neighbours)."""
+    n = int(math.ceil(math.log(hi / float(lo)) / math.log(ratio))) + 1
+    return [lo * ratio ** i for i in range(n)]
+
+
+def render_tone(freq, rate, partials, dur=0.1):
+    """A short loop of a tone with partials, whole cycles of each so it never clicks. -> (samples, freq)."""
+    n = int(dur * rate)
+    tab = _sine_table(n)
+    cycles = []
+    for r, g in partials:
+        f = freq * r
+        if 20.0 < f < rate * 0.45:
+            cycles.append((max(1, int(round(f * n / rate))), g))
+    x = [sum(g * tab[(c * i) % n] for c, g in cycles) for i in range(n)]
+    return _normalise(x, 0.8), cycles[0][0] * rate / float(n) if cycles else freq
 
 
 def render_whistle(freq, rate):
-    """A turbo spooling: a thin whistle over a hiss. One loop per pitch band."""
-    n = int(0.25 * rate)
-    cycles = max(1, int(round(freq * n / rate)))
-    w = 2 * math.pi * cycles / n
-    rng = random.Random(int(freq))
-    hiss = [rng.uniform(-1, 1) for _ in range(n)]
-    hiss = _lowpass_loop(hiss, 0.35)
-    out = [0.55 * math.sin(w * i) + 0.12 * math.sin(2 * w * i) + 0.5 * hiss[i] for i in range(n)]
-    return _normalise(out, 0.8)
+    """A turbo compressor at one turbine speed: the blade-pass whistle. Airflow hiss is separate
+    (render_air) so its level can follow the mass flow instead of the pitch."""
+    return render_tone(freq, rate, TURBO_PARTIALS)[0]
+
+
+def render_air(rate, seconds=0.8):
+    """Airflow rush for the intake/compressor: band-limited noise, seamless. One loop, played
+    louder with mass flow."""
+    n = int(seconds * rate)
+    rng = random.Random(77)
+    w = [rng.random() - 0.5 for _ in range(n)]
+    hi = _lowpass_loop(w, _pole(4200.0, rate))
+    lo = _lowpass_loop(w, _pole(700.0, rate))
+    return _normalise([a - b for a, b in zip(hi, lo)], 0.8)
+
+
+# ---------------------------------------------------------------- one-shots
+def _svf_noise(n, rate, fc0, fc1, damp, rng):
+    """Noise through a state-variable band-pass whose centre glides fc0 -> fc1 (a falling pressure
+    means a falling escape velocity, so the blow-off's hiss slides down)."""
+    low = band = 0.0
+    out = []
+    for i in range(n):
+        fc = fc0 + (fc1 - fc0) * i / n
+        f = 2.0 * math.sin(math.pi * fc / rate)
+        hi = rng.uniform(-1, 1) - low - damp * band
+        band += f * hi
+        low += f * band
+        out.append(band)
+    return out
 
 
 def render_screech(rate):
@@ -165,31 +483,48 @@ def render_screech(rate):
 
 
 def render_bov(rate, flutter=False):
-    """A blow-off valve: psssh. Or, on the big turbos, the flutter (stu-tu-tu-tu)."""
-    n = int(0.45 * rate)
+    """A blow-off valve: the boost pressure dumps through a small hole -- a band-passed hiss whose
+    pitch falls as the pressure does, with the valve's little thump on the front. Or, with no valve
+    (the big turbos), the compressor surges: the flow reverses and re-establishes over and over
+    (stu-tu-tu-tu) at a rate that slows as the pressure bleeds off."""
     rng = random.Random(5 if flutter else 6)
-    out, lp = [], 0.0
-    for i in range(n):
-        t, p = i / float(rate), i / float(n)
-        env = min(1.0, t / 0.01) * (1 - p) ** 2
-        if flutter:
-            env *= 0.45 + 0.55 * (1 if (t * 32) % 1 < 0.5 else 0)
-        lp += (rng.uniform(-1, 1) - lp) * (0.55 - 0.3 * p)
-        out.append(lp * env + 0.2 * math.sin(2 * math.pi * (2600 - 1800 * p) * t) * env)
+    if not flutter:
+        n = int(0.5 * rate)
+        hiss = _svf_noise(n, rate, 3800.0, 1500.0, 0.45, rng)
+        out = []
+        for i, h in enumerate(hiss):
+            t = i / float(rate)
+            env = min(1.0, t / 0.004) * (0.7 * math.exp(-t / 0.09) + 0.3 * math.exp(-t / 0.22))
+            thump = 0.5 * math.sin(2 * math.pi * 95.0 * t) * math.exp(-t / 0.018)
+            out.append(h * env * 0.9 + thump)
+        return _normalise(out, 0.8)
+    n = int(0.6 * rate)
+    hiss = _svf_noise(n, rate, 2600.0, 1100.0, 0.5, rng)
+    out, ph, g = [], 0.0, 0.0
+    for i, h in enumerate(hiss):
+        t = i / float(rate)
+        ph += (22.0 - 12.0 * t / 0.6) / rate                # chuff rate slows as the boost bleeds away
+        want = 1.0 if (ph % 1.0) < 0.42 else 0.06
+        g += (want - g) * 0.05
+        env = min(1.0, t / 0.006) * math.exp(-t / 0.28)
+        out.append((h * 0.9 + 0.35 * math.sin(2 * math.pi * 140.0 * t)) * g * env)
     return _normalise(out, 0.8)
 
 
 def render_pop(rate, pitch=1.0, seed=0):
-    """An overrun backfire: a low whump with a crack on top. Pops and bangs."""
-    n = int(0.16 * rate)
+    """An overrun backfire: unburnt fuel lights in the hot pipe. A crack (the shock front), the
+    exhaust ringing its lowest pipe mode, and a falling whump."""
+    n = int(0.18 * rate)
     rng = random.Random(40 + seed)
+    ring = 165.0 * pitch
     out = []
     for i in range(n):
         t, p = i / float(rate), i / float(n)
-        crack = rng.uniform(-1, 1) * max(0.0, 1 - t / 0.006) * 1.2
+        crack = rng.uniform(-1, 1) * max(0.0, 1 - t / 0.005) * 1.2
+        bark = math.sin(2 * math.pi * ring * t) * math.exp(-t / 0.03) * 0.8
         whump = math.sin(2 * math.pi * 70 * pitch * (1 - 0.4 * p) * t) * (1 - p) ** 3
-        grit = rng.uniform(-1, 1) * 0.35 * (1 - p) ** 5
-        out.append(crack + whump + grit)
+        grit = rng.uniform(-1, 1) * 0.3 * (1 - p) ** 5
+        out.append(crack + bark + whump + grit)
     return _normalise(out, 0.9)
 
 

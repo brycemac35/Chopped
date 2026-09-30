@@ -86,7 +86,7 @@ On the main menu, the **CHARACTER** row (or a click on the panel's arrows) picks
 | **A D** | Strafe | Steer |
 | **Space** | Jump (clear a roadblock, if you tuck your knees) | Handbrake: lock the rear wheels and drift |
 | **Shift** | Sprint (uses stamina) | NOS boost, if your ride has it fitted |
-| **E** | Use whatever you're looking at. **Hold** it for timed actions; a progress bar appears. At your bay's roller door, or the walking door: open or shut it | - |
+| **E** | Use whatever you're looking at. **Hold** it for timed actions; a progress bar appears. At your bay's roller door, or the walking door: open or shut it. At the red handle by the walking door: every door at once | - |
 | **X** | The prompt's other option: **cut the wires instead of smashing the window** (a locked car), **sell a delivered car whole**, **post bail** from your cell | Hydraulic hop, if your ride has hydraulics fitted |
 | **C** | Get into (or out of) your **cardboard box**, if you bought one | - |
 | **Left click** / **Ctrl** | Punch, shoot or place a trap. **With something in your hands: throw it.** Hold the click with empty fists, then let go: **haymaker** | - |
@@ -298,7 +298,7 @@ The cars run on a tyre model now, not a rail:
   - **Pigeons** peck about under the street lamps and scatter when anything comes near or goes bang.
   - **Hats.** A third of pedestrians wear one (flat cap, bowler, cowboy, top hat, bobble), and it comes off when you knock them down.
 - **v0.8's additions:**
-  - **The K9 unit.** From 60 heat some cop cars bring a dog. You can't outrun it. It doesn't arrest you; it takes your **trousers**, and you shuffle at half speed in your boxers for 9 s. (The boxers have patterns. The game tells everyone which.)
+  - **The K9 unit.** From 60 heat some cop cars bring a dog (never more than one at a time). You can't outrun it. It doesn't arrest you; it takes your **trousers**, and you shuffle at half speed in your boxers for 9 s. (The boxers have patterns. The game tells everyone which.)
   - **The streaker.** Every couple of minutes a naked man sprints through town. Cops near him forget all about you, and stop witnessing. Tackle him for a citizen's arrest: +$50 and -10 heat.
   - **Speed cameras** post your own clean ride a $40 ticket if you go past at more than 90 km/h. **SMILE!**
   - **Smoke screens.** Hold a burnout for 1.5 s and the smoke's thick enough to hide in: nobody can see through it for 10 s.
@@ -324,8 +324,8 @@ The cars run on a tyre model now, not a rail:
 - Wanted targets are stolen cars that haven't been delivered, plus anyone on foot outside the shop while heat is above 0. Sitting in your own clean car hides you. Sealing every bay of the shop with the whole crew inside clears heat to 0 outright, same as a delivery.
 - Crimes add heat on the spot: punching someone +5, robbing +4, a gunshot within earshot +8, carjacking +12, shooting a civilian or a member of the law +18 (murder -- it never wears off the rap sheet), stealing a police car +30, hitting a cop straight to 100.
 - If nobody sees you for 4 s, heat cools at 3/s. Parks and buildings block line of sight.
-- **Two patrol cars are always out there**, cruising the grid like traffic. They don't chase anyone until they see a wanted target, and then they do.
-- Heat is a **wanted level**: 1 cop car on the way at 25 heat, 2 at 50, 3 at 75 and **5** at 100, from the edge of the map -- but only up to a cap of new units per day, so a long enough chase eventually runs the precinct out of spare cars.
+- **A patrol car is always out there**, cruising the grid like traffic. It doesn't chase anyone until it sees a wanted target, and then it does. The whole city has only **two cop cars** at once (patrols count) and two officers on foot.
+- Heat is a **wanted level**: 1 cop car on the way at 25 heat and **2** at 60 (the most there ever are; a cruising patrol is waved in as one of them), from the edge of the map -- but only up to a cap of new units per day, so a long enough chase eventually runs the precinct out of spare cars.
 - **(v0.12.1) Dispatch gives them a rough idea.** A freshly dispatched car is told roughly where you are (give or take 20 m), a witness's phone call does the same for any car without a lead, and a cop that's lost you gets a fresh vague tip a few seconds later. They still have to actually *see* you to lock on -- but they no longer sit idling round the corner forever because nobody told them where to look.
 - **A cop that loses sight of you drives to your last known spot, not straight at you.** Walls and buildings genuinely block a cop's view now; lose them around a corner for a few seconds and they're guessing, not psychic. Give them nothing to go on for long enough and they give up the chase.
 - **Cops miss.** Bullets from a cop or an officer land only some of the time, so standing your ground in a shootout isn't instant death -- it's still a very bad idea.
@@ -347,7 +347,7 @@ The cars run on a tyre model now, not a rail:
 - Ram a cop at more than 25 m/s relative speed and it catches fire, then explodes after 3 s. All its parts scatter as loot.
 - **The shop's doors:** shut, cops can't drive or walk through them, and they can't see in. They'll bang on it and shout, though.
 
-- **(v0.12.1) The shop's front** is a proper brick facade with a parapet: four sectional roller doors, one per bay, and a steel walking door with a push bar (1.4 m wide -- people only). E at any of them opens or shuts it.
+- **(v0.12.1) The shop's front** is a proper brick facade with a parapet: four sectional roller doors, one per bay, and a steel walking door with a push bar (1.4 m wide -- people only). E at any of them opens or shuts it. **(v0.17.1) The master handle:** a big red lever on the shop's west wall, just inside by the walking door. One pull shuts every door at once (a door with a car or person under it stays up, and the toast says which); pull again and they all roll up. Shut it with the whole crew inside and the heat clears, same as ever. Home shop only: the bought garages have no doors to shut.
 
 ### Crashes
 

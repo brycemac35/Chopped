@@ -614,7 +614,48 @@ class ShopDoor:
                             self.toast(self.rng.choice(DOOR_BANG_LINES), T_COP)
                             break
 
+    def _door_name(self, d):
+        return "THE WALKING DOOR" if d.id == C.DOOR_ID else "BAY %d'S DOOR" % (d.id - C.DOOR_ID)
+
+    def doors_open(self):
+        """Any door up (or on its way up)? This is what decides which way the master handle pulls."""
+        return any(d.goal > 0.5 for d in self.shop_doors)
+
+    def pull_handle(self, p):
+        """(v0.17.1) The master handle: shut every door at once, or, if they're all down, raise
+        them all. Shutting respects the safety sensor exactly like a single door does: a door
+        with a car or a person under it is left up, and the toast says which."""
+        h = self.map.door_handle
+        self.sfx(S_DOOR, h[0], h[1])
+        if not self.doors_open():
+            for d in self.shop_doors:
+                d.goal = 1.0
+            self.toast("%s PULLS THE HANDLE: EVERY DOOR ROLLING UP" % p.name, T_INFO)
+            return
+        blocked = []
+        for d in self.shop_doors:
+            if d.goal > 0.5:
+                if self._door_blocked(d):
+                    blocked.append(d)
+                else:
+                    d.goal = 0.0
+        self.toast("%s PULLS THE HANDLE: EVERY DOOR SHUTTING" % p.name if not blocked else
+                   "%s PULLS THE HANDLE" % p.name, T_INFO)
+        for d in blocked:
+            self.toast("%s IS BLOCKED, LEFT OPEN" % self._door_name(d), T_WHITE)
+
+    def _handle_interaction(self, p, ax, ay):
+        h = getattr(self.map, "door_handle", None)
+        if h is None or math.hypot(p.x - h[0], p.y - h[1]) > C.DOOR_HANDLE_REACH or \
+                math.hypot(ax - h[0], ay - h[1]) > C.DOOR_HANDLE_AIM:
+            return None
+        label = "PULL: SHUT ALL DOORS" if self.doors_open() else "PULL: OPEN ALL DOORS"
+        return (("handle",), label, 0, lambda: self.pull_handle(p))
+
     def _door_interaction(self, p, ax, ay):
+        handle = self._handle_interaction(p, ax, ay)
+        if handle is not None:
+            return handle
         d = self._door_at(ax, ay, C.DOOR_REACH)
         if d is None or abs(p.y - d.y) > C.DOOR_REACH + 1.5:
             return None

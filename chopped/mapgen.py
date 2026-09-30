@@ -339,8 +339,12 @@ class CityMap:
         jamb = (T - C.WALK_DOOR_W) / 2
         for x0 in (wx - T / 2, wx + C.WALK_DOOR_W / 2):
             self.static_rects.append((x0, gy + gh - C.DOOR_T / 2, jamb, C.DOOR_T))
+        # (v0.17.1, Bryce: "a handle to close all the doors at once") the master lever: on the
+        # inside of the west wall, a few steps from the walking door, facing the room (east).
+        # Pure arithmetic on the garage rect (no rng), so every client rebuilds it identically.
+        self.door_handle = (gx + C.DOOR_HANDLE_INSET, gy + gh - C.DOOR_HANDLE_FROM_FRONT, 0.0)
         cx = gx + gw / 2
-        self.player_spawns = [(cx - 2, gy + 5), (cx + 2, gy + 5), (cx - 2, gy + 8), (cx + 2, gy + 8)]
+        self.player_spawns =[(cx - 2, gy + 5), (cx + 2, gy + 5), (cx - 2, gy + 8), (cx + 2, gy + 8)]
         self.garage_center = (gx + gw / 2, gy + gh / 2)
 
     def _make_precinct(self, ox, oy):

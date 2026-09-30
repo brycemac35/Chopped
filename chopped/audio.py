@@ -17,16 +17,22 @@ from . import sim as S
 from . import enginesynth as ES
 from . import drivetrain as DT
 from . import parts as PT
+from . import soundscape as SC
+from .sfxsynth import SfxSynth
 
 RATE = 22050
 MASTER = 0.55          # keep it sane: car alarms are annoying enough at 55%
+
+# (v0.18) sounds that carry across the city, and the ones that ARE the shop door
+LOUD_SFX = frozenset((S.S_BOOM, S.S_SHOTGUN, S.S_CRASH_BIG, S.S_GATE, S.S_AMBULANCE))
+DOOR_SFX = frozenset((S.S_DOOR, S.S_BANG))
 
 
 def _clip(v):
     return -32767 if v < -32767 else 32767 if v > 32767 else int(v)
 
 
-class Audio:
+class Audio(SfxSynth):
     def __init__(self, enabled=True, music=True):
         self.ok = False
         self.sounds = {}
@@ -38,14 +44,32 @@ class Audio:
         self._music_bytes = None
         self.music_ch = None
         self.music_level = None
-        self.engine_banks = {}        # (voice, supercharged) -> (band rpms, [Sound]) once rendered
-        self._engine_bytes = None
-        self.eng_ch = []              # [(chanA, chanB)] per engine slot: 0 = your car, 1 = the loudest other
-        self.eng_state = [[None, None], [None, None]]
-        self.whistle = []             # turbo whistle bands
-        self.whistle_state = [None, None]
+        self.engine_banks = {}        # layout name -> (band rpms, [(on-load Sound, off-load Sound)]) once rendered
+        self._engine_bytes = {}       # the same as raw PCM, straight off the render thread
+        self._eng_want = []           # layouts/tone banks the game has asked for (rendered first)
+        self._eng_failed = False
+        self.eng_ch = []              # [4 channels] per engine slot: 0 = your car, 1 = the loudest other.
+                                      # index = (band parity) * 2 + (0 on load, 1 off load)
+        self.eng_state = [[None] * 4, [None] * 4]
+        self.tone_banks = {}          # "turbo" / "sc" -> (Hz list, [Sound]): the whistle and the whine
+        self._tone_bytes = {}
+        self.air = None               # airflow rush loop (turbo and supercharger share it)
+        self._air_bytes = None
+        self.whistle_state = [None, None, None]    # (tone A, tone B, air) channel tags
         self.oneshots = {}
         self.vol = dict(C.VOLUME_DEFAULTS)   # slider positions 0..1: master, music, sfx, engine
+        # (v0.18) soundscape: the shop's dead zone, traffic honk budget, ambience beds, the chopper
+        self.occ = SC.Occluder()
+        self.horn_budget = SC.HornBudget()
+        self.listener = (0.0, 0.0, 0.0)      # x, y, yaw of whoever's ears these are
+        self.muffled = {}                    # sid -> a low-passed copy of a big bang, for the thud through a shut door
+        self.blasts = {}                     # (pitch, kind) -> Sound: the traffic beeps, built from _scape_bytes
+        self._scape_bytes = None
+        self.scape_ch = None                 # (day bed, night bed, chopper) channels, the top three of the 32
+        self.scape_snd = None
+        self.scape_state = [0.0, 0.0, 0.0]
+        self._listen_t = None
+        self._jit = random.Random(11)        # per-play level/pick jitter (its own stream: never touches synthesis)
         if not enabled:
             return
         try:
@@ -55,19 +79,23 @@ class Audio:
             if not init:
                 return
             self.rate, _fmt, self.nch = init
-            pygame.mixer.set_num_channels(32)
-            pygame.mixer.set_reserved(15)
+            pygame.mixer.set_num_channels(40)      # (v0.18: 32 + 8; the scape keeps 29-31, the one-shot pool is 20-28 and 32-39)
+            pygame.mixer.set_reserved(20)
             self._build()
             names = ("engine", "alarm", "siren", "horn", "fire", "jingle", "nos", "screech")
             for i, name in enumerate(names):
                 self.channels[name] = pygame.mixer.Channel(i)
                 self.loop_state[name] = None
             k = len(names)
-            self.eng_ch = [(pygame.mixer.Channel(k), pygame.mixer.Channel(k + 1)),
-                           (pygame.mixer.Channel(k + 2), pygame.mixer.Channel(k + 3))]
-            self.wh_ch = (pygame.mixer.Channel(k + 4), pygame.mixer.Channel(k + 5))
+            # engine slots take four channels each (two rpm bands x on/off load), the turbo/supercharger
+            # tone two and the airflow one; 15-19 are the overflow from the old layout's 8-14
+            self.eng_ch = [tuple(pygame.mixer.Channel(i) for i in (k, k + 1, k + 2, k + 3)),
+                           tuple(pygame.mixer.Channel(i) for i in (15, 16, 17, 18))]
+            self.wh_ch = (pygame.mixer.Channel(k + 4), pygame.mixer.Channel(k + 5), pygame.mixer.Channel(19))
             self.music_ch = pygame.mixer.Channel(k + 6)
+            self.scape_ch = tuple(pygame.mixer.Channel(i) for i in (29, 30, 31))   # (unreserved, but always busy)
             self.ok = True
+            threading.Thread(target=self._render_scape, name="chopped-scape", daemon=True).start()
             threading.Thread(target=self._render_engines, name="chopped-engines", daemon=True).start()
             if music:
                 threading.Thread(target=self._compose, name="chopped-beat", daemon=True).start()
@@ -100,16 +128,39 @@ class Audio:
         return (self.vol["master"] * self.vol[bus]) ** C.VOLUME_CURVE
 
     # ------------------------------------------------------------------ synthesis
-    def _mk(self, samples, vol=1.0):
-        a = array("h")
-        if self.nch == 1:
-            a.extend(_clip(s * vol * MASTER * 32767) for s in samples)
+    def _pack(self, samples, vol=1.0, soft=None, fade=False):
+        """Raw float samples -> PCM bytes (mono, or the mixer's channel count). soft = one-pole
+        low-pass coefficient to take the edge off a square or saw; fade gives a 3 ms ramp at both
+        ends if fade=True (one-shots; loops must not, they'd dip every lap); and the whole buffer is scaled down if it would peak above C.PEAK_CEIL, so
+        nothing synthesised can clip. Fast path: no per-sample clamp, slice-assigned channels."""
+        if soft:
+            samples = self._lp(samples, soft, not fade)      # (a filtered loop pre-rolls, so its seam is clean)
         else:
-            for s in samples:
-                v = _clip(s * vol * MASTER * 32767)
-                for _ in range(self.nch):
-                    a.append(v)
-        return pygame.mixer.Sound(buffer=a.tobytes())
+            samples = list(samples)
+        n = len(samples)
+        if n == 0:
+            return b""
+        if fade:
+            f = min(n // 4, int(self.rate * 0.003))
+            for i in range(f):
+                w = i / f
+                samples[i] *= w
+                samples[n - 1 - i] *= w
+        peak = max(max(samples), -min(samples), 1e-9)
+        k = vol * MASTER
+        if peak * k > C.PEAK_CEIL:
+            k = C.PEAK_CEIL / peak
+        k *= 32767
+        a = array("h", [int(s * k) for s in samples])
+        if self.nch > 1:
+            wide = array("h", bytes(2 * n * self.nch))
+            for c in range(self.nch):
+                wide[c::self.nch] = a
+            a = wide
+        return a.tobytes()
+
+    def _mk(self, samples, vol=1.0, soft=None, fade=False):
+        return pygame.mixer.Sound(buffer=self._pack(samples, vol, soft, fade))
 
     def _tone(self, dur, fn):
         n = int(self.rate * dur)
@@ -119,204 +170,13 @@ class Audio:
         rnd = random.Random(7)
         sq = lambda f, t: 1.0 if (t * f) % 1.0 < 0.5 else -1.0
         saw = lambda f, t: 2.0 * ((t * f) % 1.0) - 1.0
-        env = lambda p, a=0.01, r=0.3: min(1.0, p / a) * (1.0 - p) ** (1.0 / max(r, 0.01)) if p < 1 else 0
-
-        # crunch: filtered noise with a thump
-        def crunch(dur, low):
-            last = [0.0]
-            def fn(t, p):
-                last[0] += (rnd.uniform(-1, 1) - last[0]) * (0.35 if not low else 0.12)
-                return (last[0] * 1.6 + 0.5 * math.sin(2 * math.pi * 60 * t)) * (1 - p) ** 2
-            return self._tone(dur, fn)
-        self.sounds[S.S_CRASH] = self._mk(crunch(0.25, False), 0.7)
-        self.sounds[S.S_CRASH_BIG] = self._mk(crunch(0.5, True), 1.0)
-        def boom(t, p):
-            return (rnd.uniform(-1, 1) * 0.8 + math.sin(2 * math.pi * (50 - 30 * p) * t)) * (1 - p) ** 1.5
-        self.sounds[S.S_BOOM] = self._mk(self._tone(1.1, boom), 1.0)
-        self.sounds[S.S_SELL] = self._mk(self._tone(0.3, lambda t, p: sq(1320 if p > 0.35 else 990, t) * 0.4 * (1 - p)), 0.6)
-        self.sounds[S.S_PICKUP] = self._mk(self._tone(0.08, lambda t, p: sq(660 + 600 * p, t) * 0.3 * (1 - p)), 0.6)
-        self.sounds[S.S_DROP] = self._mk(self._tone(0.12, lambda t, p: sq(300 - 150 * p, t) * 0.3 * (1 - p)), 0.6)
-        self.sounds[S.S_BREAKIN] = self._mk(self._tone(0.35, lambda t, p: (rnd.uniform(-1, 1) * 0.6 + sq(3000, t) * 0.2) * (1 - p) ** 3), 0.8)
-        self.sounds[S.S_HOTWIRE] = self._mk(self._tone(0.7, lambda t, p: saw(40 + 50 * p + 8 * math.sin(40 * t), t) * 0.5 * min(1, p * 4)), 0.7)
-        self.sounds[S.S_STRIP] = self._mk(self._tone(0.3, lambda t, p: sq(180, t) * 0.35 * (1 if (t * 30) % 1 < 0.4 else 0)), 0.6)
-        self.sounds[S.S_HONK] = self._mk(self._tone(0.3, lambda t, p: sq(520 + 200 * math.sin(p * 9), t) * 0.35 * (1 - p)), 0.7)
-        self.sounds[S.S_ARREST] = self._mk(self._tone(0.9, lambda t, p: sq(880 if int(p * 6) % 2 else 660, t) * 0.3), 0.7)
-        self.sounds[S.S_RENT] = self._mk(self._tone(0.5, lambda t, p: sq(440 if p < 0.5 else 330, t) * 0.3 * (1 - p)), 0.7)
-        self.sounds[S.S_CRUSH] = self._mk(crunch(0.8, True), 0.9)
-        self.sounds[S.S_DELIVER] = self._mk(self._tone(0.6, lambda t, p: sq([523, 659, 784, 1046][min(3, int(p * 4))], t) * 0.3), 0.6)
-        self.sounds[S.S_INSTALL] = self._mk(self._tone(0.4, lambda t, p: sq(220 * (1 + int(p * 3)), t) * 0.3 * (1 - p)), 0.6)
-        self.sounds[S.S_YELP] = self._mk(self._tone(0.18, lambda t, p: sq(900 - 500 * p, t) * 0.25), 0.5)
-        # ka-ching... in reverse. The sound of money leaving.
-        self.sounds[S.S_BUY] = self._mk(self._tone(0.35, lambda t, p: sq(1320 if p < 0.4 else 880, t) * 0.35 * (1 - p)), 0.6)
-        self.sounds[S.S_IGNITE] = self._mk(self._tone(0.4, lambda t, p: rnd.uniform(-1, 1) * 0.5 * p), 0.6)
-        # v0.6: violence. A punch is a thud with a slap on top.
-        self.sounds[S.S_PUNCH] = self._mk(self._tone(0.12, lambda t, p: (math.sin(2 * math.pi * (140 - 80 * p) * t)
-                                                                          + rnd.uniform(-1, 1) * 0.6 * (1 - p) ** 6)
-                                                     * (1 - p) ** 2), 0.8)
-
-        # gunshots: a crack of white noise, a low body, and a tail that rings off the buildings
-        def shot(dur, body, crack):
-            last = [0.0]
-            def fn(t, p):
-                last[0] += (rnd.uniform(-1, 1) - last[0]) * (0.5 if p < 0.1 else 0.18)
-                c = rnd.uniform(-1, 1) * crack * max(0.0, 1 - t / 0.012)
-                return (c + last[0] * 1.4 * (1 - p) ** 3 + math.sin(2 * math.pi * body * (1 - 0.5 * p) * t)
-                        * 0.8 * (1 - p) ** 4)
-            return self._tone(dur, fn)
-        self.sounds[S.S_PISTOL] = self._mk(shot(0.3, 120, 1.0), 0.8)
-        self.sounds[S.S_SHOTGUN] = self._mk(shot(0.6, 70, 1.4), 1.0)
-        # *click*. The loneliest sound in the game.
-        self.sounds[S.S_EMPTY] = self._mk(self._tone(0.03, lambda t, p: sq(2400, t) * 0.4 * (1 - p)), 0.5)
-        # a tyre going: bang, then a hiss that runs out of air
-        self.sounds[S.S_TIRE] = self._mk(self._tone(0.7, lambda t, p: (rnd.uniform(-1, 1) * (1.0 if p < 0.05 else 0.35)
-                                                                       * (1 - p))), 0.8)
-        self.sounds[S.S_TRAP] = self._mk(self._tone(0.25, lambda t, p: (sq(90, t) * 0.3 + rnd.uniform(-1, 1) * 0.3)
-                                                    * (1 - p) ** 2), 0.7)
-        # the wallet chime: two coins and a guilty conscience
-        self.sounds[S.S_ROB] = self._mk(self._tone(0.3, lambda t, p: sq(1568 if p < 0.3 else 2093, t) * 0.25 * (1 - p)), 0.6)
-        # ---- v0.7 slapstick -----------------------------------------------------------
-        self.sounds[S.S_WHOOSH] = self._mk(self._tone(0.25, lambda t, p: rnd.uniform(-1, 1) * 0.5 * math.sin(p * math.pi)), 0.5)
-        # bonk: a hollow wooden knock with a little pitch drop, the universal sound of "ow"
-        self.sounds[S.S_BONK] = self._mk(self._tone(0.18, lambda t, p: math.sin(2 * math.pi * (620 - 300 * p) * t)
-                                                    * (1 - p) ** 3), 0.8)
-        self.sounds[S.S_GNOME] = self._mk(self._tone(0.25, lambda t, p: sq(1400 + 900 * math.sin(p * 9), t) * 0.3
-                                                     * (1 - p)), 0.6)                       # *squeak*
-        self.sounds[S.S_JUMP] = self._mk(self._tone(0.12, lambda t, p: sq(300 + 500 * p, t) * 0.2 * (1 - p)), 0.4)
-        # STRIKE: pins going over, then a tiny crowd going "YEAH"
-        def strike(t, p):
-            clatter = rnd.uniform(-1, 1) * (1 - p) ** 2 * (0.8 if int(t * 40) % 3 else 0.2)
-            cheer = (sq(523, t) + sq(659, t) + sq(784, t)) * 0.08 * min(1, max(0, (p - 0.4) * 4)) * (1 - p)
-            return clatter + cheer
-        self.sounds[S.S_STRIKE] = self._mk(self._tone(1.0, strike), 0.8)
-        # HOME RUN: the crack of a bat and an "ooooh"
-        self.sounds[S.S_HOMERUN] = self._mk(self._tone(0.9, lambda t, p: (rnd.uniform(-1, 1) * max(0, 1 - t / 0.03))
-                                                       + saw(200 + 120 * math.sin(p * 3), t) * 0.15 * p * (1 - p) * 4), 0.8)
-        self.sounds[S.S_EJECT] = self._mk(self._tone(0.6, lambda t, p: (rnd.uniform(-1, 1) * 0.7 * max(0, 1 - t / 0.08)
-                                                                       + sq(200 + 1200 * p, t) * 0.2 * (1 - p))), 0.9)
-        # slide whistle, going down: the banana peel's theme tune
-        self.sounds[S.S_SLIP] = self._mk(self._tone(0.6, lambda t, p: math.sin(2 * math.pi * (1500 - 1100 * p) * t)
-                                                    * 0.4 * (1 - p * 0.5)), 0.7)
-        self.sounds[S.S_MUNCH] = self._mk(self._tone(0.5, lambda t, p: rnd.uniform(-1, 1) * 0.4
-                                                     * (1 if int(t * 12) % 2 else 0.1) * (1 - p)), 0.6)
-        # a laugh: "ha" x4, a formant-ish square that drops in pitch each time
-        self.sounds[S.S_LAUGH] = self._mk(self._tone(0.8, lambda t, p: sq(330 - int(p * 4) * 25, t) * 0.25
-                                                     * (1 if (t * 5) % 1 < 0.55 else 0) * (1 - p * 0.6)), 0.5)
-        self.sounds[S.S_MOD] = self._mk(self._tone(0.35, lambda t, p: (rnd.uniform(-1, 1) * 0.5 if (t * 30) % 1 < 0.3
-                                                                       else 0) * (1 - p)), 0.6)      # ratchet
-        self.sounds[S.S_SPRAY] = self._mk(self._tone(0.6, lambda t, p: rnd.uniform(-1, 1) * 0.3 * min(1, p * 8)
-                                                     * (1 - p)), 0.6)
-        self.sounds[S.S_TRUNK] = self._mk(self._tone(0.2, lambda t, p: math.sin(2 * math.pi * (90 - 30 * p) * t)
-                                                     * (1 - p) ** 2 + rnd.uniform(-1, 1) * 0.2 * (1 - p) ** 6), 0.8)
-        self.sounds[S.S_WRIGGLE] = self._mk(self._tone(0.15, lambda t, p: sq(700 + 300 * math.sin(t * 60), t) * 0.2), 0.4)
-        self.sounds[S.S_NOS] = self._mk(self._tone(0.5, lambda t, p: rnd.uniform(-1, 1) * 0.5 * (1 - p)), 0.7)
-        # ---- v0.8: the law, and the silly department ------------------------------
-        # taser: a mains-hum buzz with a crackle on top. Ow.
-        self.sounds[S.S_TASER] = self._mk(self._tone(0.7, lambda t, p: (sq(120, t) * 0.25 + rnd.uniform(-1, 1) * 0.35
-                                                                        * (1 if (t * 40) % 1 < 0.4 else 0.2))
-                                                     * (1 - p * 0.5)), 0.7)
-        # a bark: two quick rough "ruffs"
-        self.sounds[S.S_BARK] = self._mk(self._tone(0.35, lambda t, p: (saw(260 - 120 * ((t * 6) % 1), t) * 0.4
-                                                                       + rnd.uniform(-1, 1) * 0.25)
-                                                    * (1 if (t * 6) % 1 < 0.45 else 0)), 0.7)
-        # the speed camera: a click and a whine, the sound of a fine
-        self.sounds[S.S_FLASH] = self._mk(self._tone(0.35, lambda t, p: (rnd.uniform(-1, 1) * max(0, 1 - t / 0.01))
-                                                     + math.sin(2 * math.pi * (3000 + 3000 * p) * t) * 0.2 * (1 - p)), 0.6)
-        # party popper + a little kazoo fanfare (for a delivered car)
-        self.sounds[S.S_CONFETTI] = self._mk(self._tone(0.9, lambda t, p: (rnd.uniform(-1, 1) * max(0, 1 - t / 0.03))
-                                                        + saw([523, 659, 784, 1046][min(3, int(p * 4))], t)
-                                                        * 0.18 * min(1, p * 8)), 0.6)
-        # hydraulics: pssssht-CLUNK
-        self.sounds[S.S_HYDRO] = self._mk(self._tone(0.45, lambda t, p: rnd.uniform(-1, 1) * 0.35 * (1 - p)
-                                                     + (math.sin(2 * math.pi * 70 * t) * (1 if p > 0.75 else 0))), 0.7)
-        # WASTED: a slow falling sting
-        self.sounds[S.S_WASTED] = self._mk(self._tone(1.6, lambda t, p: (sq(220 - 110 * p, t) * 0.18
-                                                                         + sq(165 - 80 * p, t) * 0.12) * (1 - p)), 0.8)
-        # the gate: a big metal clank and a rattle
-        self.sounds[S.S_GATE] = self._mk(self._tone(0.6, lambda t, p: (math.sin(2 * math.pi * 95 * t)
-                                                                       + rnd.uniform(-1, 1) * 0.4) * (1 - p) ** 2), 0.8)
-        # keys: jingle jangle
-        self.sounds[S.S_KEYS] = self._mk(self._tone(0.4, lambda t, p: math.sin(2 * math.pi * (3200 + 800 *
-                                                                                      math.sin(t * 90)) * t)
-                                                    * 0.3 * (1 if (t * 18) % 1 < 0.3 else 0) * (1 - p)), 0.6)
-        # cuffs: click-click
-        self.sounds[S.S_CUFF] = self._mk(self._tone(0.25, lambda t, p: sq(2600, t) * 0.4
-                                                    * (1 if (t < 0.02 or 0.12 < t < 0.14) else 0)), 0.7)
-        # the police whistle: FWEEEEET
-        self.sounds[S.S_WHISTLE] = self._mk(self._tone(0.6, lambda t, p: math.sin(2 * math.pi * (2900 + 120 *
-                                                                                         math.sin(t * 70)) * t)
-                                                       * 0.35 * min(1, p * 20) * (1 - p) ** 0.3), 0.6)
-        # the streaker: "wheeeee!" (a rising then falling whoop)
-        self.sounds[S.S_WHEE] = self._mk(self._tone(0.8, lambda t, p: sq(500 + 700 * math.sin(p * math.pi), t)
-                                                    * 0.2 * (1 - p * 0.4)), 0.6)
-        # (v0.9) the roller door: a motor grinding and a chain rattling, then a clunk
-        self.sounds[S.S_DOOR] = self._mk(self._tone(1.3, lambda t, p: (saw(58 + 6 * math.sin(t * 9), t) * 0.25
-                                                                       + rnd.uniform(-1, 1) * 0.12
-                                                                       * (1 if (t * 22) % 1 < 0.4 else 0.3))
-                                                    * min(1, p * 12) * (1 if p < 0.85 else (1 - p) * 6)), 0.6)
-        # (v0.9) a copper's fist on a roller door: BADANG BADANG BADANG
-        self.sounds[S.S_BANG] = self._mk(self._tone(0.9, lambda t, p: (math.sin(2 * math.pi * 70 * t)
-                                                                       + rnd.uniform(-1, 1) * 0.6)
-                                                    * max(0.0, 1 - ((t % 0.3) / 0.12)) ** 2), 0.9)
-        # (v0.9) the rubber chicken: SQUEEEAK (a pitch that bends up then collapses)
-        self.sounds[S.S_SQUEAK] = self._mk(self._tone(0.35, lambda t, p: sq(900 + 900 * math.sin(p * math.pi) - 500 * p, t)
-                                                      * 0.22 * (1 - p) ** 0.4), 0.7)
-        # (v0.9) the whoopee cushion: a longer, more committed version of the fart horn
-        self.sounds[S.S_PFFT] = self._mk(self._fart(1.1), 1.0)
-        # (v0.9) bawk bawk
-        self.sounds[S.S_CLUCK] = self._mk(self._tone(0.4, lambda t, p: saw(620 + 380 * ((t * 9) % 1), t) * 0.2
-                                                     * (1 if (t * 9) % 1 < 0.55 else 0) * (1 - p)), 0.5)
-        # (v0.9) the chicken meets a bumper: one last BAWK and a thud
-        self.sounds[S.S_FEATHERS] = self._mk(self._tone(0.45, lambda t, p: (saw(900 - 600 * p, t) * 0.25 * (1 if p < 0.4 else 0)
-                                                                          + math.sin(2 * math.pi * 60 * t) * 0.5
-                                                                          * (1 if p > 0.4 else 0) * (1 - p))), 0.6)
-        # (v0.9) cash bags hitting the tarmac: a register ka-ching and a flump
-        self.sounds[S.S_CASH] = self._mk(self._tone(0.9, lambda t, p: (math.sin(2 * math.pi * 2093 * t) * 0.3
-                                                                       + math.sin(2 * math.pi * 2637 * t) * 0.2)
-                                                    * max(0.0, 1 - t / 0.5) + rnd.uniform(-1, 1) * 0.3
-                                                    * max(0.0, 1 - abs(t - 0.5) / 0.1)), 0.8)
-        # (v0.10) an ambulance, a couple of streets off: a two-tone siren (nee-naw), distant
-        self.sounds[S.S_AMBULANCE] = self._mk(self._tone(1.8, lambda t, p: sq(760 if int(t * 2.2) % 2 == 0
-                                                                              else 570, t) * 0.16
-                                                          * min(1, p * 6) * min(1, (1 - p) * 6)), 0.55)
-        # ---- horns (the mod shop sells worse ones), indexed by vehicles.HORN_*
-        self.horns = [
-            self._mk(self._tone(0.2, lambda t, p: (sq(392, t) + sq(494, t)) * 0.18), 0.9),            # stock
-            self._mk(self._tone(0.5, lambda t, p: sq(700 + 200 * math.sin(p * 2 * math.pi), t)
-                                * 0.3 * (1 if (p * 2) % 1 < 0.7 else 0)), 0.8),                         # clown
-            self._mk(self._tone(1.2, lambda t, p: sq([392, 392, 392, 523, 659, 392, 392, 392, 523, 659, 0, 0]
-                                                     [min(11, int(p * 12))], t) * 0.25), 0.8),         # la cucaracha-ish
-            self._mk(self._fart(0.7), 1.0),                                                            # wet fart
-            self._mk(self._tone(0.7, lambda t, p: saw(440 * (1 + 0.06 * math.sin(t * 50)), t) * 0.35
-                                * min(1, p * 10) * (1 - p) ** 0.5), 0.8),                               # goat
-            self._mk(self._tone(0.8, lambda t, p: (saw(233, t) + saw(294, t) + saw(349, t)) * 0.18), 1.0),  # air horn
-            self._mk(self._tone(1.6, lambda t, p: math.sin(2 * math.pi * [784, 659, 698, 784, 880, 784, 698, 659]
-                                                           [min(7, int(p * 8))] * t) * 0.35), 0.7),     # ice cream
-            # (v0.9) the stolen cop car's siren: wee-woo wee-woo
-            self._mk(self._tone(1.0, lambda t, p: sq(740 if int(t * 4) % 2 == 0 else 587, t) * 0.25), 0.9),
-        ]
-        # the ice cream van's endless jingle: an original four-bar music-box tune
-        tune = (523, 659, 784, 659, 698, 880, 784, 0, 587, 698, 880, 698, 659, 784, 523, 0)
-        def jingle(t, p):
-            k = int(t / 0.22) % len(tune)
-            f = tune[k]
-            if not f:
-                return 0.0
-            ph = (t % 0.22) / 0.22
-            return (math.sin(2 * math.pi * f * t) * 0.6 + math.sin(4 * math.pi * f * t) * 0.2) * math.exp(-ph * 4) * 0.4
-        self.loops["jingle"] = self._mk(self._tone(0.22 * len(tune), jingle), 0.7)
-        self.loops["nos"] = self._mk(self._tone(0.6, lambda t, p: rnd.uniform(-1, 1) * 0.25), 0.6)
-        # loops
-        self.loops["alarm"] = self._mk(self._tone(0.5, lambda t, p: sq(1100 if p < 0.5 else 750, t) * 0.22), 0.8)
-        self.loops["siren"] = self._mk(self._tone(1.2, lambda t, p: sq(650 + 250 * math.sin(p * 2 * math.pi), t) * 0.18), 0.8)
-        self.loops["horn"] = self._mk(self._tone(0.2, lambda t, p: (sq(392, t) + sq(494, t)) * 0.18), 0.9)
-        self.loops["fire"] = self._mk(self._tone(0.6, lambda t, p: rnd.uniform(-1, 1) * 0.15), 0.6)
+        self._build_sfx()             # (v0.18) every one-shot, horn and alarm loop: sfxsynth.py
         # ---- v0.8 car noises (the engine notes themselves render in the background) ----
         self.loops["screech"] = self._mk(ES.render_screech(self.rate), 0.55)
         self.oneshots["bov"] = self._mk(ES.render_bov(self.rate), 0.6)
         self.oneshots["flutter"] = self._mk(ES.render_bov(self.rate, flutter=True), 0.6)
         self.oneshots["pops"] = [self._mk(ES.render_pop(self.rate, 0.8 + 0.25 * k, k), 0.8) for k in range(3)]
         self.oneshots["shift"] = self._mk(ES.render_shift(self.rate), 0.5)
-        self.whistle = [self._mk(ES.render_whistle(f, self.rate), 0.35) for f in C.TURBO_WHISTLE_HZ]
         # engine hum: 10 pre-pitched loops; we hop between them with speed
         self.engine = []
         for k in range(10):
@@ -325,39 +185,60 @@ class Audio:
             dur = n / f                                  # whole cycles -> seamless loop
             self.engine.append(self._mk(self._tone(dur, lambda t, p, f=f: (saw(f, t) * 0.5 + sq(f / 2, t) * 0.25) * 0.5), 0.5))
 
-    def _fart(self, dur):
-        """A low, wet, wobbling buzz. Engineering at its finest."""
-        rnd = random.Random(99)
-        out, ph, lp = [], 0.0, 0.0
-        n = int(self.rate * dur)
-        for i in range(n):
-            t, p = i / self.rate, i / n
-            f = 70 + 25 * math.sin(t * 23) + 30 * (1 - p)
-            ph += f / self.rate
-            buzz = 1.0 if ph % 1.0 < 0.3 else -0.4
-            lp += (buzz + rnd.uniform(-0.6, 0.6) - lp) * 0.25
-            out.append(lp * 0.7 * min(1, p * 20) * (1 - p) ** 0.6)
-        return out
+    # ------------------------------------------------------------------ engines (v0.8, rebuilt v0.18)
+    # Render order when nobody asks for anything: the common cars first. A layout the game asks
+    # for jumps the queue. Each is ~0.12 s of pure Python; the thread naps between them so the
+    # game loop isn't starved of the GIL.
+    ENGINE_JOBS = ("i4", "v8", "i6", "i4t", "v6", "vtec", "rotary", "diesel", "electric", "bike_i4", "single",
+                   "turbo", "sc", "air")
 
-    # ------------------------------------------------------------------ engines (v0.8)
     def _render_engines(self):
-        """Background thread: every engine voice at ENGINE_BANDS rpm points, as raw
-        PCM. Turned into Sounds on the main thread (engine_note) as they're needed."""
+        """Background thread: engine layouts (each ENGINE_BANDS rpm points x on/off load), the turbo
+        and supercharger tone banks and the airflow loop, as raw PCM. Turned into Sounds on the main
+        thread (_bank) as they're needed."""
+        import time
         try:
-            out = {}
-            keys = [(v, False) for v in ES.VOICES] + [(PT.V_ELECTRIC, False), (PT.V_V8, True), (PT.V_I4, True)]
-            for voice, sc in keys:
-                red = max((sp[2] for sp in PT.ENGINE_SPECS.values() if sp[0] == voice), default=7000)
-                rpms, bands = [], []
-                for r in DT.band_rpms(voice):
-                    x, actual = ES.render_engine(voice, r, self.rate, supercharged=sc, redline=red,
-                                                 vtec_rpm=red * C.VTEC_AT, seed=voice)
-                    rpms.append(actual)
-                    bands.append(self._pcm(x, 0.55))
-                out[(voice, sc)] = (rpms, bands)
-            self._engine_bytes = out
+            done = set()
+            while True:
+                want = [w for w in reversed(list(self._eng_want)) if w not in done]
+                name = want[0] if want else next((j for j in self.ENGINE_JOBS if j not in done), None)
+                if name is None:
+                    break
+                asked = bool(want)
+                self._render_job(name)
+                done.add(name)
+                if not asked:
+                    time.sleep(0.004)
         except Exception:
-            self._engine_bytes = None     # the old buzz it is, then
+            self._eng_failed = True       # the old buzz it is, then
+
+    def _render_job(self, name):
+        rate = self.rate
+        if name == "air":
+            self._air_bytes = self._pcm(ES.render_air(rate), 0.5)
+        elif name in ("turbo", "sc"):
+            if name == "turbo":
+                freqs, parts, vol = ES.tone_bank(C.TURBO_HZ_FLOOR, C.TURBO_HZ_TOP * 1.03, C.TONE_RATIO), ES.TURBO_PARTIALS, 0.32
+            else:
+                freqs, parts, vol = ES.tone_bank(C.SC_WHINE_HZ[0], C.SC_WHINE_HZ[1], C.TONE_RATIO), ES.SC_PARTIALS, 0.3
+            bands = []
+            for f in freqs:
+                x, _actual = ES.render_tone(f, rate, parts)
+                bands.append(self._pcm(x, vol))
+            self._tone_bytes[name] = (freqs, bands)
+        else:
+            voice, red_hint = ES.LAYOUT_VOICE[name]
+            _idle, red = DT.layout_span(voice, red_hint)
+            rpms, bands = [], []
+            for r in DT.band_rpms(voice, red_hint):
+                pair = []
+                for load in (1.0, 0.0):
+                    x, actual = ES.render_engine(name, r, rate, redline=red, vtec_rpm=red * C.VTEC_AT,
+                                                 seed=voice, load=load)
+                    pair.append(self._pcm(x, 0.55))
+                rpms.append(actual)
+                bands.append(tuple(pair))
+            self._engine_bytes[name] = (rpms, bands)
 
     def _pcm(self, samples, vol):
         a = array("h", (_clip(v * vol * MASTER * 32767) for v in samples))
@@ -368,27 +249,55 @@ class Audio:
             a = wide
         return a.tobytes()
 
-    def _bank(self, key):
-        if self._engine_bytes is not None and not self.engine_banks:
-            try:
-                for k, (rpms, bands) in self._engine_bytes.items():
-                    self.engine_banks[k] = (rpms, [pygame.mixer.Sound(buffer=b) for b in bands])
-            except Exception:
-                self.engine_banks = {}
-            self._engine_bytes = None
-        return self.engine_banks.get(key) or self.engine_banks.get((key[0], False))
+    def _want(self, name):
+        if name not in self._eng_want:
+            self._eng_want.append(name)
 
-    def engine_note(self, slot, voice, sc, rpm, vol):
+    def _bank(self, name):
+        """The engine bank for a layout, or None while it's still rendering (asks for it)."""
+        got = self.engine_banks.get(name)
+        if got is None:
+            pending = self._engine_bytes.pop(name, None)
+            if pending is not None:
+                try:
+                    rpms, bands = pending
+                    got = self.engine_banks[name] = (rpms, [tuple(pygame.mixer.Sound(buffer=b) for b in pr)
+                                                            for pr in bands])
+                except Exception:
+                    got = None
+            else:
+                self._want(name)
+        return got
+
+    def _tone_bank(self, name):
+        got = self.tone_banks.get(name)
+        if got is None:
+            pending = self._tone_bytes.pop(name, None)
+            if pending is not None:
+                try:
+                    freqs, bands = pending
+                    got = self.tone_banks[name] = (freqs, [pygame.mixer.Sound(buffer=b) for b in bands])
+                except Exception:
+                    got = None
+            else:
+                self._want(name)
+        return got
+
+    def engine_note(self, slot, voice, sc, rpm, vol, load=1.0, redline=0):
         """Keep engine slot 0 (your car) or 1 (the loudest car near you) singing at rpm.
-        Two channels per slot: even bands on one, odd on the other, so the band
-        that's being swapped out is always the silent one."""
+        Four channels per slot: the two rpm bands either side of rpm (even bands on one pair,
+        odd on the other, so the band being swapped out is always the silent one), each as an
+        on-load and an off-load loop crossfaded by `load` (the two are rendered with the same
+        firing times, so they blend rather than beat). `sc` is unused now: superchargers are
+        their own layer (induction). `redline` tells the two bikes from the hatchbacks."""
         if not self.ok:
             return
         chans, state = self.eng_ch[slot], self.eng_state[slot]
         vol *= self.gain("engine")
-        bank = self._bank((voice, sc)) if vol > 0.02 else None
+        name = ES.layout_name(voice, redline)
+        bank = self._bank(name) if vol > 0.02 else None
         if bank is None:
-            for k in (0, 1):
+            for k in range(4):
                 if state[k] is not None:
                     chans[k].stop()
                     state[k] = None
@@ -400,36 +309,62 @@ class Audio:
             self.set_loop("engine", 0, bus="engine")
         rpms, sounds = bank
         i, wi, j, wj = DT.band_weights(rpms, rpm)
+        load = max(0.0, min(1.0, load))
         for band, w in ((i, wi), (j, wj)):
-            k = band % 2
-            ch = chans[k]
-            tag = (voice, sc, band)
-            if state[k] != tag or not ch.get_busy():
-                ch.play(sounds[band], loops=-1)
-                state[k] = tag
-            ch.set_volume(min(1.0, vol * (w ** 0.7)))
+            for L, lw in ((0, load), (1, 1.0 - load)):
+                k = (band % 2) * 2 + L
+                ch = chans[k]
+                tag = (name, band, L)
+                if state[k] != tag or not ch.get_busy():
+                    ch.play(sounds[band][L], loops=-1)
+                    state[k] = tag
+                ch.set_volume(min(1.0, vol * (w ** 0.7) * lw))
 
-    def turbo_whistle(self, boost, vol):
-        if not self.ok or not self.whistle:
+    def induction(self, info, vol):
+        """The turbo's whistle or the supercharger's whine, from drivetrain.Tacho.induction():
+        (kind, Hz, level, air) or None. Pitch picks the two nearest tones in a finely spaced bank
+        (~1.2 semitones apart) and crossfades them; level and airflow set their volumes."""
+        if not self.ok:
             return
-        vol *= self.gain("engine")
         state = self.whistle_state
-        if vol * boost <= 0.02:
-            for k in (0, 1):
+        vol *= self.gain("engine")
+        bank = None
+        if info is not None and vol > 0.02:
+            bank = self._tone_bank(info[0])
+            if self.air is None and self._air_bytes is not None:
+                try:
+                    self.air = pygame.mixer.Sound(buffer=self._air_bytes)
+                except Exception:
+                    self._air_bytes = None
+            elif self.air is None:
+                self._want("air")
+        if bank is None or info is None or (info[2] * vol <= 0.004 and info[3] * vol <= 0.004):
+            for k in (0, 1, 2):
                 if state[k] is not None:
                     self.wh_ch[k].stop()
                     state[k] = None
             return
-        pos = boost * (len(self.whistle) - 1)
-        i = min(len(self.whistle) - 2, int(pos))
-        w = pos - i
-        for band, bw in ((i, 1 - w), (i + 1, w)):
+        kind, hz, level, air = info
+        freqs, sounds = bank
+        if kind == "turbo" and hz < C.TURBO_HZ_FLOOR:
+            level *= (hz / C.TURBO_HZ_FLOOR) ** 2          # too slow to whistle: fade out, don't just stop
+        f = max(freqs[0], min(freqs[-1], hz))
+        pos = math.log(f / freqs[0]) / math.log(C.TONE_RATIO)
+        i = max(0, min(len(freqs) - 2, int(pos)))
+        w = max(0.0, min(1.0, pos - i))
+        for band, bw in ((i, 1.0 - w), (i + 1, w)):
             k = band % 2
             ch = self.wh_ch[k]
-            if state[k] != band or not ch.get_busy():
-                ch.play(self.whistle[band], loops=-1)
-                state[k] = band
-            ch.set_volume(min(1.0, vol * boost * bw))
+            if state[k] != (kind, band) or not ch.get_busy():
+                ch.play(sounds[band], loops=-1)
+                state[k] = (kind, band)
+            ch.set_volume(min(1.0, vol * level * bw))
+        if self.air is not None:
+            ch = self.wh_ch[2]
+            if state[2] is None or not ch.get_busy():
+                ch.play(self.air, loops=-1)
+                state[2] = "air"
+            ch.set_volume(min(1.0, vol * air))
 
     def oneshot(self, name, vol=1.0, pick=0):
         """Engine-derived one-shots (pops, shifts, flutter, bov) ride the engine bus."""
@@ -511,21 +446,135 @@ class Audio:
         return self.music_on
 
     # ------------------------------------------------------------------ playback
-    def play(self, sid, dist=0.0):
+    def play(self, sid, dist=0.0, src=None):
+        """One sound event. `src` = (x, y) of where it happened: with it the sound is panned by the
+        listener's yaw, and silenced (or thumped, for the big bangs) when it's on the other side of
+        the shop's shut doors. Without it, it's just `dist` metres away, dead ahead."""
         if not self.ok:
             return
         snd = self.sounds.get(sid)
         if snd is None:
             return
-        vol = max(0.0, 1.0 - dist / 90.0) * self.gain("sfx")
-        if vol <= 0.02:
+        rng = C.SFX_RANGE_LOUD if sid in LOUD_SFX else C.SFX_RANGE
+        vol = max(0.0, 1.0 - dist / rng) ** C.SFX_FALLOFF_EXP * self.gain("sfx")
+        vol *= 1.0 + self._jit.uniform(-C.SFX_VOL_JITTER, C.SFX_VOL_JITTER)
+        left = right = vol
+        if src is not None:
+            f = self.occ.factor(src[0], src[1])
+            if sid in DOOR_SFX:
+                f = max(f, C.DEADZONE_DOOR_SOUND)          # the roller's noise is on the wall itself
+            if f < 0.5 and sid in self.muffled:
+                snd = self.muffled[sid]
+                f = max(f, C.DEADZONE_THUD)                # a big bang still thumps through the bricks
+            elif isinstance(snd, list):
+                snd = self._jit.choice(snd)
+            vol *= f
+            lx, ly, yaw = self.listener
+            left, right = SC.lr(vol, SC.pan(lx, ly, yaw, src[0], src[1]))
+        if isinstance(snd, list):
+            snd = self._jit.choice(snd)
+        if max(left, right) <= 0.02:
             return
         ch = pygame.mixer.find_channel()
         if ch:
-            ch.set_volume(vol)
+            ch.set_volume(min(1.0, left), min(1.0, right))
             ch.play(snd)
 
-    def set_loop(self, name, vol, variant=0, bus="sfx", pregained=False):
+    # ------------------------------------------------------------------ the soundscape (v0.18)
+    def listen(self, cmap, x, y, yaw, traps):
+        """Call once a frame, before the sound events: where the ears are and which way they face.
+        Feeds the pan and the shop's dead zone (the door traps in the snapshot say what's open)."""
+        import time
+        now = time.perf_counter()
+        dt = 0.0 if self._listen_t is None else min(0.25, now - self._listen_t)
+        self._listen_t = now
+        self.listener = (x, y, yaw)
+        self.occ.update(cmap, x, y, traps, dt)
+
+    def occlusion(self, x, y):
+        """0..1: how much of a sound at (x, y) reaches the listener (0 = behind the shut shop doors)."""
+        return self.occ.factor(x, y)
+
+    def engine_reach(self, dist, x, y, is_mine):
+        """0..1 loudness weight of a car's engine, blow-offs, backfires and tyre squeal for the listener:
+        your own car is always 1; anyone else's fades with distance and is muffled by the shop's walls
+        exactly like every other sound (occlusion: 0 across the shut doors, easing in as they open)."""
+        if is_mine:
+            return 1.0
+        return max(0.0, 1.0 - dist / C.ENGINE_HEAR_DIST) * self.occlusion(x, y)
+
+    def honk_blast(self, pitch, kind, gain, src=None):
+        """One traffic beep (soundscape.HornBudget picked it). Silent until the beeps have rendered."""
+        if not self.ok or not self.blasts:
+            return
+        snd = self.blasts.get((pitch, kind))
+        if snd is None:
+            return
+        vol = gain * self.gain("sfx")
+        left = right = vol
+        if src is not None:
+            vol *= self.occ.factor(src[0], src[1])
+            lx, ly, yaw = self.listener
+            left, right = SC.lr(vol, SC.pan(lx, ly, yaw, src[0], src[1]))
+        if max(left, right) <= 0.01:
+            return
+        ch = pygame.mixer.find_channel()
+        if ch:
+            ch.set_volume(min(1.0, left), min(1.0, right))
+            ch.play(snd)
+
+    def _render_scape(self):
+        """Background thread: the traffic beeps, the day and night ambience beds and the chopper, as
+        raw PCM. Sounds are made from them on the main thread (_scape_ready)."""
+        try:
+            from . import sfxsynth as SY
+            rate = self.rate
+            out = {"blasts": {k: self._pack(v, 0.9, None, True) for k, v in SY.horn_blasts(rate).items()}}
+            out["beds"] = [self._pack(SY.ambience_bed(rate, night), 0.9) for night in (False, True)]
+            out["heli"] = self._pack(SY.heli_loop(rate), 0.8)
+            out["variants"] = [(sid, [self._pack(fn(m), vol, soft, True) for m in mults])
+                               for sid, fn, vol, soft, mults in getattr(self, "pending_variants", ())]
+            self._scape_bytes = out
+        except Exception:
+            self._scape_bytes = None      # no ambience is better than no game
+
+    def _scape_ready(self):
+        if self.scape_snd is None and self._scape_bytes is not None:
+            try:
+                b = self._scape_bytes
+                self.blasts = {k: pygame.mixer.Sound(buffer=v) for k, v in b["blasts"].items()}
+                self.scape_snd = [pygame.mixer.Sound(buffer=x) for x in b["beds"]] + [pygame.mixer.Sound(buffer=b["heli"])]
+                for sid, datas in b["variants"]:                 # the extra pitches of the repeated one-shots
+                    self.sounds[sid].extend(pygame.mixer.Sound(buffer=d) for d in datas)
+            except Exception:
+                self.scape_snd = []
+            self._scape_bytes = None
+        return bool(self.scape_snd)
+
+    def update_scape(self, night, in_car, heli):
+        """Every frame: the city bed (day/night crossfade, killed by the shop's dead zone, softer inside
+        a car) and the chopper's thump while heat has one up (also dead-zoned)."""
+        if not self.ok or not self._scape_ready():
+            return
+        g = self.gain("sfx")
+        amb = C.AMBIENCE_VOLUME * g * (C.AMBIENCE_CAR_MUFFLE if in_car else 1.0)
+        out = self.occ.leak if self.occ.zone else 1.0       # in the shop the outside is whatever the doors let in
+        targets = (amb * out * (1.0 - night), amb * out * night, C.HELI_VOLUME * g * out * (1.0 if heli else 0.0))
+        for i, ch in enumerate(self.scape_ch):
+            v = self.scape_state[i]
+            v += (targets[i] - v) * 0.08                   # ~0.2 s glide at 60 fps: the day/night blend, the chopper coming and going
+            if abs(targets[i] - v) < 0.002:
+                v = targets[i]
+            self.scape_state[i] = v
+            if v <= 0.002 and targets[i] <= 0.002:
+                if ch.get_busy():
+                    ch.stop()
+                continue
+            if not ch.get_busy():
+                ch.play(self.scape_snd[i], loops=-1)
+            ch.set_volume(min(1.0, v))
+
+    def set_loop(self, name, vol, variant=0, bus="sfx", pregained=False, pan=0.0):
         """Keep a named loop running at `vol` (0 stops it). Scaled by its bus."""
         if not self.ok:
             return
@@ -543,7 +592,10 @@ class Audio:
         if state != variant or not ch.get_busy():
             ch.play(snd, loops=-1)
             self.loop_state[name] = variant
-        ch.set_volume(min(1.0, vol))
+        if pan:
+            ch.set_volume(*[min(1.0, x) for x in SC.lr(vol, pan)])       # (v0.18) left/right by where the source is
+        else:
+            ch.set_volume(min(1.0, vol))
 
     def play_horn(self, h):
         """One honk of horn type h (the mod shop's try-before-you-buy)."""
@@ -563,8 +615,8 @@ class Audio:
             for pair in list(self.eng_ch) + [self.wh_ch]:
                 for ch in pair:
                     ch.stop()
-            self.eng_state = [[None, None], [None, None]]
-            self.whistle_state = [None, None]
+            self.eng_state = [[None] * 4, [None] * 4]
+            self.whistle_state = [None, None, None]
             for i in range(15, pygame.mixer.get_num_channels()):
                 pygame.mixer.Channel(i).stop()
             for k in self.loop_state:

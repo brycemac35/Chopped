@@ -63,6 +63,8 @@ class Police:
         self.lethal_unseen_t = 0.0      # (v0.10) s since a cop last had eyes on a wanted target
         self.cops_today = 0             # (v0.10) COPS_PER_DAY: also reset at midnight, see _economy
         self.cops_exhausted_told = False
+        self.rides = {}                 # (v0.18) cop car id -> [closest to the station, anchor x, y, s stuck]
+        self.riders = {}                # (v0.18) prisoner pid -> the cop car he's in the back of (see _ride_sweep)
         self._rebuild_trap_rects()
 
     def gate(self):
@@ -89,6 +91,7 @@ class Police:
                 self.toast("THE POLICE HAVE HOLSTERED THEIR GUNS. BACK TO TASERS.", T_COP)
         self.whistle_cd -= dt
         self._deploy_officers()
+        self._ride_sweep()
         self._update_gate(dt)
         self._jail_tick(dt)
         for p in self.players.values():
@@ -147,7 +150,13 @@ class Police:
         cands = self._law_targets()
         if not cands:
             return
+        # (v0.18) OFFICERS_MAX on foot at once, K9_MAX dogs: counted fresh each tick, so it
+        # holds however they came to be out there
+        on_foot = sum(1 for n in self.npcs.values() if n.kind == OFFICER)
+        dogs = sum(1 for n in self.npcs.values() if n.kind == DOG)
         for cop in list(self.cars.values()):
+            if on_foot >= C.OFFICERS_MAX:
+                break
             if cop.kind != COP or cop.patrol or cop.prisoner is not None or cop.fire_t > 0 or cop.donut_t > 0 or cop.confused_t > 0 or \
                     cop.officer is not None or cop.speed() > C.OFFICER_DEPLOY_SPEED or self._donut_for(cop):
                 continue                        # (busy: burning, eating, spinning, or smelling donuts)
@@ -175,13 +184,15 @@ class Police:
             n.ang = math.atan2(best.y - n.y, best.x - n.x)
             self.npcs[n.id] = n
             cop.officer = n.id
+            on_foot += 1
             self.sfx(S_WHISTLE, n.x, n.y)
             if self.whistle_cd <= 0:
                 self.whistle_cd = 6.0
                 self.toast(self.rng.choice(OFFICER_LINES), T_COP)
-            if self.heat >= C.K9_HEAT and self.rng.random() < C.K9_CHANCE:
+            if dogs < C.K9_MAX and self.heat >= C.K9_HEAT and self.rng.random() < C.K9_CHANCE:
                 x, y = cop.to_world(-cop.hl - 0.8, 0.0)
                 if not self.map.solid_at(x, y):
+                    dogs += 1
                     dog = NPC(self.new_id(), DOG, x, y)
                     dog.car_id = cop.id
                     dog.wallet = 0
@@ -295,6 +306,8 @@ class Police:
             self._enter_car(q, car, PASSENGER)
             car.prisoner = q.id
             car.ride_t = 0.0
+            self.riders[q.id] = car.id          # (v0.18: if this car ever vanishes, he goes to jail)
+            self.rides.pop(car.id, None)
             car.officer = None                  # he's back behind the wheel
             car.patrol = False
             self._join_grid(car)                # (and drives the lanes, like anyone else: see _transport)
@@ -334,6 +347,8 @@ class Police:
         """A cop car with somebody in the back: to the precinct steps, then into a cell."""
         q = self.players.get(cop.prisoner)
         if q is None or q.state != PASSENGER or q.car_id != cop.id:
+            self.riders.pop(cop.prisoner, None)
+            self.rides.pop(cop.id, None)
             cop.prisoner = None                 # (thrown out in a crash, or the car got nicked)
             if q is not None:
                 self.toast("%s IS OUT OF THE COP CAR! RUN!" % q.name, T_MONEY)
@@ -343,8 +358,20 @@ class Police:
         sx, sy = ex, ey + C.ARREST_RIDE_KERB                 # pulled up in the road outside the gate
         d = math.hypot(sx - cop.x, sy - cop.y)
         spd = cop.speed()
-        if cop.ride_t > C.ARREST_RIDE_MAX or (d < C.ARREST_RIDE_ARRIVE and spd < 4.0):
+        if d < C.ARREST_RIDE_ARRIVE and spd < 4.0:
             self._drop_off_prisoner(cop, q)
+            return
+        # (v0.18) stuck? "progress" is a new closest-so-far, or real ground covered since the last
+        # progress -- a cop spinning his wheels, or shuffling back and forth in a dead end, gets neither
+        r = self.rides.get(cop.id)
+        if r is None:
+            r = self.rides[cop.id] = [d, cop.x, cop.y, 0.0]
+        if d < r[0] - C.TRANSPORT_GAIN_M or math.hypot(cop.x - r[1], cop.y - r[2]) >= C.TRANSPORT_PROGRESS_M:
+            r[:] = [min(r[0], d), cop.x, cop.y, 0.0]
+        else:
+            r[3] += dt
+        if r[3] >= C.TRANSPORT_STUCK_TIME or cop.ride_t > C.TRANSPORT_MAX_TIME:
+            self._drop_off_prisoner(cop, q, van=True)
             return
         if d > C.ARREST_RIDE_PULL_IN or not self.los(cop.x, cop.y, sx, sy):
             # most of the way: the traffic lanes, turning toward the station at every junction
@@ -359,13 +386,39 @@ class Police:
         elif spd > C.ARREST_RIDE_PULL_SPEED:
             cop.throttle = min(cop.throttle, -0.3)
 
-    def _drop_off_prisoner(self, cop, q):
+    def _drop_off_prisoner(self, cop, q, van=False):
+        """Into a cell. van=True (v0.18): the cop car never got there (stuck, or the ride took forever),
+        so the precinct sends a van for him; the car is free and goes back to normal duty."""
         self._leave_car(q, place=False)
+        self.riders.pop(q.id, None)
+        self.rides.pop(cop.id, None)
         cop.prisoner = None
         cop.ride_t = 0.0
+        cop.rev_t = cop.stuck_t = 0.0
+        if van:
+            self.toast("THE OFFICER RADIOED FOR THE VAN. %s GOES DOWNTOWN THE BORING WAY." % q.name, T_COP)
         self._jail(q)
         if cop.beat:
             self._back_on_patrol(cop)
+
+    def _ride_sweep(self):
+        """(v0.18) a prisoner's car vanished (exploded, towed, recycled, anything): straight to
+        jail, never left standing in the road in limbo. A car that merely lost its prisoner (crash,
+        carjack) already cleared car.prisoner, so those riders are just forgotten."""
+        for pid, cid in list(self.riders.items()):
+            p, car = self.players.get(pid), self.cars.get(cid)
+            if p is None:
+                del self.riders[pid]
+            elif car is None:
+                del self.riders[pid]
+                if p.state in (PASSENGER, FOOT, CUFFED) and not p.jailed:
+                    p.car_id = None
+                    self.toast("THE COP CAR IS GONE. THE PRECINCT SENDS A VAN FOR %s." % p.name, T_COP)
+                    self._jail(p)
+            elif car.prisoner != pid:
+                del self.riders[pid]
+        for cid in [c for c in self.rides if c not in self.cars]:
+            del self.rides[cid]
 
     def _cuff_wriggle(self, p):
         """Space while an officer's got hold of you: wriggle, wriggle, wriggle."""

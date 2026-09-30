@@ -10,7 +10,7 @@ import math
 
 GAME_TITLE = "Chopped"
 VERSION = 17  # bump when the wire protocol changes so old clients get a polite "no"
-RELEASE = (0, 17, 0)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
+RELEASE = (0, 18, 0)  # the number on the exe's Properties tab and the menu. Bump per build you hand out.
 
 # --------------------------------------------------------------------------
 # Rendering scale
@@ -212,7 +212,23 @@ NOS_REFILL = 0.25                # s of boost regained per second (fills in 16 s
 
 # ---- revs and gears (v0.8): the tachometer and the engine note. Cosmetic: the tyre model
 # decides how fast you go; drivetrain.Tacho decides what the engine sounds like doing it.
-ENGINE_BANDS = 6                 # pre-rendered engine loops per voice, crossfaded by rpm
+ENGINE_BANDS = 8                 # pre-rendered engine loops per layout (x2 for on/off load), crossfaded by rpm.
+                                 # 6 was a 1.7x rpm jump between bands (two engines fading); 8 is ~1.45x
+                                 # and, with the on/off pair, still renders in about the old time
+ENGINE_RMS = 0.24                # RMS of a full-throttle redline loop, before the tanh limiter. Loops are
+                                 # set by RMS (loudness), not peak, so a lumpy V8 isn't quieter than an I4
+ENGINE_LEVEL_IDLE = 0.30         # loudness at idle as a share of redline (was ~0.55: idle droned)
+ENGINE_LEVEL_OFF = 0.55          # ...and off the throttle as a share of on it: the overrun is thin
+ENGINE_LOAD_ATTACK = 9.0         # 1/s: engine load chases the throttle this fast (intake opens quick)...
+ENGINE_LOAD_RELEASE = 6.0        # ...and lets go this fast (the manifold empties)
+SC_PULLEY = 2.4                  # supercharger rotor revs per crank rev (belt ratio)
+SC_LOBES = 3                     # lobes per rotor: the lobe-pass whine is rotor rev/s * lobes
+                                 # (a 3-lobe Roots at 7000 rpm: 117 * 2.4 * 3 = 840 Hz, harmonics to 3+ kHz)
+SC_WHINE_HZ = (100.0, 1250.0)    # lobe-pass range the tone bank covers (idle .. past the redline)
+TONE_RATIO = 1.07                # adjacent whine/whistle bank tones are this far apart (~1.2 semitones)
+TURBO_HZ_TOP = 6600.0            # compressor whistle at full turbine speed (blade-pass; proportional to N)
+TURBO_HZ_FLOOR = 1300.0          # below this the whistle is too quiet and low to bother rendering
+TURBO_COAST = 0.75               # 1/s: a lifted turbine freewheels down this slowly (spool-up is TURBO_SPOOL)
 GEAR_SPREAD = 0.8                # gear n tops out at top * (n / gears) ** this: short first, tall top
 GEAR_TOP_OVERRUN = 1.06          # top gear would reach the redline just past top speed
 SHIFT_UP_AT = 0.93               # share of the redline where the box shifts up...
@@ -222,9 +238,9 @@ LAUNCH_REVS = 0.45               # pulling away, the clutch holds the revs this 
 REV_RISE = 9.0                   # 1/s: revs chase the target this fast going up...
 REV_FALL = 5.0                   # ...and this fast falling (flywheels are heavy)
 LIMITER_PERIOD = 0.09            # s between rev-limiter cuts: brap-brap-brap
-TURBO_SPOOL = 1.6                # 1/s: turbo lag. It's a feature.
-TURBO_DUMP = 6.0                 # 1/s: boost falls off this fast when you lift
-TURBO_WHISTLE_HZ = (2200, 3300, 4700, 6400)   # turbo whistle pitch bands, crossfaded by boost
+TURBO_SPOOL = 1.6                # 1/s: turbine speed chases exhaust energy this fast: turbo lag. It's a feature.
+TURBO_DUMP = 6.0                 # 1/s: boost PRESSURE falls off this fast when you lift (the valve vents it)
+TURBO_BOOST_RISE = 8.0           # 1/s: pressure builds this fast once the turbine is already spinning
 ENGINE_HEAR_DIST = 45.0          # m: engines further off than this are just city noise
 VTEC_AT = 0.64                   # share of the redline where VTEC kicks in, yo
 
@@ -388,8 +404,15 @@ WITNESS_RATE_HELI = 2.5
 # --------------------------------------------------------------------------
 # Cops
 # --------------------------------------------------------------------------
-MAX_COPS = 5                     # dispatched units at 100% heat (v0.7, Bryce: "more plentiful"; was 2)
-COP_TIERS = ((25.0, 1), (50.0, 2), (75.0, 3), (99.9, 5))   # heat -> units on the way (a wanted level)
+# (v0.18, Bryce: "make the spawn limit of cops / cop car 2, and 1 dog") the city's police budget is
+# small again. ONE world cap on cop cars, and it counts patrols: a cruising patrol that spots you IS
+# one of the two (and at a high wanted level dispatch waves a cruising patrol in rather than
+# spawning a third car). Lockup guards, the helicopter and the impound bikes aren't part of it.
+COP_CARS_MAX = 2                 # cop cars in the world at once, patrols included (was 5 dispatched + 2 patrols)
+OFFICERS_MAX = 2                 # officers on foot at once (one per car, so this only bites when a
+                                 # carjacked officer is still wandering off to explain himself)
+K9_MAX = 1                       # police dogs alive at once (they live K9_LIFETIME, so about one per chase)
+COP_TIERS = ((25.0, 1), (60.0, 2))   # heat -> units on the way (a wanted level); tops out at the cap
 COPS_PER_DAY = 18                # (v0.10, Bryce: "limited number of cops spawn / day") dispatch stops
                                  # sending FRESH units once this many have turned out today, win or
                                  # lose; units already out keep chasing, and patrols don't count
@@ -406,7 +429,8 @@ COP_TIP_DELAY = 5.0              # (v0.12.1) ...but "gives up" used to mean "par
 COP_TIP_SCATTER = 20.0           # m: how vague that tip is ("suspect last seen near the laundromat").
                                  # Close enough to bring them round the block, vague enough that a
                                  # crook who's broken line of sight still has a chance to slip away.
-PATROL_COPS = 2                  # cruisers that are ALWAYS out there, doing laps, being witnesses
+PATROL_COPS = 1                  # cruisers that are ALWAYS out there, doing laps, being witnesses (v0.18: was 2;
+                                 # counted against COP_CARS_MAX, so a patrol that engages is one of the two)
 PATROL_SPAWN_DIST = (60.0, 130.0)   # they turn up this far from the crew, never on top of you
 PATROL_RECYCLE_DIST = 170.0
 # v0.8, Bryce: "instead of the cops shooting you lethally right away have them try to handcuff
@@ -511,8 +535,18 @@ ARREST_RIDE_PULL_IN = 30.0       # m out (in sight of it) he leaves the lanes an
 ARREST_RIDE_PULL_SPEED = 7.0     # m/s doing that (the lanes' own speed limits do the rest of the ride)
 ARREST_RIDE_KERB = 4.6           # m out from the precinct steps: in the road, just off the pavement
 ARREST_RIDE_ARRIVE = 5.0         # m from that spot that counts as "here"
-ARREST_RIDE_MAX = 120.0          # s: stuck or in a pile-up this long, he radios for the van (corner to
-                                 # corner of town down the lanes is about 90)
+# (v0.18, Bryce: "when I am in the back of a cop car, the cop sometimes gets stuck... just send the
+# player to jail after a certain time limit so they aren't stuck there forever") two clocks on the ride:
+TRANSPORT_STUCK_TIME = 12.0      # s the cop car makes no real progress toward the station (see below):
+                                 # "THE OFFICER RADIOED FOR THE VAN" and you're in a cell. Long enough to
+                                 # survive a red-faced three-point turn or a queue at a junction
+TRANSPORT_GAIN_M = 1.0           # m: a new closest-so-far to the station by this much is progress...
+TRANSPORT_PROGRESS_M = 8.0       # m: ...and so is getting this far from where the last progress was made. (Distance
+                                 # alone would jail him for driving round the block, which the lanes make him
+                                 # do; a wheel-spinning cop or a reverse-forward shuffle never gets 8 m)
+TRANSPORT_MAX_TIME = 75.0        # s: the whole ride, however busy it looks (a lane loop, a pile-up):
+                                 # corner to corner of town down the lanes is about 60-70
+ARREST_RIDE_MAX = TRANSPORT_MAX_TIME   # (the pre-v0.18 name: was 120 and only checked by the drop-off)
 
 # --------------------------------------------------------------------------
 # Traffic & NPCs
@@ -541,13 +575,45 @@ TRAFFIC_TURN_SPEED = 6.0         # slow for corners so they don't end up in a ca
 TRAFFIC_LANE_OFFSET = 1.6        # m right of the centre line. Parked cars sit at 4.2, so they fit past.
 TRAFFIC_SPAWN_MIN_DIST = 70.0    # never pop in where anyone could see it happen
 TRAFFIC_RECYCLE_DIST = 140.0     # drifted this far from every player -> respawn somewhere useful
-TRAFFIC_HONK_AFTER = 1.5         # blocked this long -> lean on the horn (doesn't confuse cops)
+TRAFFIC_HONK_AFTER = 1.5         # blocked this long by something that isn't just the car queued ahead -> a beep
+                                 # (doesn't confuse cops). (v0.18, Bryce: "the horns are insufferable when there's
+                                 # a traffic jam": it used to lean on the horn and hold it. Now: one short beep, then
+                                 # a long, random per-car cooldown, and a cap on how many can go off at once.)
+TRAFFIC_HONK_LEN = 0.35          # s a beep lasts. A "beep", not a "BEEEEEEEEP".
+TRAFFIC_HONK_COOLDOWN = (16.0, 40.0)   # s before that car may honk again; random, so a jam doesn't beep in unison
+TRAFFIC_HONK_MAX_NEAR = 2        # at most this many traffic cars honking at once within earshot of a player...
+TRAFFIC_HONK_HEARD = 70.0        # ...where "earshot" is this many metres (further off nobody's counting)
 TRAFFIC_OVERTAKE_AFTER = 2.5     # stuck behind a stopped car this long -> swing out and pass
 TRAFFIC_CROSS_COS = 0.6          # (v0.13) two traffic cars count as "crossing" below this |cos| of heading
 TRAFFIC_CROSS_LOOKAHEAD = 2.0    # s ahead a junction conflict is predicted -- enough to brake from 20 m/s
 TRAFFIC_CROSS_GAP = 4.0          # m: closer than this at closest approach and whoever's second yields
 TRAFFIC_ONCOMING_GAP = 2.4       # m: ...the same for oncoming traffic, tighter: lanes pass 3.2 m apart
-TRAFFIC_SHAKEN_TIME = 2.0        # after a bump they sit there, stunned, honking
+TRAFFIC_SHAKEN_TIME = 2.0        # after a bump they sit there, stunned (one beep, see TRAFFIC_HONK_LEN)
+# (v0.18, Bryce: "traffic jams and then the cars pile up at one intersection") Unjamming. The pile-ups
+# had two causes: queued cars swinging out to "overtake" other queued cars straight into the oncoming
+# lane (nose to nose with the other queue, in a junction, forever), and cars entering a junction they
+# couldn't leave. So: overtake only what's really stalled and only into a clear lane, never enter a box
+# with no room on the far side, and if it all goes wrong anyway, escalate: wait -> lowest id barges
+# through -> the rest back out and re-plan -> vanish out of sight.
+TRAFFIC_IDLE_RADIUS = 6.0        # m: a car that hasn't got this far from where it started waiting is "stuck"
+TRAFFIC_BOX_HOLD_DIST = 9.5      # m from a junction's centre where a car that can't clear the box stops
+TRAFFIC_BOX_LOOK = 26.0          # m out from the junction that we start checking the exit lane
+TRAFFIC_BOX_ROOM = 9.0           # m of exit lane, from the junction's far kerb, that has to be free of stopped cars
+TRAFFIC_OVERTAKE_CLEAR = 40.0    # m of oncoming lane that must be empty before anyone swings out (the pass takes ~3.5 s)
+TRAFFIC_OVERTAKE_NODE = 16.0     # m: no pulling out this close to the next junction
+TRAFFIC_OVERTAKE_IDLE = 10.0     # s a traffic car must have sat there (with nothing in front of it) before it's a "wreck"
+TRAFFIC_PRIORITY_AFTER = 3.5     # s stuck: the lowest id in the knot stops yielding (ignores cross traffic + the box rule)
+TRAFFIC_BACK_OUT_AFTER = 6.0     # s stuck: everyone else in the knot reverses a little and picks another way...
+TRAFFIC_BACK_OUT_TIME = 1.6      # ...for this long,
+TRAFFIC_BACK_OUT_AGAIN = 5.0     # ...and again every this many seconds if that wasn't enough
+TRAFFIC_KNOT_RADIUS = 26.0       # m: "the knot" = stuck traffic this close to you
+TRAFFIC_STUCK_DESPAWN = 30.0     # s with no real progress: the car is recycled (once nobody is looking)...
+TRAFFIC_STUCK_HARD = 60.0        # ...or once it's been this long, in front of everybody
+TRAFFIC_SEEN_NEAR = 40.0         # m: a player this close to a car always "sees" it go
+TRAFFIC_SEEN_FAR = 130.0         # m: ...and one this close, looking roughly at it, does too
+TRAFFIC_SEEN_CONE = 1.0          # rad each side of a player's heading that counts as "looking at it"
+WRECK_CLEAR_TIME = 45.0          # s a driverless car a traffic driver bailed out of sits in the road before it's towed
+WRECK_CLEAR_NEAR = 25.0          # m: ...unless somebody's standing this close to it (they might want it)
 TRAFFIC_RESPAWN_DELAY = 1.0      # replacements appear off-screen, so there's no need to be coy
 CLOWN_CHANCE = 0.12
 CLOWN_COUNT = 4
@@ -882,6 +948,13 @@ DOOR_ID = 65510                  # the first door's fixed entity id (walk=+0, ba
 DOOR_REMOTE_R = 30.0             # m: honk within this of a door to open/close it (the remote on your visor)
 DOOR_REACH = 2.2                 # m: how close your aim has to be to a door to press its button
 DOOR_BANG_EVERY = 4.0            # s between "POLICE! OPEN UP!" toasts (they will bang on any shut one)
+# (v0.17.1, Bryce: "add a handle to close all the doors at once") a big red knife-switch on the
+# shop's west wall, by the walking door, that shuts (or opens) every door in one pull.
+DOOR_HANDLE_INSET = 0.2          # m off the west wall's inner face: mounted flush, so nobody can walk behind it
+DOOR_HANDLE_FROM_FRONT = 3.0     # m back from the doorway line: close enough that you grab it on the way in,
+                                 # far enough that it's not in the walking door's swing (or bay 0's car)
+DOOR_HANDLE_REACH = 2.0          # m: how near you stand (a touch over AIM_REACH, so no hugging the wall)
+DOOR_HANDLE_AIM = 1.6            # m: how close your aim has to be to the lever itself
 DOOR_W = TILE_M                  # every door (walk or bay) is exactly one tile wide
 DOOR_COLS = (0, 1, 2, 5, 6)      # front tile-columns that are doors: 0 = walk, 1-4 = bays 0-3
 N_BAYS = 4                        # (v0.10) one personal car + bay per player slot (see config.MAX_PLAYERS)
@@ -908,6 +981,32 @@ VOLUME_DEFAULTS = {"master": 1.0,    # the OS volume knob is the real "quiet", s
                    "engine": 0.8}    # engines run constantly, so a touch under the one-shots
 VOLUME_CURVE = 2.0
 MUSIC_VOLUME = 0.45              # the beat sits under the engine and the sirens, not on top of them
+
+# ---- (v0.18) soundscape: horns, the shop's dead zone, ambience (soundscape.py, audio.py) ----
+# Traffic honks are short beeps under a budget; before, one continuous horn loop played at the loudest
+# honking car's volume, so a jam was a solid wall of horn. Your own horn (and a stolen cop car's) is
+# still the old continuous loop: that one is gameplay (it confuses cops, opens the shop door).
+HORN_HEAR_DIST = 45.0            # m: past this a traffic honk isn't worth a mixer channel (was 60 m of linear fade)
+HORN_FALLOFF_EXP = 2.5           # gain = (1 - d/HEAR)**this: steep, so a jam two blocks off is a murmur, not a wall
+HORN_BUDGET_MAX = 3              # at most this many audible traffic honks...
+HORN_BUDGET_WINDOW = 4.0         # ...per this many seconds, however many cars are leaning on it (nearest win)
+HORN_MIN_GAP = 0.25              # s between any two honks: beeps overlap into a chord, not a klaxon
+HORN_CAR_COOLDOWN = (1.6, 3.6)   # s a car waits before it may honk again; each car gets its own value from its id
+HORN_BLAST_VOL = 0.55            # one traffic honk at point blank, before the sfx bus; the stock loop is ~0.63
+SFX_RANGE = 90.0                 # m an ordinary one-shot carries (the old hard-coded 90)
+SFX_RANGE_LOUD = 170.0           # m for explosions, shotguns, big crashes: they carry across the city
+SFX_FALLOFF_EXP = 1.5            # gain = (1 - d/range)**this; the old straight line kept mid-range sounds too loud
+SFX_VOL_JITTER = 0.12            # +-% level wobble per play so a run of punches isn't a machine gun of clones
+PAN_STRENGTH = 0.65              # how far the far ear drops when a source is dead to one side (1 = silent)
+PEAK_CEIL = 0.92                 # every synthesised sound is scaled down if it would peak above this (no clipping)
+DEADZONE_FADE = 0.3              # s to fade the outside in/out when a shop door moves, so it never clicks
+DEADZONE_LEAK_PER_DOOR = 0.8     # outside level let in per fully open door: one door = 80%, two = everything
+DEADZONE_DOOR_SHUT = 0.04        # a door open less than this counts as shut (the roller's last inch)
+DEADZONE_THUD = 0.12             # level of the muffled thump of an explosion / big crash through shut doors
+DEADZONE_DOOR_SOUND = 0.7        # the roller door's own noise (and cops banging on it) is on the wall: both sides hear it
+AMBIENCE_VOLUME = 0.20           # the city bed: felt more than heard (sirens and the beat sit well above it)
+AMBIENCE_CAR_MUFFLE = 0.6        # inside a car the bed drops to this share: doors and glass
+HELI_VOLUME = 0.30               # the chopper's thump while heat >= HELI_HEAT: an alarm bell, not a wall
 MOUSE_PITCH_SENS = 0.0022        # look up/down: share of the view height per mouse count
 PITCH_LIMIT = 0.42               # ...up to this share of the view (y-shearing gets weird past it)
 # ---- sprite angles (v0.8, Bryce: "make the objects you interact with have more angles so they

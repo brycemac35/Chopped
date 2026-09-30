@@ -93,7 +93,8 @@ class TestEngineNotes(unittest.TestCase):
                     x, actual = ES.render_engine(voice, rpm, rate, supercharged=sc, redline=8000, vtec_rpm=5000)
                     self.assertGreater(len(x), rate * 0.1)
                     self.assertLessEqual(max(abs(v) for v in x), 1.0)
-                    self.assertGreater(max(abs(v) for v in x), 0.3, "an engine you can hear")
+                    # (v0.18: idle is quiet on purpose -- loudness follows rpm -- so the floor is lower)
+                    self.assertGreater(max(abs(v) for v in x), 0.1, "an engine you can hear")
                     # the loop's seam is no bigger a jump than the waveform makes anyway
                     jumps = sorted(abs(x[i + 1] - x[i]) for i in range(len(x) - 1))
                     seam = abs(x[0] - x[-1])

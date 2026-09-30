@@ -141,9 +141,11 @@ class TestTraffic(unittest.TestCase):
         car = lone_traffic_car(w)
         w._crash(car, C.CRASH_DENT_DV + 0.5, 0.0, 1.0)
         self.assertEqual(car.kind, S.TRAFFIC)
-        step(w, 1.0)
+        step(w, 0.1)
+        self.assertTrue(car.horn, "one beep... (v0.18: a beep, not a held horn)")
+        step(w, 0.9)
         self.assertLess(car.speed(), 1.0)
-        self.assertTrue(car.horn)
+        self.assertFalse(car.horn, "...and that's all they've got to say")
         step(w, C.TRAFFIC_SHAKEN_TIME + 2.0)
         self.assertGreater(car.speed(), 3.0, "then they drive off, muttering")
 

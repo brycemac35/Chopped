@@ -1312,6 +1312,26 @@ def desk_boxes(w, d):
             (-0.9, 0.9, -0.04, 0.04, 1.55, 1.95, {"*": (30, 60, 150), "+y": (40, 70, 170)})]
 
 
+def door_handle_boxes(down):
+    """(v0.17.1) The shop's master door handle: a big red knife switch on a wall plate, model x =
+    out from the wall (the plate's back is at x = -0.2, matching mapgen's DOOR_HANDLE_INSET).
+    Lever UP = doors up (open for business); DOWN = every door shut. Two lamps on the plate say
+    the same, in case the lever's ambiguous (it's a lever; it's not)."""
+    plate, dark, red = (150, 154, 162), (58, 60, 68), (215, 40, 36)
+    up_col, dn_col = ((70, 230, 110), (60, 90, 70)), ((90, 40, 36), (245, 70, 60))
+    lamp = dn_col if down else up_col
+    b = [(-0.2, -0.1, -0.32, 0.32, 0.7, 2.1, {"*": dark, "+x": plate}),        # the wall plate
+         (-0.1, -0.06, -0.32, 0.32, 1.95, 2.1, (230, 190, 40)),                # hazard stripe along the top
+         (-0.1, 0.02, -0.09, 0.09, 1.31, 1.49, dark),                          # the pivot block
+         (-0.1, -0.05, -0.2, -0.12, 1.75, 1.87, lamp[0]),                      # UP lamp (green when lit)
+         (-0.1, -0.05, -0.2, -0.12, 0.95, 1.07, lamp[1])]                      # DOWN lamp (red when lit)
+    z0, z1 = (0.86, 1.4) if down else (1.4, 1.94)
+    b.append((0.0, 0.1, -0.05, 0.05, z0, z1, (190, 190, 200)))                 # the arm (bare steel)
+    k0, k1 = (0.74, 0.92) if down else (1.88, 2.06)
+    b.append((-0.02, 0.2, -0.13, 0.13, k0, k1, red))                           # the big red knob
+    return b
+
+
 def banana_boxes():
     """A banana peel: four floppy yellow bits and a brown stalk. Deadly."""
     yel, dark = (255, 232, 60), (215, 180, 40)

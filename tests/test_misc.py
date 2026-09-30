@@ -62,8 +62,8 @@ class TestMisc(unittest.TestCase):
             c.livery = rng.randrange(256)
             c.vx = rng.uniform(-40, 40)
             w.cars[c.id] = c
-        # v0.7: a full wanted level plus the patrols, all in sight
-        for i in range(C.MAX_COPS + C.PATROL_COPS):
+        # a full police budget, all in sight (v0.18: patrols count against the cap; 7 keeps the old worst case)
+        for i in range(C.COP_CARS_MAX + 5):
             c = S.Car(w.new_id(), S.COP, gx + rng.uniform(0, 28), gy + rng.uniform(0, 28), rng.uniform(-3, 3),
                       S.cop_loadout(rng))
             c.vx = rng.uniform(-40, 40)

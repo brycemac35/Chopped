@@ -228,6 +228,13 @@ class Renderer:
                 low.fill(P["wood_d"], (sx - 4, sy - 4, 9, 9))
                 low.fill(P["wood"], (sx - 3, sy - 3, 7, 7))
                 low.fill(P["ink"], (sx - 3, sy, 7, 1))
+        hd = getattr(self.map, "door_handle", None)
+        if hd is not None:                                 # (v0.17.1) the master door handle: a red switch
+            sx, sy = self.to_screen(hd[0], hd[1])
+            if -10 < sx < W + 10 and -10 < sy < H + 10:
+                low.fill(P["ink"], (sx - 2, sy - 3, 5, 7))
+                low.fill((215, 40, 36), (sx - 1, sy - 2, 3, 5))
+                low.fill(P["gold"], (sx - 1, sy - 2, 3, 1))
         # (v0.14) contacts with an order in (gold) or a car coming to them (green)
         busy = {}
         for o in (getattr(snap, "orders", None) or ()):

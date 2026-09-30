@@ -2208,6 +2208,8 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         self.patrol_t -= dt
         if self.patrol_t <= 0:
             self.patrol_t = 3.0
+            if sum(1 for c in self.cars.values() if c.kind == COP) >= C.COP_CARS_MAX:
+                return                  # (v0.18) the precinct is out of cars: patrols count too
             car = self._spawn_traffic(kind=COP, dist=C.PATROL_SPAWN_DIST)
             if car is not None:
                 car.patrol = car.beat = True
@@ -2810,11 +2812,10 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
 
     # ------------------------------------------------------------------ cops lifecycle
     def _cops_lifecycle(self, dt):
-        """A wanted level, GTA-style: more heat, more units (v0.7: up to 5, plus
-        the patrols). Units keep coming until heat is 0, then go home -- or,
+        """A wanted level, GTA-style: more heat, more units (v0.18: up to COP_CARS_MAX
+        in total, patrols included). Units keep coming until heat is 0, then go home -- or,
         if they're a patrol car, back to doing laps."""
         cops = [c for c in self.cars.values() if c.kind == COP]
-        units = [c for c in cops if not c.beat]
         self.cop_spawn_t -= dt
         want = 0
         if self.heat > 0:
@@ -2830,13 +2831,23 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         # units come 2 s apart until there are enough for this heat -- unless dispatch has
         # already sent COPS_PER_DAY of them today (v0.10, Bryce: "limited number of cops
         # spawn / day"): units already out there keep chasing, there just aren't any more
-        if want and len(units) < min(want, C.MAX_COPS) and self.cop_spawn_t <= 0 and \
-                self.cops_today < C.COPS_PER_DAY:
+        # (v0.18) COP_CARS_MAX counts everything with a light bar: a patrol that's already
+        # hunting you is one of the units, and a cruising one hogging the last slot is waved in
+        # to join the chase instead of a third car spawning
+        hunters = [c for c in cops if not c.patrol]
+        short = want and len(hunters) < min(want, C.COP_CARS_MAX) and self.cop_spawn_t <= 0
+        if short and len(cops) >= C.COP_CARS_MAX:
+            cruiser = next((c for c in cops if c.patrol and c.fire_t <= 0), None)
+            if cruiser is not None:
+                cruiser.patrol = False
+                self._radio_tip(cruiser)
+                self.cop_spawn_t = C.COP_SPAWN_GAP
+                self.toast("DISPATCH: PATROL UNIT, THAT'S YOUR PERP. LIGHTS ON.", T_COP)
+        elif short and self.cops_today < C.COPS_PER_DAY:
             if self.spawn_cop():
                 self.cop_spawn_t = C.COP_SPAWN_GAP
                 self.cops_today += 1
-        elif want and len(units) < min(want, C.MAX_COPS) and self.cops_today >= C.COPS_PER_DAY and \
-                self.cop_spawn_t <= 0:
+        elif short:
             self.cop_spawn_t = C.COP_SPAWN_GAP
             if not self.cops_exhausted_told:
                 self.cops_exhausted_told = True
@@ -3080,7 +3091,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
                         #               (v0.13: ...but not through a car that's already stopped to let
                         #               you by -- it can't get out of your way, so you'd just hit it)
                     best, bf = other, f - other.hl     # their half-length (roughly: they may be turning)
-        if car.kind == TRAFFIC:
+        if car.kind == TRAFFIC and not self._has_priority(car):
             # (v0.13) crossing traffic at a junction: the lane check above only sees a car once
             # it's already in front of us, by which time two cars entering a crossroads together
             # have met in the middle. Predict the closest approach of anything crossing our path
@@ -3135,6 +3146,111 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             return None, 0.0
         return best, bf - car.hl
 
+    def _knot(self, car):
+        """(v0.18) other traffic cars that have been stuck as long as `car` has (past the priority
+        mark) and are close enough to be the same knot."""
+        r2 = C.TRAFFIC_KNOT_RADIUS ** 2
+        return [o for o in self.cars.values() if o is not car and o.kind in (TRAFFIC, COP) and
+                o.idle_t > C.TRAFFIC_PRIORITY_AFTER and (o.x - car.x) ** 2 + (o.y - car.y) ** 2 < r2]
+
+    def _has_priority(self, car):
+        """(v0.18) stuck long enough, and the lowest id in its knot: it stops yielding to cross
+        traffic and the box rule and just goes. (The rest back out; see _traffic_ai.)"""
+        if car.idle_t <= C.TRAFFIC_PRIORITY_AFTER:
+            return False
+        return all(o.id > car.id for o in self._knot(car))
+
+    def _box_ahead(self, car, fx, fy):
+        """(v0.18) the junction this car is lined up to cross, if it's within TRAFFIC_BOX_LOOK:
+        (centre x, centre y, metres to it along the heading, heading dir), else None."""
+        if abs(fx) < 0.9 and abs(fy) < 0.9:
+            return None                                   # mid-turn: already committed
+        h = (1 if fx > 0 else -1, 0) if abs(fx) > abs(fy) else (0, 1 if fy > 0 else -1)
+        i, j = self._node_near(car.x, car.y)
+        for _ in range(2):
+            if not self.map.node_ok(i, j):
+                return None
+            cx, cy = self.map.node_pos(i, j)
+            s = (cx - car.x) * h[0] + (cy - car.y) * h[1]
+            if s >= -6.0:
+                break
+            i, j = i + h[0], j + h[1]
+        else:
+            return None
+        if s > C.TRAFFIC_BOX_LOOK:
+            return None
+        return cx, cy, s, h
+
+    def _box_full(self, car, box):
+        """(v0.18) "don't block the box": is the lane this car will leave the junction by already
+        occupied by cars that aren't going anywhere? (Reads the exit waypoint off the route.)"""
+        cx, cy, s, h = box
+        for px, py in car.route[:4]:
+            rx, ry = px - cx, py - cy
+            if 6.5 < math.hypot(rx, ry) < 9.5 and rx * h[0] + ry * h[1] > -4.0:
+                break
+        else:
+            return False
+        d2 = (1 if rx > 0 else -1, 0) if abs(rx) > abs(ry) else (0, 1 if ry > 0 else -1)
+        for o in self.cars.values():
+            if o is car or o.speed() > 2.5:
+                continue
+            ox, oy = o.x - px, o.y - py
+            a = ox * d2[0] + oy * d2[1]
+            if -2.0 < a < C.TRAFFIC_BOX_ROOM and abs(-ox * d2[1] + oy * d2[0]) < 2.4:
+                return True
+        return False
+
+    def _pass_clear(self, car, blocker, fx, fy):
+        """(v0.18) may `car` swing out round `blocker`? Only round things that are properly stalled
+        (not the car queued ahead of us), well short of a junction, and only if the oncoming lane
+        is empty for as far as the pass could take us."""
+        if isinstance(blocker, Car) and blocker.kind == TRAFFIC and \
+                (blocker.idle_t < C.TRAFFIC_OVERTAKE_IDLE or blocker.blocked_t > 0.0):
+            return False                     # it's a queue, not a wreck: wait like everyone else
+        box = self._box_ahead(car, fx, fy)
+        if box is not None and box[2] < C.TRAFFIC_OVERTAKE_NODE:
+            return False
+        lx, ly = fy, -fx                     # the side we'd swing out to (same one _traffic_ai aims at)
+        for o in self.cars.values():
+            if o is car or o is blocker:
+                continue
+            rx, ry = o.x - car.x, o.y - car.y
+            f = rx * fx + ry * fy
+            lat = rx * lx + ry * ly
+            if -3.0 < f < C.TRAFFIC_OVERTAKE_CLEAR and 1.6 < lat < 5.4:
+                return False
+        return True
+
+    def _honk(self, car, dt, want):
+        """(v0.18) a brief beep, a long random rest, and never more than TRAFFIC_HONK_MAX_NEAR at
+        once where a player can hear. car.horn is re-latched every tick; honk_t is the beep."""
+        if car.honk_t > 0:
+            car.honk_t -= dt
+            car.horn = True
+            return
+        car.honk_cd -= dt
+        if not want or car.honk_cd > 0:
+            return
+        heard = self.players and min(math.hypot(p.x - car.x, p.y - car.y)
+                                     for p in self.players.values()) < C.TRAFFIC_HONK_HEARD
+        if heard and sum(1 for o in self.cars.values() if o.honk_t > 0 and o.kind in (TRAFFIC, COP) and
+                         math.hypot(o.x - car.x, o.y - car.y) < C.TRAFFIC_HONK_HEARD) >= C.TRAFFIC_HONK_MAX_NEAR:
+            return
+        car.honk_t = C.TRAFFIC_HONK_LEN
+        car.honk_cd = self.rng.uniform(*C.TRAFFIC_HONK_COOLDOWN)
+        car.horn = True
+
+    def _track_idle(self, car, dt):
+        """(v0.18) "no real progress": still within TRAFFIC_IDLE_RADIUS of where the wait began.
+        Wiggling back and forth doesn't count as going anywhere."""
+        if car.idle_pos is None or math.hypot(car.x - car.idle_pos[0], car.y - car.idle_pos[1]) > C.TRAFFIC_IDLE_RADIUS:
+            car.idle_pos = (car.x, car.y)
+            car.idle_t = 0.0
+            car.jam_n = 0
+        else:
+            car.idle_t += dt
+
     def _radio_tip(self, cop):
         """(v0.12.1) the dispatcher's best guess: roughly where the nearest wanted crook is,
         give or take COP_TIP_SCATTER. Not a wallhack -- the cop drives there and still has
@@ -3184,17 +3300,23 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             # round to the door" never worked: the car pulled away the moment you stepped aside.)
             car.throttle, car.steer = (-1.0 if vf > 0.5 else 0.0), 0.0
             car.handbrake = vf <= 0.5
+            car.idle_t = 0.0                    # (v0.18) a player at the door is not a jam, never despawn it
             return
+        self._track_idle(car, dt)
+        if car.shaken_t <= 0:
+            self._honk(car, dt, False)          # (v0.18) a beep in progress carries on
         if car.shaken_t > 0:
-            # somebody hit them. They sit there. They honk. It's what we'd all do.
+            # somebody hit them. They sit there. They beep once. It's what we'd all do.
             car.shaken_t -= dt
             car.throttle, car.steer = (-1.0 if vf > 0.5 else 0.0), 0.0
             car.handbrake = vf <= 0.5
-            car.horn = True
+            self._honk(car, dt, True)
             return
         if car.rev_t > 0:
             car.rev_t -= dt
-            car.throttle = -1.0
+            car.throttle = -0.5 if car.jam_n > 0 else -1.0      # (a back-out is a shuffle, not a getaway)
+            if car.rev_t <= 0 and car.kind == TRAFFIC and car.jam_n > 0:
+                self._join_grid(car)            # (v0.18) backed out of a knot: pick a route from here
             return
         route = car.route
         while route:
@@ -3226,21 +3348,44 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         if blocker is not None:
             # never faster than what lets us stop 2 m short of it at a comfortable 6 m/s^2
             target = min(target, math.sqrt(2.0 * 6.0 * max(0.0, gap - 2.0)))
-        if blocker is not None and target < 1.0:
+        boxed = False
+        if car.overtake_t <= 0 and not self._has_priority(car):
+            # (v0.18) don't block the box: no room on the far side of the junction, so wait at the line
+            box = self._box_ahead(car, fx, fy)
+            if box is not None and box[2] > C.TRAFFIC_BOX_HOLD_DIST - 1.0 and self._box_full(car, box):
+                boxed = True
+                target = min(target, math.sqrt(2.0 * 6.0 * max(0.0, box[2] - C.TRAFFIC_BOX_HOLD_DIST)))
+        if (blocker is not None or boxed) and target < 1.0:
             car.blocked_t += dt
             throttle = -1.0 if vf > 0.5 else 0.0
             car.handbrake = vf <= 0.5
-            if car.blocked_t > C.TRAFFIC_HONK_AFTER:
-                car.horn = True
-            if isinstance(blocker, Trap):
-                pass                    # a roadblock across the whole road: sit there and honk
-            elif math.hypot(blocker.vx, blocker.vy) < 1.0 and car.blocked_t > C.TRAFFIC_OVERTAKE_AFTER:
+            # (v0.18) only a real obstacle earns a beep -- not the car queued ahead, who's stuck too
+            queued = boxed and blocker is None or (isinstance(blocker, Car) and blocker.kind in (TRAFFIC, COP) and
+                                                   blocker.blocked_t > 0.0)
+            if car.blocked_t > C.TRAFFIC_HONK_AFTER and not queued:
+                self._honk(car, dt, True)
+            if blocker is None or isinstance(blocker, Trap):
+                pass                    # a roadblock across the whole road (or a full junction): wait
+            elif math.hypot(blocker.vx, blocker.vy) < 1.0 and car.blocked_t > C.TRAFFIC_OVERTAKE_AFTER and \
+                    self._pass_clear(car, blocker, fx, fy):
                 # a stalled car or someone loitering in the road: swing out and go round
                 car.overtake_t = 3.5
                 car.blocked_t = 0.0
         else:
             car.blocked_t = 0.0
             throttle = clamp((target - vf) * 0.6, -1.0, 1.0)
+        if car.kind == TRAFFIC and car.idle_t > C.TRAFFIC_BACK_OUT_AFTER + car.jam_n * C.TRAFFIC_BACK_OUT_AGAIN and \
+                not self._has_priority(car) and vf > -0.5:
+            # (v0.18) stuck in a knot and not the lowest id in it: back out a little and re-plan,
+            # which leaves the one who's got priority a clear road. (Nothing right behind us, please.)
+            bx_, by_ = -fx, -fy
+            if self.map.ray_clear(car.x, car.y, car.ang + math.pi, 9.0) >= 8.9 and \
+                    not any(o is not car and 0.0 < (o.x - car.x) * bx_ + (o.y - car.y) * by_ < car.hl + o.hl + 6.0 and
+                            abs(-(o.x - car.x) * by_ + (o.y - car.y) * bx_) < car.hw + o.hw + 0.8
+                            for o in self.cars.values()):
+                car.jam_n += 1
+                car.rev_t = C.TRAFFIC_BACK_OUT_TIME
+                car.overtake_t = 0.0
         car.steer = steer
         car.throttle = throttle
         # wedged against something (spun into a wall): reverse out with opposite lock
@@ -3260,6 +3405,8 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         car.kind = CIV
         car.state = RUNNING
         car.stolen = False
+        car.bailed = True                       # (v0.18) if nobody wants it, it gets towed: see _clear_lanes
+        car.idle_t, car.idle_pos = 0.0, None
         car.route = []
         car.throttle = car.steer = 0.0
         car.handbrake = car.horn = False
@@ -3274,6 +3421,44 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         n.flee_t = C.PED_FLEE_TIME * 2
         self.toast(self.rng.choice(BAIL_LINES), T_WHITE)
 
+    def _watched(self, car):
+        """(v0.18) would a player see this car vanish? Close enough always does; further off it takes
+        looking roughly its way. (No line-of-sight test: a cheap "probably", erring towards waiting.)"""
+        for p in self.players.values():
+            d = math.hypot(p.x - car.x, p.y - car.y)
+            if d < C.TRAFFIC_SEEN_NEAR:
+                return True
+            if d < C.TRAFFIC_SEEN_FAR and \
+                    abs(wrap_angle(math.atan2(car.y - p.y, car.x - p.x) - p.ang)) < C.TRAFFIC_SEEN_CONE:
+                return True
+        return False
+
+    def _clear_lanes(self, dt):
+        """(v0.18, Bryce: "make stuck cars despawn over time") a traffic car with no real progress for
+        TRAFFIC_STUCK_DESPAWN is recycled once nobody's looking (or TRAFFIC_STUCK_HARD regardless);
+        a car a traffic driver bailed out of gets towed after WRECK_CLEAR_TIME the same way. Silent:
+        the fleet tops itself up off-screen. Never: anything with somebody in it or at its door, a
+        stolen car, or a money truck mid-robbery."""
+        for car in list(self.cars.values()):
+            if car.kind == TRAFFIC:
+                limit = C.TRAFFIC_STUCK_DESPAWN
+            elif car.kind == CIV and car.bailed and not car.stolen:
+                self._track_idle(car, dt)
+                limit = C.WRECK_CLEAR_TIME
+            else:
+                continue
+            if car.idle_t < limit or car.occupants() or car.cash_hits > 0 or car.burst or car.prisoner is not None:
+                continue
+            if self._held_up(car):
+                car.idle_t = 0.0
+                continue
+            if car.kind == CIV and any(math.hypot(p.x - car.x, p.y - car.y) < C.WRECK_CLEAR_NEAR
+                                       for p in self.players.values()):
+                continue
+            if self._watched(car) and car.idle_t < C.TRAFFIC_STUCK_HARD:
+                continue
+            del self.cars[car.id]
+
     def _traffic_fleet(self, dt):
         """Keep TRAFFIC_COUNT cars on the road near the players: cars that
         drift far from everyone (or get hopelessly wedged out of sight) are
@@ -3284,6 +3469,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
                 near = min(math.hypot(p.x - car.x, p.y - car.y) for p in self.players.values())
                 if near > C.TRAFFIC_RECYCLE_DIST or (near > 60.0 and car.blocked_t > 10.0):
                     del self.cars[car.id]
+        self._clear_lanes(dt)
         count = sum(1 for c in self.cars.values() if c.kind == TRAFFIC)
         if count >= self.traffic_target:
             self.traffic_t = C.TRAFFIC_RESPAWN_DELAY

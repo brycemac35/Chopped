@@ -1272,6 +1272,14 @@ class FPRenderer:
             az = math.atan2(y - cy, x - cx) - math.pi       # the crates face into the shop
             add(x, y, lambda a=az, it=item: self._model_sprite(("crate", it), lambda: FA.crate_boxes(it), a, None, 16),
                 tag=("crate", item))
+        hd = getattr(self.map, "door_handle", None)
+        if hd is not None and abs(hd[0] - cx) < maxd and abs(hd[1] - cy) < maxd:
+            # (v0.17.1) the master door handle: lever down when every door in the snapshot is shut
+            rows = [t[5] for t in getattr(view, "traps", {}).values() if t[1] == S.TRAP_DOOR]
+            down = bool(rows) and all(life < C.DOOR_PASSABLE for life in rows)
+            az = math.atan2(hd[1] - cy, hd[0] - cx) - hd[2]
+            add(hd[0], hd[1], lambda a=az, dn=down: self._model_sprite(
+                ("handle", dn), lambda: FA.door_handle_boxes(dn), a, None, 24), tag=("label", "ALL DOORS", True))
         for t in getattr(view, "traps", {}).values():
             if t[1] in (S.TRAP_SMOKE, S.TRAP_DOOR):
                 # (smoke is particles: see smoke_clouds. The shop's doors are drawn by the

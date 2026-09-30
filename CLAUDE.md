@@ -88,6 +88,57 @@ feature is already touching it.
 
 ## 1. Status and your tasks, in order
 
+### Where things stand (Sept 30, 2026, RELEASE 0.18.0: the sound rework, the door lever, traffic that unjams)
+- **v0.18** (Bryce: "rework the audio sounds and soundscape. the horns are insufferable when there's a
+  traffic jam. make the shop with doors closed a dead zone from outside noise. add a handle to close
+  all the doors at once... a better algorithm for the car engine, turbo and supercharger noises, with
+  realism in mind... make stuck cars despawn over time, rework the AI to get out of traffic jams...
+  if the cop car gets stuck, send the player to jail after a time limit... spawn limit of cops / cop
+  car 2, and 1 dog"):
+  - **Engines** (`enginesynth.py` rewritten, stdlib only): exhaust pulses stamped at real firing
+    angles per `LAYOUTS` entry (i4, i4t, i6, cross-plane v8, odd-fire v6, rotary, diesel, vtec, bike
+    i4, single, electric; boxer defined but unused), through fixed quarter-wave pipe modes + muffler
+    low-pass, intake/valvetrain noise, seeded jitter. `ENGINE_BANDS` 8 rpm bands x on/off-load loops,
+    crossfaded by `Tacho.load`. **Turbo:** `Tacho.turbo_n` turbine speed with spool/coast lag, boost
+    follows it, whistle + airflow tone banks (`TONE_RATIO`), BOV sized by `bov_level`, flutter.
+    **Supercharger:** no lag, whine = rps x `SC_PULLEY` x `SC_LOBES`. `audio.induction()` replaced
+    `turbo_whistle`; layouts render lazily (the one asked for first). 40 mixer channels, 20 reserved.
+  - **Soundscape** (`soundscape.py` pure: horn budget, `Occluder`; `sfxsynth.py`: the sound bank):
+    traffic honks are short varied beeps under `HORN_BUDGET_*`; the player's horn is unchanged. The
+    **home shop with every door shut is a dead zone** both ways (0.3 s fade, leak per open door;
+    booms come through as a thump); `Audio.engine_reach` applies it to other cars' engines. Softer
+    two-tone stock horn, low-passed squares/saws, 3 pitch variants + level jitter per one-shot,
+    seamless loops, panning, day/night ambience beds, a chopper loop on `AL_HELI`.
+  - **Door lever** (`garage.pull_handle`/`_handle_interaction`, `map.door_handle`,
+    `fpart.door_handle_boxes`): E on the red lever by the walking door shuts (or opens) all five
+    doors; a blocked door stays up with a toast. Lever state is derived client-side from the door
+    traps. Home shop only.
+  - **Traffic** (`sim.py`): jammed cars back out and re-path (`jam_n`, `TRAFFIC_BACK_OUT_*`), a
+    player at the door is never a jam, `_clear_lanes` recycles a car stuck `TRAFFIC_STUCK_DESPAWN`
+    (30 s) once nobody's watching, or at `TRAFFIC_STUCK_HARD` (60 s) regardless. Honks: one short
+    beep (`TRAFFIC_HONK_LEN`), a long random cooldown, `TRAFFIC_HONK_MAX_NEAR`. Soak (4 seeds, rush
+    hour): time in long jams ~60% -> under 1%; worst junction pile-up ~170 s -> 3-17 s.
+  - **Police** (`police.py`): `_transport` tracks progress toward the precinct; `TRANSPORT_STUCK_TIME`
+    (12 s) without it, or `TRANSPORT_MAX_TIME` (75 s) in total, and the prisoner is jailed ("THE
+    OFFICER RADIOED FOR THE VAN"); `_ride_sweep` jails a prisoner whose car vanished. **Caps:**
+    `COP_CARS_MAX` 2 including the one patrol (`PATROL_COPS` 1, waved into the chase rather than
+    spawning a third), `COP_TIERS` ((25,1),(60,2)), `OFFICERS_MAX` 2, `K9_MAX` 1. `MAX_COPS` is gone.
+  - No wire change: **VERSION stays 17, RELEASE 0.18.0.** Tests: `test_enginesynth.py`,
+    `test_soundscape.py`, `test_door_handle.py`, `test_v018_police.py`. **447 total, all OK.**
+- **Open at this commit:** (1) **fps with audio on dropped** (solo selftest ~33 -> ~24, host ~48 ->
+  ~38; `--mute` runs 53), so the new audio path needs a performance pass; (2) the traffic work has
+  no test file of its own yet (`tests/test_v018_traffic.py`) and the soak showed a few more traffic
+  bumps than baseline (0-4 per 5 min per seed); (3) nobody has LISTENED to any of it: sweep WAVs are
+  written to Temp as `chopped_audio_engine_*.wav` / `chopped_audio_scape_*.wav`; (4) the
+  INSTRUCTIONS window gained a line in THE SHOP, layout unchecked.
+- **Gameplay QA's 10 suggested edits** (not built; Bryce to pick): bigger auction book (8 -> 16
+  lots); fix the ask ladder (QUICK currently wins); slow impound bike restock (20 -> 75 s, worn);
+  raise fence-shop rent (150/250/400 -> 300/600/1200) so the lose condition bites mid-game; extra
+  heat for stealing sporty cars; rebalance SLIM up / SMOOTH down; point the compass at the records
+  hatch; make Heat Run require heat; story chapters reward parts; trim drop-off order bonus. Bugs:
+  solo players get the two-player job Family Business; Engine Pull ignores `dolly_fits`; can't
+  choose which car gets papers; README still says Dave pays 70% instantly.
+
 ### Where things stand (Sept 29, 2026, RELEASE 0.17.0: hi-res objects + a settings screen)
 - **v0.17** (Bryce: "please up the resolution on all objects by 4x. keep the style, but add extra
   angled frames and up the render resolution itself. also add a FOV slider and audio settings"):
