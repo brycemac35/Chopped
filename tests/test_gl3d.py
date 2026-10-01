@@ -144,6 +144,81 @@ class TestStubWorld(unittest.TestCase):
         self.assertEqual(up, [])
 
 
+class TestWorldLook(unittest.TestCase):
+    """(v0.20, item 5) the city in the cars' style: lit by the same light, outlined at real edges."""
+
+    @staticmethod
+    def _quad(p0, p1, p2, p3, shade=1.0):
+        # world3d's winding: (v1-v0) x (v2-v0) points INTO the solid
+        return [p + (0.0, 0.0, shade) for p in (p0, p1, p2, p0, p2, p3)]
+
+    def test_coplanar_neighbours_share_no_outline(self):
+        # two 4 m wall quads side by side on y = 0; this winding makes them face +y (south)
+        a = self._quad((0, 0, 0), (4, 0, 0), (4, 0, 8), (0, 0, 8), 0.90)
+        b = self._quad((4, 0, 0), (8, 0, 0), (8, 0, 8), (4, 0, 8), 0.90)
+        v = G.world_edges(a + b)
+        self.assertEqual(v.shape, (12, G.WORLD_STRIDE))
+        n = v[0, 6:9]
+        self.assertAlmostEqual(abs(float(n[1])), 1.0)
+        ma, mb = int(v[0, 13]), int(v[6, 13])
+        # each has 3 outlined edges (bottom, top, its far side) and the shared one isn't
+        self.assertEqual(bin(ma).count("1"), 3)
+        self.assertEqual(bin(mb).count("1"), 3)
+        self.assertAlmostEqual(float(v[0, 5]), 1.0, places=5)      # world3d's +y 0.90 divided back out
+        self.assertAlmostEqual(float(v[0, 11]) * float(v[0, 12]), 32.0, places=4)    # a 4 x 8 m face
+
+    def test_real_city(self):
+        pygame.init()
+        w = G.build_world(CityMap(5))[0]
+        e = G.world_edges(w.vertices)
+        self.assertEqual(len(e), len(w.vertices))
+        quads = e[::6, 13]
+        self.assertTrue((quads > 0).any() and (quads < 15).any())  # some outlined, not every edge of every quad
+
+    def test_texel_scale_grows_the_atlas_only(self):
+        if G.W3 is None:
+            self.skipTest("no world3d")
+        pygame.init()
+        cm = CityMap(5)
+        one, two = G.W3.build_world(cm, sc=1), G.W3.build_world(cm, sc=2)
+        self.assertEqual(one.vertices.shape, two.vertices.shape)
+        self.assertGreater(two.atlas.get_width() * two.atlas.get_height(), one.atlas.get_width() * one.atlas.get_height())
+
+
+class TestWindowAndTeardown(unittest.TestCase):
+    def test_gl_fit(self):
+        """Whole-number scale from 2x up; below that a fractional fit, never a 1x postage stamp."""
+        from chopped import game as GM
+        self.assertEqual(GM.gl_fit(1280, 720), (1280, 720))
+        self.assertEqual(GM.gl_fit(1950, 1100), (1920, 1080))         # 3x, a little black round the edge
+        self.assertEqual(GM.gl_fit(1920, 1080), (1920, 1080))
+        self.assertEqual(GM.gl_fit(1500, 700), (1244, 700))           # 1.94x: fit, letterboxed
+        self.assertEqual(GM.gl_fit(1200, 1920), (1200, 675))          # a portrait monitor
+        self.assertEqual(GM.gl_fit(1920, 1080, stretch=True), (1920, 1080))
+        self.assertEqual(GM.gl_fit(2000, 1080, stretch=True), (1920, 1080))
+
+    def test_close_makes_the_old_context_inert(self):
+        """QA: CLASSIC -> 3D threw GL_INVALID_OPERATION when the old context's objects were
+        garbage-collected after the new one existed. close() must turn its gc off before letting go."""
+        order = []
+
+        class Obj:
+            def __init__(self, name):
+                self.name = name
+
+            def release(self):
+                order.append(self.name)
+
+        ctx = SimpleNamespace(gc_mode="auto")
+        ctx.release = lambda: order.append(("ctx", ctx.gc_mode))
+        d = G.Display.__new__(G.Display)
+        d.ctx, d.textures = ctx, {"low": Obj("low")}
+        d.blit_vao, d._quad, d.blit = Obj("vao"), Obj("quad"), Obj("prog")
+        d.close()
+        self.assertEqual(order, ["low", "vao", "quad", "prog", ("ctx", None)])
+        self.assertEqual(d.textures, {})
+
+
 class TestSettingAndFallback(unittest.TestCase):
     def test_renderer_setting(self):
         self.assertEqual(SET.defaults()["renderer"], "3d")

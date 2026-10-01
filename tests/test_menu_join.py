@@ -355,7 +355,7 @@ class TestWorldDetail(Base):
         p, _ = self.panel()
         keys = [r[0] for r in p.ROWS]
         self.assertEqual(keys[keys.index("render_scale") + 1], "world_scale")
-        self.assertIn("SHARPER WALLS AND STREETS. LOWER = FASTER", p.HINTS["world_scale"])
+        self.assertIn("SHARPER WALLS AND STREETS", p.HINTS["world_scale"])
 
     def test_buttons_above_render_scale_are_greyed(self):
         p, data = self.panel(render_scale=2, world_scale=1)

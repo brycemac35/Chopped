@@ -4,6 +4,7 @@ loop, and the --selftest bot that proves the thing boots without a human.
 """
 
 import copy
+import gc
 import math
 import os
 import random
@@ -1243,6 +1244,7 @@ class App:
                                   (pygame.GL_DEPTH_SIZE, 24)):
                     pygame.display.gl_set_attribute(attr, val)
                 self._drop_fp()
+                gc.collect()                            # (anything left of an old context goes first)
                 self.gl = True                          # (so _set_mode adds the OpenGL flags)
                 self.screen = self._set_mode((0, 0) if self.fullscreen else self.window_size,
                                              pygame.FULLSCREEN if self.fullscreen else 0)
@@ -1254,9 +1256,7 @@ class App:
                 self.screen = self._set_mode((0, 0) if self.fullscreen else self.window_size,
                                              pygame.FULLSCREEN if self.fullscreen else 0)
         else:
-            self._drop_fp()
-            old, self.gl = self.gl, None
-            old.release()
+            self._close_gl()
             self.screen = self._set_mode((0, 0) if self.fullscreen else self.window_size,
                                          pygame.FULLSCREEN if self.fullscreen else 0)
             print("RENDERER: CLASSIC")
@@ -1277,8 +1277,7 @@ class App:
                 traceback.print_exc()
                 print("RENDERER: the 3D view failed to start (%s), using CLASSIC" % e)
                 self.settings["renderer"] = "classic"
-                old, self.gl = self.gl, None
-                old.release()
+                self._close_gl()
                 self.screen = self._set_mode(self.window_size)
         if fp is None:
             fp = FPRenderer(cm, self.renderer.map_surf, W * k, VIEW_H * k, scale=k)
@@ -1292,20 +1291,24 @@ class App:
         if fp is not None and getattr(fp, "is_gl", False):
             fp.release()
 
+    def _close_gl(self):
+        """Tear the OpenGL side down before the window stops being an OpenGL one. (QA: CLASSIC ->
+        3D after a long drive threw GL_INVALID_OPERATION: with gc_mode "auto", moderngl objects of
+        the OLD context were garbage-collected after the NEW one existed, and their release() calls
+        deleted the new context's buffers.) So: free what we can while the old context is current,
+        tell it never to release anything again (gc_mode None), let it go, collect -- all before
+        the next set_mode."""
+        self._drop_fp()
+        old, self.gl = self.gl, None
+        if old is not None:
+            old.close()
+        gc.collect()
+
     def _present_gl(self):
         """_present for an OpenGL window: the GPU's 3D view (or the CPU frame: the mod shop's
         photo), then the overlay, then the 640x360 HUD/menu canvas, all nearest-neighbour."""
         sw, sh = pygame.display.get_window_size()
-        if self.fp_mode or self.state != "play":
-            k = min(sw // W, sh // H)
-            if k >= 1:
-                size = (W * k, H * k)
-            else:
-                s = min(sw / W, sh / H)
-                size = (max(1, int(W * s)), max(1, int(H * s)))
-        else:
-            s = min(sw / W, sh / H)                       # (the automap stretches, as in _present)
-            size = (max(1, int(W * s)), max(1, int(H * s)))
+        size = gl_fit(sw, sh, stretch=not self.fp_mode and self.state == "play")
         ox, oy = (sw - size[0]) // 2, (sh - size[1]) // 2
         self.scaled = _Sized(size)                       # (_to_canvas reads its size)
         g = self.gl
@@ -1319,6 +1322,19 @@ class App:
             g.draw(g.upload("frame", self.frame), full, flip=True)
         g.draw(g.upload("low", self.low), full, flip=True, blend=True)
         pygame.display.flip()
+
+
+def gl_fit(sw, sh, stretch=False):
+    """The picture's size in an OpenGL window: the biggest whole-number multiple of 640x360 if
+    that's 2x or more (chunky pixels, all the same size), otherwise the biggest fit at any scale,
+    letterboxed. (QA: F11 on a 1200x1920 portrait monitor or a 1500x700 window gave a 1x postage
+    stamp, because only whole numbers were allowed; on the GPU a fractional nearest-neighbour fit
+    costs nothing, and at under 2x the uneven pixels are the lesser evil.)"""
+    k = min(sw // W, sh // H)
+    if k >= 2 and not stretch:                      # (stretch: the automap always fills, as in _present)
+        return (W * k, H * k)
+    s = min(sw / W, sh / H)
+    return (max(1, int(W * s)), max(1, int(H * s)))
 
 
 class _Sized:

@@ -1127,6 +1127,8 @@ GL_GROUND_MIP_EVERY = 0.5        # s between rebuilding the street's mipmaps aft
                                  # street can be half a second behind; the near street is updated at once)
 GL_SKY_SCALE = 2                 # the sky panorama's detail (fpart.make_sky's sc), capped: 3x is 30 MB and
                                  # the clouds look the same
+GL_TEX_SCALE_MAX = 3             # the city's texel scale follows the render scale k up to this (gl3d._tex_scale):
+                                 # 3x is a 2048x2048 atlas, a 0.3 s build, and as fine as fpart's art goes
 GL_DOOR_STEPS = 32               # a rolling door's poses: one mesh per 1/32 of its travel (a 1.4 s roll at
                                  # 60 fps is 84 frames, so it still moves smoothly; it can't be 84 meshes)
 

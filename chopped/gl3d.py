@@ -122,6 +122,75 @@ def fit_boxes(boxes, ext, hl, hw):
             for b in boxes]
 
 
+# world3d's per-face shading (its FACE_SHADE): divided back out of each world face, so the city is
+# lit by the cars' light model instead (see world_edges)
+WORLD_FACE_SHADE = {"+z": 1.0, "+x": 0.94, "-x": 0.86, "+y": 0.90, "-y": 0.80, "-z": 0.68}
+WORLD_STRIDE = 14
+
+
+def world_edges(verts, face_shade=None):
+    """(v0.20, Bryce: "make the background visuals like the cars") world3d's (N, 6) triangles
+    (x y z u v shade, two triangles a quad, in its 0-1-2 0-2-3 / 0-2-1 0-3-2 order) -> (N, 14):
+    x y z u v shade, outward normal (3), edge coords on the quad in metres (2), the quad's size
+    (2), and an outline mask (1). The city then goes through the same shading as the box models:
+      - lighting: the face's shade with world3d's per-direction factor divided out, so the world
+        light (GL_LIGHT, 0.6 + 0.4 n.L) does the shading for walls exactly as for car panels;
+      - outlines: the cars outline every box face; a wall is many 4 m quads, and outlining each
+        would draw a grid on every facade, so an edge is outlined only when no other quad facing
+        the same way shares it -- building corners, roof lines, the foot of every wall, where a
+        lower block meets a taller one. Mask bits: 1 = the s axis's first edge (t = 0),
+        2 = s far side (s = size), 4 = t far side (t = size), 8 = s = 0."""
+    fs = WORLD_FACE_SHADE if face_shade is None else face_shade
+    v = np.asarray(verts, dtype=np.float32).reshape(-1, 6)
+    nq = len(v) // 6
+    out = np.zeros((nq * 6, WORLD_STRIDE), dtype=np.float32)
+    if not nq:
+        return out
+    q = v[:nq * 6].reshape(nq, 6, 6).astype(np.float64)
+    P = q[:, :, :3]
+    a_order = np.all(np.abs(P[:, 2] - P[:, 4]) < 1e-6, axis=1)[:, None]     # 0 1 2 0 2 3 (else 0 2 1 0 3 2)
+    p0 = P[:, 0]
+    p1 = np.where(a_order, P[:, 1], P[:, 2])
+    p2 = np.where(a_order, P[:, 2], P[:, 1])
+    p3 = np.where(a_order, P[:, 5], P[:, 4])
+    e1, e3 = p1 - p0, p3 - p0
+    l1 = np.maximum(np.linalg.norm(e1, axis=1), 1e-9)
+    l3 = np.maximum(np.linalg.norm(e3, axis=1), 1e-9)
+    d = P - p0[:, None, :]
+    s_ = (d * (e1 / l1[:, None])[:, None, :]).sum(axis=2)
+    t_ = (d * (e3 / l3[:, None])[:, None, :]).sum(axis=2)
+    nrm = -np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0])                     # (world3d winds them inward)
+    nrm /= np.maximum(np.linalg.norm(nrm, axis=1), 1e-12)[:, None]
+    ax = np.abs(nrm).argmax(axis=1)
+    sign = np.take_along_axis(nrm, ax[:, None], axis=1)[:, 0] > 0
+    names = np.array([["-x", "+x"], ["-y", "+y"], ["-z", "+z"]])
+    base = np.vectorize(lambda k: fs.get(k, 1.0))(names[ax, sign.astype(int)])
+    # edges: (p0 p1) (p1 p2) (p2 p3) (p3 p0). An axis-aligned segment is fixed by its endpoints'
+    # sum and absolute difference; add the normal and it's a key two coplanar neighbours share.
+    corners = (p0, p1, p2, p3)
+    ni = np.round(nrm * 100).astype(np.int64)
+    keys = []
+    for k in range(4):
+        A, B = corners[k], corners[(k + 1) % 4]
+        ka = np.round((A + B) * 100).astype(np.int64)
+        kd = np.round(np.abs(A - B) * 100).astype(np.int64)
+        keys.append(np.concatenate([ka, kd, ni], axis=1))
+    allk = np.concatenate(keys)                                          # (4 nq, 9), edge-major
+    _u, inv, cnt = np.unique(allk, axis=0, return_inverse=True, return_counts=True)
+    lone = (cnt[inv.reshape(-1)] == 1).reshape(4, nq)
+    mask = lone[0] * 1 + lone[1] * 2 + lone[2] * 4 + lone[3] * 8
+    o = out.reshape(nq, 6, WORLD_STRIDE)
+    o[:, :, 0:5] = q[:, :, 0:5]
+    o[:, :, 5] = q[:, :, 5] / base[:, None]
+    o[:, :, 6:9] = nrm[:, None, :]
+    o[:, :, 9] = s_
+    o[:, :, 10] = t_
+    o[:, :, 11] = l1[:, None]
+    o[:, :, 12] = l3[:, None]
+    o[:, :, 13] = mask[:, None]
+    return out
+
+
 def mesh_top(arr):
     """Highest z in a mesh (metres above its origin): where its label goes."""
     return float(arr[:, 2].max()) if len(arr) else 0.0
@@ -294,13 +363,13 @@ def stub_build_world(cmap, night=False):
     return StubWorld3D(np.asarray(out, dtype=np.float32), atlas, dyn)
 
 
-def build_world(cmap, night=False):
+def build_world(cmap, night=False, sc=1):
     """world3d's city (A2's: textured facades, trees, counters, crates...), or -- if it isn't
     there or it throws -- the grey stub, so a broken city build never costs you the game.
-    Returns (world, real?)."""
+    `sc` is the texel scale (see GLRenderer._tex_scale). Returns (world, real?)."""
     if W3 is not None:
         try:
-            return W3.build_world(cmap, night=night), True
+            return W3.build_world(cmap, night=night, sc=sc), True
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -358,10 +427,13 @@ void main() {
 WORLD_VS = """
 #version 330
 uniform mat4 u_vp;
-in vec3 in_pos; in vec2 in_uv; in float in_shade;
-out vec2 v_uv; out float v_shade; out float v_depth;
+uniform vec3 u_light;
+in vec3 in_pos; in vec2 in_uv; in float in_shade; in vec3 in_nrm; in vec2 in_edge; in vec2 in_size; in float in_mask;
+out vec2 v_uv; out float v_shade; out float v_depth; out vec2 v_edge; flat out vec2 v_size; flat out float v_mask;
 void main() {
-    v_uv = in_uv; v_shade = in_shade;
+    v_uv = in_uv;
+    v_shade = in_shade * (0.6 + 0.4 * max(0.0, dot(in_nrm, u_light)));   // the cars' light (BOX_VS)
+    v_edge = in_edge; v_size = in_size; v_mask = in_mask;
     gl_Position = u_vp * vec4(in_pos, 1.0);
     v_depth = gl_Position.w;
 }
@@ -369,25 +441,40 @@ void main() {
 WORLD_FS = """
 #version 330
 uniform sampler2D u_tex;
+uniform float u_outline;     // px, the same as the cars'
 """ + _LIGHT_GLSL + """
-in vec2 v_uv; in float v_shade; in float v_depth;
+in vec2 v_uv; in float v_shade; in float v_depth; in vec2 v_edge; flat in vec2 v_size; flat in float v_mask;
 out vec4 f_col;
 void main() {
     vec4 t = texture(u_tex, v_uv);
     if (t.a < 0.5) discard;
-    f_col = vec4(crunch(t.rgb * v_shade * lightf(v_depth, 0.0)), 1.0);
+    vec3 c = t.rgb * v_shade;
+    int m = int(v_mask + 0.5);
+    if (m != 0) {
+        vec2 fw = max(fwidth(v_edge), vec2(1e-5));
+        float w = min(u_outline, min(v_size.x / fw.x, v_size.y / fw.y) * 0.2);
+        float d = 1e9;
+        if ((m & 1) != 0) d = min(d, v_edge.y / fw.y);
+        if ((m & 2) != 0) d = min(d, (v_size.x - v_edge.x) / fw.x);
+        if ((m & 4) != 0) d = min(d, (v_size.y - v_edge.y) / fw.y);
+        if ((m & 8) != 0) d = min(d, v_edge.x / fw.x);
+        if (d < w) c *= 0.6;                                 // render_boxes' outline shade
+    }
+    f_col = vec4(crunch(c * lightf(v_depth, 0.0)), 1.0);
 }
 """
 
 GROUND_VS = """
 #version 330
 uniform mat4 u_vp;
-uniform vec2 u_size;         // the map texture's size in metres
+uniform vec4 u_place;        // in_pos -> metres: origin xy, scale xy (the whole street: 0 0 1 1)
+uniform vec4 u_texmap;       // where the texture lies, metres: origin xy, size xy
 in vec2 in_pos;
 out vec2 v_uv; out float v_depth;
 void main() {
-    v_uv = in_pos / u_size;
-    gl_Position = u_vp * vec4(in_pos, 0.0, 1.0);
+    vec2 p = u_place.xy + in_pos * u_place.zw;
+    v_uv = (p - u_texmap.xy) / u_texmap.zw;
+    gl_Position = u_vp * vec4(p, 0.0, 1.0);
     v_depth = gl_Position.w;
 }
 """
@@ -435,15 +522,22 @@ void main() {
 PART_VS = """
 #version 330
 uniform mat4 u_vp;
-in vec3 in_pos; in vec3 in_col;
-out vec3 v_col;
-void main() { v_col = in_col; gl_Position = u_vp * vec4(in_pos, 1.0); }
+in vec3 in_pos; in vec4 in_col;              // rgb + 1 if it glows (fire, sparks)
+out vec4 v_col; out float v_depth;
+void main() { v_col = in_col; gl_Position = u_vp * vec4(in_pos, 1.0); v_depth = gl_Position.w; }
 """
 PART_FS = """
 #version 330
-in vec3 v_col;
+""" + _LIGHT_GLSL + """
+in vec4 v_col; in float v_depth;
 out vec4 f_col;
-void main() { f_col = vec4(v_col, 1.0); }
+void main() {
+    // (QA: night smoke round a burning car was a pale grey wall: it was drawn unlit.) Smoke, dust,
+    // debris and confetti take the night and the distance like everything else; fire and sparks
+    // make their own light, so they stay at full brightness -- that's what makes them pop at night
+    vec3 c = v_col.a > 0.5 ? v_col.rgb : v_col.rgb * lightf(v_depth, 0.0);
+    f_col = vec4(crunch(c), 1.0);
+}
 """
 
 SKY_VS = """
@@ -566,11 +660,26 @@ class Display:
         if blend:
             self.ctx.disable(moderngl.BLEND)
 
-    def release(self):
+    def close(self):
+        """Free this window's GL objects, then make the context inert: gc_mode None means a
+        moderngl object of THIS context that's garbage-collected later (after a new context
+        exists) does nothing, instead of deleting whatever the new context has under its id."""
+        for tex in self.textures.values():
+            tex.release()
+        self.textures.clear()
+        for o in (self.blit_vao, self._quad, self.blit):
+            o.release()
+        self.ctx.gc_mode = None
         try:
             self.ctx.release()
         except Exception:
             pass
+
+    release = close
+
+
+WORLD_FMT = "3f 2f 1f 3f 2f 2f 1f"
+WORLD_ATTRS = ("in_pos", "in_uv", "in_shade", "in_nrm", "in_edge", "in_size", "in_mask")
 
 
 class MeshRef:
@@ -607,6 +716,7 @@ class GLRenderer(FP.FPRenderer):
         lx, ly, lz = C.GL_LIGHT
         ln = math.sqrt(lx * lx + ly * ly + lz * lz)
         self.box_prog["u_light"].value = (lx / ln, ly / ln, lz / ln)
+        self.world_prog["u_light"].value = (lx / ln, ly / ln, lz / ln)
         full = np.array([-1, -1, 3, -1, -1, 3], dtype="f4")          # one triangle covers the screen
         self._full = ctx.buffer(full.tobytes())
         self.sky_vao = ctx.vertex_array(self.sky_prog, [(self._full, "2f", "in_pos")])
@@ -633,25 +743,32 @@ class GLRenderer(FP.FPRenderer):
                       -m, -m, size[0] + m, size[1] + m, -m, size[1] + m], dtype="f4")
         self._ground_vbo = ctx.buffer(g.tobytes())
         self.ground_vao = ctx.vertex_array(self.ground_prog, [(self._ground_vbo, "2f", "in_pos")])
-        self.ground_prog["u_size"].value = size
         self.ground_prog["u_fog_dist"].value = C.FP_FLOOR_DIST
-        # the static city (world3d), day and (made the first time it's dark) night
+        # the near street at the texel scale: fp's own hi-res floor chunks (FLOOR_CHUNK_M squares at
+        # 5 x kw px/m, detail tiles, the skids replayed), uploaded as they're built
+        self._unit = ctx.buffer(np.array([0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1], dtype="f4").tobytes())
+        self.chunk_vao = ctx.vertex_array(self.ground_prog, [(self._unit, "2f", "in_pos")])
+        self._chunk_tex = {}                   # (ix, iy, kw) -> Texture
+        self._chunk_dirty = set()
+        self._ground_size = size
+        FP.FPRenderer.set_world_scale(self, self._tex_scale())
+        # the static city (world3d), day and night
+        self._dyn_quads = {}
         self.worlds = {}
         self._world_mesh(False)
         self._world_mesh(True)                 # (now, not at dusk: a ~0.2 s build mid-chase is a hitch you'd feel)
         self.meshes = OrderedDict()            # look key -> _Mesh, LRU (GL_MESH_CACHE)
         self._car_fit = {}                     # model -> (stock extent, hl, hw)
         self._dyn_seen = {}                    # fixture id -> last state a trap row said
-        self._dyn_quads = {}                   # (dynamic index, state) -> atlas quads (the sale boards' faces)
         self.bill_tex = {}                     # id(surface) -> (surface, Texture)
         self.sky_tex = {}
         self._dyn_cap = 6 * 2048                  # billboard vertices (5 floats each); grows if a forest needs it
         self._dyn_buf = ctx.buffer(reserve=20 * self._dyn_cap)
         self.bill_vao = ctx.vertex_array(self.bill_prog, [(self._dyn_buf, "3f 2f", "in_pos", "in_uv")])
-        self._wx_buf = ctx.buffer(reserve=24 * 600)       # the sale boards' lettered faces, per frame
-        self._wx_vao = ctx.vertex_array(self.world_prog, [(self._wx_buf, "3f 2f 1f", "in_pos", "in_uv", "in_shade")])
-        self._part_buf = ctx.buffer(reserve=4 * 6 * 6 * 700)
-        self.part_vao = ctx.vertex_array(self.part_prog, [(self._part_buf, "3f 3f", "in_pos", "in_col")])
+        self._wx_buf = ctx.buffer(reserve=4 * WORLD_STRIDE * 600)   # the sale boards' lettered faces, per frame
+        self._wx_vao = ctx.vertex_array(self.world_prog, [(self._wx_buf, WORLD_FMT) + WORLD_ATTRS])
+        self._part_buf = ctx.buffer(reserve=4 * 7 * 6 * 700)
+        self.part_vao = ctx.vertex_array(self.part_prog, [(self._part_buf, "3f 4f", "in_pos", "in_col")])
         self._zero_inst = None
         self._make_targets()
         self.stats = {}
@@ -673,11 +790,40 @@ class GLRenderer(FP.FPRenderer):
         super().set_scale(scale)
         if self.color.size != (self.vw, self.vh):
             self._make_targets()
+        self.set_world_scale(None)
+
+    def _tex_scale(self):
+        """(v0.20, Bryce: "ensure the scaling factor applies to both types of drawn planes") the
+        city's and the near street's texel density follows the render scale k: walls, ceilings
+        and the street within FLOOR_DETAIL_DIST are painted at k x their 1x texels a metre, the
+        same factor the cars and people get from simply being drawn into a k x frame. So 2x shows
+        twice the brickwork, not the same bricks blown up. (Capped at GL_TEX_SCALE_MAX.)"""
+        return max(1, min(self.ks, C.GL_TEX_SCALE_MAX, C.WORLD_SCALE_MAX))
 
     def set_world_scale(self, w):
-        """WORLD DETAIL is a raycaster thing (the street and walls here are one resolution, the
-        view's); kept so the setting doesn't error, and so CLASSIC picks it straight back up."""
-        return super().set_world_scale(w)
+        """WORLD DETAIL is the raycaster's knob; in 3D the texel scale follows the render scale
+        instead (_tex_scale), so whatever's asked for, this is what's used. Changing it rebuilds
+        the city's atlas (~0.2 s) and drops the near-street chunks; returns the scale in use."""
+        sc = self._tex_scale()
+        if sc != self.kw:
+            FP.FPRenderer.set_world_scale(self, sc)       # (fp's floor chunks and sky caches, at sc)
+            if "worlds" in self.__dict__:
+                self._rebuild_world()
+        return self.kw
+
+    def _rebuild_world(self):
+        for wm in self.worlds.values():
+            if wm["vao"] is not None:
+                wm["vao"].release()
+            wm["tex"].release()
+        self.worlds.clear()
+        self._dyn_quads.clear()
+        for t in self._chunk_tex.values():
+            t.release()
+        self._chunk_tex.clear()
+        self._chunk_dirty.clear()
+        self._world_mesh(False)
+        self._world_mesh(True)
 
     # -- the street's skid marks --------------------------------------------------------------
     def _skid_hires(self, a, b):
@@ -686,6 +832,11 @@ class GLRenderer(FP.FPRenderer):
         pa, pb = (int(a[0] * k), int(a[1] * k)), (int(b[0] * k), int(b[1] * k))
         r = pygame.draw.line(self.ground, (38, 38, 46), pa, pb, 1)
         self._ground_dirty = r if self._ground_dirty is None else self._ground_dirty.union(r)
+        if self.kw > 1:                                # ...and into the hi-res chunks (fp logs and draws them)
+            FP.FPRenderer._skid_hires(self, a, b)
+            cm = C.FLOOR_CHUNK_M
+            for x, y in (a, b):
+                self._chunk_dirty.add((int(x // cm), int(y // cm), self.kw))
 
     def _flush_ground(self, now):
         r = self._ground_dirty
@@ -705,18 +856,18 @@ class GLRenderer(FP.FPRenderer):
         wm = self.worlds.get(night)
         if wm is None:
             t0 = time.perf_counter()
-            world, real = build_world(self.map, night=night)
+            world, real = build_world(self.map, night=night, sc=self.kw)
             ctx = self.ctx
-            verts = np.ascontiguousarray(world.vertices, dtype=np.float32)
+            raw = np.ascontiguousarray(world.vertices, dtype=np.float32)
+            verts = world_edges(raw)
             vbo = ctx.buffer(verts.tobytes()) if verts.size else None
-            vao = ctx.vertex_array(self.world_prog, [(vbo, "3f 2f 1f", "in_pos", "in_uv", "in_shade")]) \
-                if vbo is not None else None
+            vao = ctx.vertex_array(self.world_prog, [(vbo, WORLD_FMT) + WORLD_ATTRS]) if vbo is not None else None
             atlas = world.atlas
             tex = ctx.texture(atlas.get_size(), 4, _surf_bytes(atlas))
             tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
             # draw ranges: everything but the parapets as its own list, so indoors (where the
             # ceiling hides them anyway) they're skipped, as fp's cam_inside did
-            nv = verts.size // 6
+            nv = len(verts)
             groups = getattr(world, "groups", None) or {}
             par = groups.get("parapets")
             if par and par[1]:
@@ -786,7 +937,7 @@ class GLRenderer(FP.FPRenderer):
             if obj.kind == "sale_board" and hasattr(obj, "quads_for"):
                 q = self._dyn_quads.get((i, st))
                 if q is None:
-                    q = self._dyn_quads[(i, st)] = np.ascontiguousarray(obj.quads_for(st), dtype=np.float32)
+                    q = self._dyn_quads[(i, st)] = world_edges(obj.quads_for(st))
                 if len(q):
                     extra_quads.append(q)
 
@@ -890,6 +1041,7 @@ class GLRenderer(FP.FPRenderer):
             eye += self.rng.uniform(-0.02, 0.02) * self.shake
             self.shake *= math.exp(-dt * 8)
         self._phase = int(now * 6) % 2
+        self._chunk_budget = C.FLOOR_CHUNKS_PER_FRAME
         tod = FP.time_of_day(day_left)
         dark = FP.darkness(tod)
         night = dark > 0.55
@@ -968,14 +1120,19 @@ class GLRenderer(FP.FPRenderer):
         gp["u_tint"].value = self._disco_tint()
         self.ground_tex.use(0)
         gp["u_tex"].value = 0
-        ctx.polygon_offset = (1.0, 4.0)
+        gp["u_place"].value = (0.0, 0.0, 1.0, 1.0)
+        gp["u_texmap"].value = (0.0, 0.0) + tuple(self._ground_size)
+        ctx.polygon_offset = (2.0, 8.0)
         self.ground_vao.render(moderngl.TRIANGLES)
+        ctx.polygon_offset = (1.0, 4.0)                       # (the near chunks lie over it, a hair nearer)
+        self._near_ground(cx, cy)
         ctx.polygon_offset = (0.0, 0.0)
         wm = self._world_mesh(night)
         wp = self.world_prog
         wp["u_vp"].write(vp_gl)
         wp["u_dark"].value = dark
         wp["u_levels"].value = levels
+        wp["u_outline"].value = float(max(1.0, C.GL_OUTLINE_PX * self.ks))
         if wm["vao"] is not None:
             wm["tex"].use(0)
             wp["u_tex"].value = 0
@@ -1025,7 +1182,7 @@ class GLRenderer(FP.FPRenderer):
                 self.bill_vao.render(moderngl.TRIANGLES, vertices=n, first=first)
                 draws += 1
         if parts:
-            self._draw_particles(parts, vp_gl, rx, ry)
+            self._draw_particles(parts, vp_gl, rx, ry, dark, levels)
         ctx.disable(moderngl.DEPTH_TEST)
         if self.flash is not None:
             col, a = self.flash
@@ -1044,6 +1201,38 @@ class GLRenderer(FP.FPRenderer):
                       "overlay_ms": (time.perf_counter() - t2) * 1000.0, "draws": draws,
                       "items": len(items), "meshes": len(self.meshes), "parts": len(parts)}
         return ov
+
+    def _near_ground(self, cx, cy):
+        """The street within FLOOR_DETAIL_DIST at the texel scale (fp's floor chunks), over the
+        whole-map 5 px/m street. Nothing to do at 1x: the base street is already that."""
+        if self.kw <= 1:
+            return
+        cm, r = C.FLOOR_CHUNK_M, C.FLOOR_DETAIL_DIST
+        last = int(math.ceil(self.map.n * T / cm)) - 1
+        gp = self.ground_prog
+        for ix in range(max(0, int((cx - r) // cm)), min(last, int((cx + r) // cm)) + 1):
+            for iy in range(max(0, int((cy - r) // cm)), min(last, int((cy + r) // cm)) + 1):
+                key = (ix, iy, self.kw)
+                tex = self._chunk_tex.get(key)
+                if tex is None or key in self._chunk_dirty or key not in self._chunks:
+                    surf = self._floor_chunk(ix, iy)
+                    if surf is None:
+                        continue                               # (built next frame: the base street meanwhile)
+                    if tex is None or tex.size != surf.get_size():
+                        if tex is not None:
+                            tex.release()
+                        tex = self._chunk_tex[key] = self.ctx.texture(surf.get_size(), 4)
+                        tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
+                        tex.repeat_x = tex.repeat_y = False
+                    tex.write(_surf_bytes(surf))
+                    self._chunk_dirty.discard(key)
+                x0, y0, w, h = self._chunk_rect_m(ix, iy)
+                gp["u_place"].value = (x0, y0, w, h)
+                gp["u_texmap"].value = (x0, y0, w, h)
+                tex.use(0)
+                self.chunk_vao.render(moderngl.TRIANGLES)
+        for k in [k for k in self._chunk_tex if k not in self._chunks]:
+            self._chunk_tex.pop(k).release()                   # (fp's LRU dropped the surface)
 
     def _disco_tint(self):
         if not self.disco:
@@ -1070,20 +1259,24 @@ class GLRenderer(FP.FPRenderer):
         sp["u_rows"].value = float(rows)
         self.sky_vao.render(moderngl.TRIANGLES)
 
-    def _draw_particles(self, parts, vp_gl, rx, ry):
+    def _draw_particles(self, parts, vp_gl, rx, ry, dark, levels):
         look = self.particle_look
+        glow = (FP.SPARK, FP.FIRE)
         data = []
         for p in parts[:700]:
             c, s = look(p)
             h = s / 2.0
             x, y, z = p[0], p[1], p[2]
-            r, g, b = c[0] / 255.0, c[1] / 255.0, c[2] / 255.0
+            r, g, b, e = c[0] / 255.0, c[1] / 255.0, c[2] / 255.0, 1.0 if p[8] in glow else 0.0
             x0, y0, x1, y1 = x - rx * h, y - ry * h, x + rx * h, y + ry * h
-            data.extend((x0, y0, z - h, r, g, b, x1, y1, z - h, r, g, b, x1, y1, z + h, r, g, b,
-                         x0, y0, z - h, r, g, b, x1, y1, z + h, r, g, b, x0, y0, z + h, r, g, b))
+            data.extend((x0, y0, z - h, r, g, b, e, x1, y1, z - h, r, g, b, e, x1, y1, z + h, r, g, b, e,
+                         x0, y0, z - h, r, g, b, e, x1, y1, z + h, r, g, b, e, x0, y0, z + h, r, g, b, e))
         self._part_buf.write(np.asarray(data, dtype="f4").tobytes())
-        self.part_prog["u_vp"].write(vp_gl)
-        self.part_vao.render(moderngl.TRIANGLES, vertices=len(data) // 6)
+        pp = self.part_prog
+        pp["u_vp"].write(vp_gl)
+        pp["u_dark"].value = dark
+        pp["u_levels"].value = levels
+        self.part_vao.render(moderngl.TRIANGLES, vertices=len(data) // 7)
 
     def _overlay_tags(self, surf, tags, cx, cy, eye, now, dt, bank):
         """The labels, markers and dolly icons fp draws over its sprites, in the same places
@@ -1134,5 +1327,8 @@ class GLRenderer(FP.FPRenderer):
                 wm["vao"].release()
             wm["tex"].release()
         self.worlds.clear()
+        for t in self._chunk_tex.values():
+            t.release()
+        self._chunk_tex.clear()
         for o in (self.fbo, self.color, self.depth, self.ground_tex):
             o.release()

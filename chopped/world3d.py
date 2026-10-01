@@ -228,7 +228,7 @@ class _Mesh:
         ss.append(sh)
 
     # --- textured vertical face. a, b: xy endpoints; u runs the way a player outside reads (left to right)
-    def vface(self, group, a, b, z0, z1, n, key, sh=None, anchor=None, uw=T, hz=None):
+    def vface(self, group, a, b, z0, z1, n, key, sh=None, anchor=None, uw=T, hz=None, zb=0.0):
         ux, uy = n[1], -n[0]
         if (b[0] - a[0]) * ux + (b[1] - a[1]) * uy < 0:
             a, b = b, a
@@ -238,7 +238,9 @@ class _Mesh:
         ub = ((b[0] - anchor[0]) * ux + (b[1] - anchor[1]) * uy) / uw
         if hz is None:
             hz = self.atlas.hz[key]
-        va, vb = 1.0 - z0 / hz, 1.0 - z1 / hz
+        # (zb: where the texture's bottom row sits. v0.20 fix: the records/sale boards hang 1.25 m up,
+        # and with v counted from the ground they sampled whatever was above them in the atlas -- brick)
+        va, vb = 1.0 - (z0 - zb) / hz, 1.0 - (z1 - zb) / hz
         if sh is None:
             sh = FACE_SHADE["+x" if n[0] > 0 else "-x" if n[0] < 0 else "+y" if n[1] > 0 else "-y"]
         self.quad(group, ((a[0], a[1], z0), (b[0], b[1], z0), (b[0], b[1], z1), (a[0], a[1], z1)),
@@ -335,39 +337,46 @@ def _sign_surface(font, text, w, h, x, y, col=None, outline=(0, 0, 0)):
     return sign
 
 
-def _wall_surface(key, night, font):
-    """The texture for a wall def, built exactly as fp.FPRenderer._wall_tex builds it at scale 1.
+def _wall_surface(key, night, font, sc=1):
+    """The texture for a wall def, built exactly as fp.FPRenderer._wall_tex builds it at world
+    scale `sc` (v0.20: gl3d builds the city at the render scale, so 2x shows 2x the brickwork).
     (Kept as a copy rather than a refactor of fp.py: the raycaster is mid-surgery and this is
     the thing that has to keep matching it.)"""
     kind = key[0]
     facade_px = int(FACADE_H * FA.TEX / 4)
+
+    def put(surf, sign, x, y):
+        # the lettering stays the 3x5 font at its old size, just in chunkier pixels (as fp does)
+        if sc > 1:
+            sign = pygame.transform.scale_by(sign, sc)
+        surf.blit(sign, (x * sc, y * sc))
     if kind == "bld":
-        return FA.facade(key[1], key[2], key[3], night, 1)
+        return FA.facade(key[1], key[2], key[3], night, sc)
     if kind == "precinct":
-        surf = FA.precinct_wall(64, night, 1)
+        surf = FA.precinct_wall(64, night, sc)
         if key[1]:
             sign = pygame.Surface((FA.TEX, 10), pygame.SRCALPHA)
             sign.fill((30, 60, 150))
             font.draw(sign, "POLICE", FA.TEX // 2, 2, P["white"], None, align="center")
-            surf.blit(sign, (0, 14))
+            put(surf, sign, 0, 14)
         return surf
     if kind == "brick":
         sy = facade_px - int(4.75 * FA.TEX / 4)
-        surf = FA.brick_wall(facade_px, night, sign=key[1] >= 0, sign_y=sy, sc=1)
+        surf = FA.brick_wall(facade_px, night, sign=key[1] >= 0, sign_y=sy, sc=sc)
         if key[1] >= 0:
-            surf.blit(_sign_surface(font, "CHOP SHOP", FA.TEX * 3, 12, FA.TEX * 3 // 2, 3), (-key[1] * FA.TEX, sy + 2))
+            put(surf, _sign_surface(font, "CHOP SHOP", FA.TEX * 3, 12, FA.TEX * 3 // 2, 3), -key[1] * FA.TEX, sy + 2)
         return surf
     if kind == "pier":
-        surf = FA.brick_wall(facade_px, night, sign=True, sc=1)
-        surf.blit(_sign_surface(font, "CHOP SHOP", FA.TEX * 2, 12, FA.TEX, 3), (-key[1] * FA.TEX, 12))
+        surf = FA.brick_wall(facade_px, night, sign=True, sc=sc)
+        put(surf, _sign_surface(font, "CHOP SHOP", FA.TEX * 2, 12, FA.TEX, 3), -key[1] * FA.TEX, 12)
         return surf
     if kind == "walkdoor":
-        return FA.walk_door(facade_px, night, 1)
+        return FA.walk_door(facade_px, night, sc)
     if kind == "fsign":
-        surf = FA.brick_wall(facade_px, night, sign=True, sc=1)
-        surf.blit(_sign_surface(font, "SHOP %d" % (key[1] + 1), FA.TEX, 12, FA.TEX // 2, 3), (0, 12))
+        surf = FA.brick_wall(facade_px, night, sign=True, sc=sc)
+        put(surf, _sign_surface(font, "SHOP %d" % (key[1] + 1), FA.TEX, 12, FA.TEX // 2, 3), 0, 12)
         return surf
-    return FA.concrete_wall(48, night, 1)
+    return FA.concrete_wall(48, night, sc)
 
 
 def _roof_top_tile(style, night):
@@ -629,8 +638,11 @@ def _plain(key, n):
     return key
 
 
-def build_world(cmap, night=False):
-    """Build the whole static city for `cmap`. About a second; deterministic per (seed, night)."""
+def build_world(cmap, night=False, sc=1):
+    """Build the whole static city for `cmap`. About a second; deterministic per (seed, night, sc).
+    (v0.20) `sc` is the texel scale: the facades, brick, doors and the shop ceilings are painted at
+    sc x PX_M texels a metre (fpart's own sc), so a 2x render shows 2x the detail, not 2x the blur.
+    The geometry and every uv are the same at any sc; only the atlas grows."""
     cm = cmap
     n = cm.n
     font = PixelFont()
@@ -645,7 +657,8 @@ def build_world(cmap, night=False):
 
     def tex(key):
         if key not in atlas.items:
-            atlas.add(key, _wall_surface(key, night, font))
+            surf = _wall_surface(key, night, font, sc)
+            atlas.add(key, surf, surf.get_height() / (PX_M * sc))
         return key
 
     # ---- the roofed buildings: the home shop and the garages you can buy ----------------------
@@ -713,7 +726,7 @@ def build_world(cmap, night=False):
     out_roofed = []
     for key, (gx, gy, gw, gh) in roofed:
         ck = ("ceiling", key)
-        atlas.add(ck, FA.roof_texture(gw, gh, CEIL_PPM), gh)
+        atlas.add(ck, FA.roof_texture(gw, gh, CEIL_PPM * sc), gh)
         mesh.quad("ceilings", ((gx, gy, ROOF_H), (gx + gw, gy, ROOF_H), (gx + gw, gy + gh, ROOF_H), (gx, gy + gh, ROOF_H)),
                   ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)), ck, (0.0, 0.0, -1.0), CEIL_SHADE)
         for ty in range(int(round(gy / T)), int(round((gy + gh) / T))):
@@ -878,7 +891,7 @@ def build_world(cmap, night=False):
         mesh.box("props_free", bxm - 0.05, bxm + 0.05, bym - 0.05, bym + 0.05, 0.0, 1.3, P["metal"], skip=("-z",))
         mesh.box("props_free", bxm - 0.95, bxm + 0.95, bym - 0.06, bym + 0.06, 1.2, 2.15, P["ink"])
         for (yy, nrm) in ((bym + 0.065, (0, 1)), (bym - 0.065, (0, -1))):
-            mesh.vface("props_free", (bxm - 0.9, yy), (bxm + 0.9, yy), 1.25, 2.1, nrm, "records_board", hz=0.85,
+            mesh.vface("props_free", (bxm - 0.9, yy), (bxm + 0.9, yy), 1.25, 2.1, nrm, "records_board", hz=0.85, zb=1.25,
                        anchor=(bxm - 0.9, yy) if nrm[1] > 0 else (bxm + 0.9, yy), uw=1.8)
     for (x, y, item) in getattr(cm, "market", ()):
         mesh.boxes("props_free", place(FA.crate_boxes(item), x, y, 0.0))
@@ -935,7 +948,7 @@ def build_world(cmap, night=False):
             m2 = _Mesh(atlas)
             key = ("sale", idx, int(state))
             for (yy, nrm) in ((sy + 0.065, (0, 1)), (sy - 0.065, (0, -1))):
-                m2.vface("props_solid", (sx - 0.9, yy), (sx + 0.9, yy), 1.25, 2.1, nrm, key, hz=0.85,
+                m2.vface("props_solid", (sx - 0.9, yy), (sx + 0.9, yy), 1.25, 2.1, nrm, key, hz=0.85, zb=1.25,
                          anchor=(sx - 0.9, yy) if nrm[1] > 0 else (sx + 0.9, yy), uw=1.8)
             v, _g = m2.finalize(atlas.regions, atlas.size)
             return v
@@ -966,5 +979,5 @@ def build_world(cmap, night=False):
     if len(vertices):
         lo, hi = vertices[:, :3].min(axis=0), vertices[:, :3].max(axis=0)
         w.bounds = (float(lo[0]), float(lo[1]), float(lo[2]), float(hi[0]), float(hi[1]), float(hi[2]))
-    w.version = "world3d-%d:%s:%s" % (FORMAT, cm.seed, "night" if night else "day")
+    w.version = "world3d-%d:%s:%s:%dx" % (FORMAT, cm.seed, "night" if night else "day", sc)
     return w
