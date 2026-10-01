@@ -103,14 +103,14 @@ On the main menu, the **CHARACTER** row (or a click on the panel's arrows) picks
 | **F5** | Save now (host only; see [Save files](#save-files)) (v0.12.1) | |
 | **F8** | Fisheye lens: a wider, wobblier FOV, like a cheap dashcam (v0.12) | |
 | **F10** | Disco floor: a hue-cycling tint on the street under your feet (v0.12) | |
-| **Esc** | Pause menu: players, host IP, ping, and four buttons (click them, or use the keys): **RESUME** (Esc), **INSTRUCTIONS** (I: the full controls list, in its own window, v0.13), **SETTINGS** (S: see below, v0.17) and **LEAVE TO MENU** (Q). Releases the mouse | |
+| **Esc** | (Main menu: does nothing; backs out of the join list, name entry and settings. Never quits.) Pause menu: players, host IP, ping, and four buttons (click them, or use the keys): **RESUME** (Esc), **INSTRUCTIONS** (I: the full controls list, in its own window, v0.13), **SETTINGS** (S: see below, v0.17) and **LEAVE TO MENU** (Q). Releases the mouse | |
 | **Enter** | Skip to the next line of dialogue (v0.13) | |
 | **Hold J** | Show today's full job list under the radar (it's a compact story goal + job count otherwise; open by itself in the shop) (v0.15) | |
 | **F11** | Toggle fullscreen | |
 
 ### Settings (v0.17)
 
-**SETTINGS** is a row on the main menu and a button on the pause menu (**S**). Rows: **FOV** (60-120 degrees, default 90), **RENDER SCALE** (1x, 2x or 3x: how sharp the 3D view is; lower is faster), **WORLD DETAIL** (1x-3x: sharper walls, streets and ceilings; can't exceed the render scale, v0.19), four volume sliders: **MASTER**, **MUSIC**, **SFX**, **ENGINES** (0-100%). **W/S** picks a row, **A/D** changes it (hold to repeat), or click and drag a slider; **Esc**/**Enter** goes back. Changes apply immediately and are saved when you leave the screen. A **SAVE FILES** section at the bottom lists the three save slots with a **[DEL] DELETE** button each (or select one and press **Del**); it asks first, and the slot of a game you're hosting is greyed out (leave to the menu to delete it).
+**SETTINGS** is a row on the main menu and a button on the pause menu (**S**). Rows: **FOV** (60-120 degrees, default 90), **MOUSE SENSITIVITY** (0.25x-3x, default 1.00x: look, aim and chase-cam orbit), **INVERT Y** (OFF/ON: flips mouse up/down look), **RENDER SCALE** (1x, 2x or 3x: how sharp the 3D view is; lower is faster), **WORLD DETAIL** (1x-3x: sharper walls, streets and ceilings; can't exceed the render scale, v0.19), four volume sliders: **MASTER**, **MUSIC**, **SFX**, **ENGINES** (0-100%). **W/S** picks a row, **A/D** changes it (hold to repeat), or click and drag a slider; **Esc**/**Enter** goes back. Changes apply immediately and are saved when you leave the screen. A **SAVE FILES** section at the bottom lists the three save slots with a **[DEL] DELETE** button each (or select one and press **Del**); it asks first, and the slot of a game you're hosting is greyed out (leave to the menu to delete it).
 
 They live in `%APPDATA%\Chopped\settings.json` (`~/.local/share/chopped/settings.json` elsewhere; `CHOPPED_SAVE_DIR`, if set, holds it instead). The file also remembers your **name** and **character** from the main menu, so the game opens as you. `--name` and `--char` on the command line still win for that run. A missing or corrupt file just means the defaults.
 

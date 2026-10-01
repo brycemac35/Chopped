@@ -1088,6 +1088,12 @@ FP_FLOOR_DIST = 70.0             # metres of textured street before it fades to 
 FP_SPRITE_DIST = 95.0            # beyond this, cars and people aren't drawn (matches the net cull)
 FP_TURN_SPEED = 2.8              # rad/s turning with the arrow keys
 MOUSE_SENS = 0.0032              # rad per mouse pixel
+# (v0.19) the player's MOUSE SENSITIVITY slider multiplies MOUSE_SENS and MOUSE_PITCH_SENS. Stored as an
+# integer percent in settings.json (the settings code only deals in ints): 100 = the tuning above.
+MOUSE_SENS_MIN = 25              # 0.25x: slow enough for a sniper's patience, or a very large desk
+MOUSE_SENS_MAX = 300             # 3x: one flick of the wrist is a U-turn; past this nobody can aim
+MOUSE_SENS_DEFAULT = 100         # 1.0x, the feel the game was tuned at
+MOUSE_SENS_STEP = 5              # A/D steps the slider 5 points (0.05x)
 FP_BOB = 0.06                    # metres of head bob when walking (Doom had lots; this has some)
 
 
