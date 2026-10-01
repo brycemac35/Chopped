@@ -142,6 +142,34 @@ feature is already touching it.
     GPU submit 0.25 ms, ~7-21 draw calls. Shop interior ~8.9 ms a frame. (Classic: ~41 fps selftest.)
   - Tests: `tests/test_gl3d.py` (13: mesh counts, outlines' edge coords, footprint fit, projection
     vs fp, cache keys, stub world contract, setting, no-GL fallback). No wire change.
+  - **One style for city and cars** (Bryce, item 5: "make the background visuals like the cars, ensure
+    the scaling factor applies to both types of drawn planes"): `gl3d.world_edges` turns world3d's
+    triangles into 14-float vertices -- outward normal, quad edge coords and an outline mask -- so
+    the world shader lights walls with the cars' model (world3d's per-direction `FACE_SHADE` divided
+    out, then 0.6 + 0.4 n.L with `GL_LIGHT`), outlines in the same 0.6 shade at the same
+    `GL_OUTLINE_PX` x k, and goes through the same crunch and light diminishing. Only *real* edges
+    are outlined (an edge no coplanar same-facing quad shares: corners, roof lines, wall feet, where
+    a short block meets a tall one), not the 4 m tile seams, which would have drawn a grid on every
+    facade.
+  - **Render scale drives texel density:** one k x 640x328 frame holds world and entities alike;
+    `GLRenderer._tex_scale` = k (capped by `GL_TEX_SCALE_MAX` 3). `world3d.build_world(..., sc=)`
+    paints facades, brick, doors, signs and the shop ceilings at sc x 8 px/m (atlas 1024x512 at 1x,
+    1024x2048 at 2x, 2048x2048 at 3x; ~0.2-0.4 s a build, day + night), and the street within
+    `FLOOR_DETAIL_DIST` uses fp's own hi-res floor chunks at 5 x sc px/m (detail tiles, skids
+    replayed; uploaded as built, `FLOOR_CHUNKS_PER_FRAME`) over the whole-map 5 px/m street.
+    Changing RENDER SCALE mid-game rebuilds the atlas. **WORLD DETAIL is now CLASSIC-only** (its
+    hint says so): in 3D the texel scale simply follows k. Measured, bot driving, uncapped:
+    k=1 ~270 fps, k=2 ~130, k=3 ~75.
+  - **QA fixes:** (a) CLASSIC -> 3D after a long drive threw GL_INVALID_OPERATION: the old
+    context's moderngl objects were garbage-collected (gc_mode "auto") after the new context
+    existed and deleted its buffers. `App._close_gl` / `Display.close` now release what they own,
+    set the old context's `gc_mode = None` (later collection is a no-op), release it and
+    `gc.collect()` before the next set_mode. (b) `game.gl_fit`: in an OpenGL window, a whole-number
+    scale from 2x up, else a fractional nearest fit, letterboxed (F11 on a 1200x1920 portrait monitor
+    was a 1x postage stamp). (c) Particles: smoke, dust, debris and confetti take the night and the
+    distance like everything else; fire and sparks stay full bright. Also fixed: world3d's records
+    hatch and fence-garage sale boards sampled the brick above them in the atlas (`vface(zb=)`).
+    Checked by eye in 3D: F8 fisheye, F9 big heads, the mod shop's frozen backdrop.
   - **For Bryce's eyes:** the outline strength and `GL_COLOR_LEVELS` crunch; cars ~10% shorter than
     the old sprites (they now match what you collide with); trees/lamps are still billboards; the
     street is 5 px/m (chunky up close, on purpose); night darkening uses the walls' banded levels for
