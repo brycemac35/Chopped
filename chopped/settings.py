@@ -18,6 +18,7 @@ NAME_MAX = 12          # same cap as the menu's name field
 CHAR_MAX = 3           # 4 crooks (ui.roster); clamped again by the menu against the real roster
 SERVERS_MAX = 8        # (v0.19) remembered hosts, most recent first: enough to be useful, short enough to fit under the JOIN field
 ADDR_MAX = 60          # same cap as the menu's JOIN field
+RENDERERS = ("3d", "classic")   # (v0.20) the RENDERER setting's values, in the settings screen's button order
 ADDR_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.:-"   # what the JOIN field accepts
 
 
@@ -109,7 +110,8 @@ def defaults():
             "sfx": C.VOL_SFX_DEFAULT, "engine": C.VOL_ENGINE_DEFAULT,
             "name": "", "char": None,
             "world_scale": getattr(C, "WORLD_SCALE_DEFAULT", 1), "servers": [],
-            "mouse_sens": C.MOUSE_SENS_DEFAULT, "invert_y": False}
+            "mouse_sens": C.MOUSE_SENS_DEFAULT, "invert_y": False,
+            "renderer": getattr(C, "RENDERER_DEFAULT", "3d")}
 
 
 def mouse_mult(d):
@@ -143,6 +145,8 @@ def sanitize(data):
     d["mouse_sens"] = _num(data.get("mouse_sens"), C.MOUSE_SENS_MIN, C.MOUSE_SENS_MAX, d["mouse_sens"])
     d["invert_y"] = data.get("invert_y") is True        # (only a real true; "yes" or 1 is junk)
     d["servers"] = _clean_servers(data.get("servers"))
+    if data.get("renderer") in RENDERERS:              # (v0.20) "3d" or "classic"; anything else: the default
+        d["renderer"] = data["renderer"]
     d["name"] = _clean_name(data.get("name"))
     ch = data.get("char")
     if isinstance(ch, int) and not isinstance(ch, bool):

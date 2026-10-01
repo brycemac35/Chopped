@@ -28,6 +28,7 @@ from .mapgen import CityMap
 from .net import Server, Client, get_lan_ips
 from .render import Renderer
 from .fp import FPRenderer, time_of_day, darkness
+from . import gl3d as GL3D
 from . import soundscape as SC
 from .doomhud import DoomHud, VIEW_H
 from .modshop import ModShop
@@ -168,6 +169,8 @@ class App:
         self.orbit_idle = 0.0
         self.fp_mode = True            # Tab flips to the top-down automap
         self.fp = None
+        self.gl = None                 # (v0.20) gl3d.Display while the window is an OpenGL one
+        self._gl_frame = False         # (v0.20) this frame's 3D view is on the GPU (gl3d), not in self.frame
         self.last_state = None
         self.last_car_ang = 0.0
         self.mouse_grabbed = False
@@ -203,6 +206,10 @@ class App:
             fn = getattr(self, "set_world_scale", None)
             if callable(fn):
                 fn(max(1, min(int(s.get("world_scale", 1)), int(s["render_scale"]))))
+        if key in (None, "renderer"):
+            fn = getattr(self, "set_renderer", None)          # (v0.20) 3D / CLASSIC
+            if callable(fn):
+                fn(s.get("renderer", C.RENDERER_DEFAULT))
         if key in (None, "master", "music", "sfx", "engine"):
             fn = getattr(getattr(self, "audio", None), "set_volumes", None)
             if callable(fn):
@@ -304,7 +311,7 @@ class App:
             self.upnp = None
         self.audio.stop_all()
         self.renderer = None
-        self.fp = None
+        self._drop_fp()
         self.hud = None
         self.paused = False
         self.show_help = False
@@ -338,10 +345,7 @@ class App:
         cm = self.client.map
         surf = self.menu_surf if cm.seed == self.menu_seed else None
         self.renderer = Renderer(cm, surf)
-        k = self.render_scale
-        self.fp = FPRenderer(cm, self.renderer.map_surf, W * k, VIEW_H * k, scale=k)
-        self.fp.set_world_scale(self.world_scale)          # (v0.19) WORLD DETAIL
-        self._apply_setting("fov")
+        self.fp = self._make_fp(cm)
         self.hud = DoomHud(self.font, self.renderer.bank, self.renderer.minimap)
         self.hud.contacts = getattr(cm, "contacts", ())      # (v0.14) names for the order/sale rows
         me = self.client.latest.players.get(self.client.pid) if self.client.latest else None
@@ -407,7 +411,7 @@ class App:
                 self.running = False
             elif ev.type == pygame.VIDEORESIZE and not self.fullscreen:
                 self.window_size = (max(W, ev.w), max(H, ev.h))
-                self.screen = pygame.display.set_mode(self.window_size, pygame.RESIZABLE)
+                self.screen = self._set_mode(self.window_size)
             elif ev.type == pygame.KEYDOWN and ev.key == pygame.K_F11:
                 self.toggle_fullscreen()
             elif self.settings_panel is not None and (self.state == "menu" or (self.state == "play" and self.paused)):
@@ -535,9 +539,9 @@ class App:
     def toggle_fullscreen(self):
         self.fullscreen = not self.fullscreen
         if self.fullscreen:
-            self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+            self.screen = self._set_mode((0, 0), pygame.FULLSCREEN)
         else:
-            self.screen = pygame.display.set_mode(self.window_size, pygame.RESIZABLE)
+            self.screen = self._set_mode(self.window_size)
         self.scaled = None
 
     def _gather_input(self, dt, view):
@@ -662,6 +666,7 @@ class App:
     def _draw(self, now, dt):
         low = self.low
         self._world = False            # (v0.17) set by whatever puts the hi-res world in self.frame
+        self._gl_frame = False
         if self.state in ("menu", "connecting"):
             mw, mh = self.menu_surf.get_size()
             t = now * 12
@@ -818,7 +823,10 @@ class App:
         self.hud.draw_overlay(surf, view, now, moving, steer, self._held_weapon(), self.fire_anim, chase=chase,
                               tacho=self.tacho_view)
         self.hud.drift_meter(low, view, now, dt)
-        self.frame.blit(surf, (0, 0))
+        if getattr(self.fp, "is_gl", False):
+            self._gl_frame = True              # (v0.20) the picture's on the GPU; _present_gl composites it
+        else:
+            self.frame.blit(surf, (0, 0))
         self._world = True
 
     def _host_lines(self):
@@ -1112,6 +1120,9 @@ class App:
                 self.hud.add_toast("VTEC JUST KICKED IN, YO!", S.T_MONEY, now)
 
     def _present(self):
+        if self.gl is not None:
+            self._present_gl()
+            return
         sw, sh = self.screen.get_size()
         if self.fp_mode:
             k = min(sw // W, sh // H)
@@ -1160,6 +1171,8 @@ class App:
         render_scale with nearest-neighbour: the HUD's pixels stay exactly as chunky as ever.
         (Measured: ~1.2 ms at 2x, ~2.5 ms at 3x -- an alpha layer, because the HUD's panels are
         see-through and a colour key would have turned them magenta.)"""
+        if self._gl_frame:
+            self.frame.blit(self.fp.snapshot(), (0, 0))     # (v0.20: the mod shop's photo of a GPU frame)
         if self._hud_up is None:
             self.frame.blit(self.low, (0, 0))
         else:
@@ -1201,6 +1214,121 @@ class App:
         if getattr(self, "fp", None) is not None:
             self.world_scale = self.fp.set_world_scale(self.world_scale)
         return self.world_scale
+
+    # ------------------------------------------------------------------ (v0.20) the 3D renderer
+    # Everything about the OpenGL window lives down here, so the rest of App doesn't care which
+    # renderer is on: menus, HUD, automap and mod shop still draw to self.low / self.frame as
+    # ever, and _present_gl uploads them over the GPU's frame instead of blitting.
+    def _set_mode(self, size, flags=0):
+        """pygame.display.set_mode with the OpenGL flags when the 3D renderer owns the window
+        (resizing an OpenGL window keeps its context -- checked -- so nothing on the GPU is lost)."""
+        if self.gl is not None:
+            flags |= pygame.OPENGL | pygame.DOUBLEBUF
+        if not flags & pygame.FULLSCREEN:
+            flags |= pygame.RESIZABLE
+        return pygame.display.set_mode(size, flags)
+
+    def set_renderer(self, name):
+        """The settings screen's RENDERER: "3d" (gl3d, default) or "classic" (the raycaster).
+        Switching swaps the window between OpenGL and plain (a new GL context each time) and
+        rebuilds the first-person renderer if a game's on. No OpenGL -- the tests' dummy video
+        driver, moderngl missing, a driver without GL 3.3 -- means classic, with one log line."""
+        want = name == "3d" and not self.selftest and GL3D.gl_available()
+        if want == (self.gl is not None):
+            return
+        if want:
+            try:
+                for attr, val in ((pygame.GL_CONTEXT_MAJOR_VERSION, 3), (pygame.GL_CONTEXT_MINOR_VERSION, 3),
+                                  (pygame.GL_CONTEXT_PROFILE_MASK, pygame.GL_CONTEXT_PROFILE_CORE),
+                                  (pygame.GL_DEPTH_SIZE, 24)):
+                    pygame.display.gl_set_attribute(attr, val)
+                self._drop_fp()
+                self.gl = True                          # (so _set_mode adds the OpenGL flags)
+                self.screen = self._set_mode((0, 0) if self.fullscreen else self.window_size,
+                                             pygame.FULLSCREEN if self.fullscreen else 0)
+                self.gl = GL3D.Display()
+                print("RENDERER: 3D (%s)" % self.gl.renderer)
+            except Exception as e:                      # no GL 3.3: the raycaster it is
+                print("RENDERER: OpenGL unavailable (%s: %s), using CLASSIC" % (e.__class__.__name__, e))
+                self.gl = None
+                self.screen = self._set_mode((0, 0) if self.fullscreen else self.window_size,
+                                             pygame.FULLSCREEN if self.fullscreen else 0)
+        else:
+            self._drop_fp()
+            old, self.gl = self.gl, None
+            old.release()
+            self.screen = self._set_mode((0, 0) if self.fullscreen else self.window_size,
+                                         pygame.FULLSCREEN if self.fullscreen else 0)
+            print("RENDERER: CLASSIC")
+        self.scaled = None
+        self.ms_backdrop = None
+        if self.state == "play" and self.client is not None and self.renderer is not None:
+            self.fp = self._make_fp(self.client.map)
+
+    def _make_fp(self, cm):
+        """The first-person renderer for this window: gl3d's if the window is OpenGL, else the raycaster."""
+        k = self.render_scale
+        fp = None
+        if self.gl is not None:
+            try:
+                fp = GL3D.GLRenderer(self.gl, cm, self.renderer.map_surf, W * k, VIEW_H * k, scale=k)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                print("RENDERER: the 3D view failed to start (%s), using CLASSIC" % e)
+                self.settings["renderer"] = "classic"
+                old, self.gl = self.gl, None
+                old.release()
+                self.screen = self._set_mode(self.window_size)
+        if fp is None:
+            fp = FPRenderer(cm, self.renderer.map_surf, W * k, VIEW_H * k, scale=k)
+        self.fp = fp
+        fp.set_world_scale(self.world_scale)          # (v0.19) WORLD DETAIL
+        self._apply_setting("fov")
+        return fp
+
+    def _drop_fp(self):
+        fp, self.fp = self.fp, None
+        if fp is not None and getattr(fp, "is_gl", False):
+            fp.release()
+
+    def _present_gl(self):
+        """_present for an OpenGL window: the GPU's 3D view (or the CPU frame: the mod shop's
+        photo), then the overlay, then the 640x360 HUD/menu canvas, all nearest-neighbour."""
+        sw, sh = pygame.display.get_window_size()
+        if self.fp_mode or self.state != "play":
+            k = min(sw // W, sh // H)
+            if k >= 1:
+                size = (W * k, H * k)
+            else:
+                s = min(sw / W, sh / H)
+                size = (max(1, int(W * s)), max(1, int(H * s)))
+        else:
+            s = min(sw / W, sh / H)                       # (the automap stretches, as in _present)
+            size = (max(1, int(W * s)), max(1, int(H * s)))
+        ox, oy = (sw - size[0]) // 2, (sh - size[1]) // 2
+        self.scaled = _Sized(size)                       # (_to_canvas reads its size)
+        g = self.gl
+        g.begin((sw, sh))
+        full = (ox, oy, size[0], size[1])
+        if self._gl_frame and getattr(self.fp, "is_gl", False):
+            view = (ox, oy, size[0], size[1] * VIEW_H // H)
+            g.draw(self.fp.color, view, flip=False)
+            g.draw(g.upload("overlay", self.fp.overlay), view, flip=True, blend=True)
+        elif self._world and self.frame is not None:
+            g.draw(g.upload("frame", self.frame), full, flip=True)
+        g.draw(g.upload("low", self.low), full, flip=True, blend=True)
+        pygame.display.flip()
+
+
+class _Sized:
+    """Stands in for self.scaled in an OpenGL window (there's no scaled Surface; only its size matters)."""
+
+    def __init__(self, size):
+        self.size = size
+
+    def get_size(self):
+        return self.size
 
 
 def run_selftest(args):

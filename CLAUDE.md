@@ -88,6 +88,54 @@ feature is already touching it.
 
 ## 1. Status and your tasks, in order
 
+### Where things stand (Oct 1, 2026, v0.20 in progress on feat/gl3d: the 3D renderer)
+- **v0.20** (Bryce: "have the vehicles render in more close approximation to 3d. lets transition to a
+  3d game, but use the stylized look of doom. install modern GL", plus the bug "the textures rotate
+  severely when the player's distance becomes too close, and a clear passageway looks not clear or
+  vice versa" -- billboards picking a sprite angle per car, and cards bigger than the car's footprint):
+  - **`chopped/gl3d.py`** (moderngl 5.12, GL 3.3 core, numpy): `GLRenderer(fp.FPRenderer)` draws the
+    first-person view on the GPU into a k x 640x328 framebuffer, blown up nearest-neighbour. Cars,
+    people, dogs and every prop are **real meshes of the same fpart `*_boxes`** (`boxes_to_mesh`,
+    13 floats a vertex), cached per look (`_car_look` key, no angle; `GL_MESH_CACHE` LRU) and drawn
+    instanced at their real position/heading. Doom look: flat shading from one world light
+    (`GL_LIGHT`), a dark outline on every face edge done in the fragment shader (`GL_OUTLINE_PX`),
+    fp's banded light diminishing (11 m / night levels), colours snapped to `GL_COLOR_LEVELS`,
+    NEAREST everywhere. Street = a ground quad of the top-down map (copy of `map_surf` + fp's floor
+    edits, skids drawn in via `_skid_hires`, dirty-rect uploads, mipmaps every
+    `GL_GROUND_MIP_EVERY`); sky = fp's panorama in screen space (pitch y-shears, like fp).
+  - **What is drawn is still fp's code:** `fp._sprites` split into `_collect` (the entity list,
+    now with x,y and `behind`/`margin` culling), `_blit_items` and `_draw_tag`; `_car_look`,
+    `_person_boxes`, `_dog_boxes`, `particle_look` and `_particles(sink=)` factored out. GLRenderer
+    overrides `_car_sprite`/`_person_sprite`/`_dog_sprite`/`_model_sprite` to return `MeshRef`s;
+    billboard images (trees, lamps, signs, icons, pigeons) stay camera-facing quads. Labels,
+    markers, tracers and explosions go on a see-through overlay (`self.overlay`) with fp's 2D maths
+    -- `view_proj` is built to match fp's projection exactly (tested); walls hide labels via
+    `map.los`. Hands/dash draw on the overlay too.
+  - **Cars are fitted to their collision box** (`fit_boxes`): the models overhung `Car.hl/hw` by
+    ~25 cm a bumper, so gaps looked ~0.5 m narrower than they were. Now the drawn plan is exactly
+    the physics box (a ~10% squash per model, heights untouched). Bikes already matched.
+  - **Static city:** `chopped/world3d.py` (feat/world3d, A2) with the contract `build_world(cmap,
+    night) -> .vertices (x y z u v shade, float32) / .atlas / .dynamic (.id, .boxes(open_t))`. Until
+    it lands, `gl3d.stub_build_world` (grey extruded tiles, roofs, roller doors) stands in; the shop
+    doors are posed from the TRAP_DOOR rows (`GL_DOOR_STEPS` meshes per door).
+  - **game.py** (all in the "(v0.20) the 3D renderer" block at the end of App): `set_renderer`,
+    `_set_mode` (OPENGL|DOUBLEBUF when GL; resizing keeps the context, checked), `_make_fp`,
+    `_drop_fp`, `_present_gl` (GPU frame, overlay, then `low` uploaded and alpha-blended; the mod
+    shop photo reads the GPU frame back via `GLRenderer.snapshot` in `_compose`). Menus, HUD,
+    automap, pause, settings and the mod shop draw to Surfaces exactly as before.
+  - **Setting RENDERER: 3D / CLASSIC** (`settings.RENDERERS`, default `C.RENDERER_DEFAULT` "3d";
+    `ui.SettingsPanel` row, rows now 20 px tall to fit 10). No moderngl, no GL 3.3, the dummy video
+    driver or `--selftest`: CLASSIC with one log line. Switching mid-game rebuilds the view.
+  - Measured (GTX 1660 Ti, k=2, visible window, bot driving round the shop district, uncapped):
+    **~140 fps, frame 6.1 ms median / 9.5 ms p95** for the whole app frame; renderer: collect 0.5 ms,
+    GPU submit 0.25 ms, ~7-21 draw calls. Shop interior ~8.9 ms a frame. (Classic: ~41 fps selftest.)
+  - Tests: `tests/test_gl3d.py` (13: mesh counts, outlines' edge coords, footprint fit, projection
+    vs fp, cache keys, stub world contract, setting, no-GL fallback). No wire change.
+  - **For Bryce's eyes:** the outline strength and `GL_COLOR_LEVELS` crunch; cars ~10% shorter than
+    the old sprites (they now match what you collide with); trees/lamps are still billboards; the
+    street is 5 px/m (chunky up close, on purpose); night darkening uses the walls' banded levels for
+    everything, so cars at night are a touch brighter than the old sprites were.
+
 ### Where things stand (Sept 30, 2026, v0.18.2 playtest fixes, uncommitted, RELEASE not bumped)
 - Bryce: "play test the game until 10 bugs appear". Ten windowed QA bots found 11; all fixed, no
   wire change (VERSION stays 17). Tests: `tests/test_v0182_server.py`, `tests/test_v0182_sim.py`.
