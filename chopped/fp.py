@@ -122,7 +122,24 @@ class SpriteCache:
         self.bytes = 0
 
 
+class LabelOnly:
+    """(v0.20) An item with nothing to draw but its label (see _collect's `fix`). `h` is how high
+    (m) the label's thing stands, which _draw_tag's `top` is worked out from."""
+    __slots__ = ("h",)
+
+    def __init__(self, h):
+        self.h = h
+
+
+_LABEL_ONLY_H = LabelOnly(1.6)            # the lever and the crates: about chest height
+
+
+def _LABEL_ONLY():
+    return _LABEL_ONLY_H
+
+
 class FPRenderer:
+    static_in_world = False       # (v0.20) gl3d: trees, lamps, counters, crates... are in the world mesh
     def __init__(self, cmap, map_surf, vw, vh, scale=1):
         self.map = cmap
         self.cam_inside = False       # (v0.12.1) camera under the shop roof: skip what the ceiling hides
@@ -1516,6 +1533,15 @@ class FPRenderer:
                 return
             items.append((depth, lat, img_fn, z, tag, x, y))
 
+        if self.static_in_world:
+            def fix(x, y, img_fn, z=0.0, tag=None):
+                """(v0.20) map furniture: gl3d's world mesh (world3d) already has it, so only its
+                label is wanted -- planted LABEL_H up, roughly where the sprite's top was"""
+                if tag is not None:
+                    add(x, y, _LABEL_ONLY, z, tag)
+        else:
+            fix = add
+
         # scenery
         gx, gy = int(cx // 24), int(cy // 24)
         rr = int(maxd // 24) + 1
@@ -1523,11 +1549,11 @@ class FPRenderer:
             for iy in range(gy - rr, gy + rr + 1):
                 for (x, y, kind, var) in self.static_cells.get((ix, iy), ()):
                     if kind == "tree":
-                        add(x, y, lambda v=var: (self.tree_imgs[v], 12))
+                        fix(x, y, lambda v=var: (self.tree_imgs[v], 12))
                     elif kind == "lamp":
-                        add(x, y, lambda: (self.lamp_img[night], 8))
+                        fix(x, y, lambda: (self.lamp_img[night], 8))
                     else:
-                        add(x, y, lambda: (self.cam_img, 8))
+                        fix(x, y, lambda: (self.cam_img, 8))
         for (bx, by, is_sell, bw, bh) in self.benches:
             # (v0.12.1, Bryce: "make the mod shop and parts counter turn about 90 deg so the long
             # side is visible normally") the model's long side runs along its own y axis, but the
@@ -1538,13 +1564,13 @@ class FPRenderer:
                 continue
             az = math.atan2(by - cy, bx - cx) - (math.pi / 2 if bw > bh else 0.0)
             L, W = max(bw, bh), min(bw, bh)
-            add(bx, by, lambda a=az, s=is_sell, w=L, h=W: self._model_sprite(
+            fix(bx, by, lambda a=az, s=is_sell, w=L, h=W: self._model_sprite(
                 ("bench", s), lambda: FA.bench_boxes(s, w, h), a, 8, 10))
         if self.records is not None and abs(self.records[0] - cx) < maxd and abs(self.records[1] - cy) < maxd:
             rx_, ry_ = self.records
             az = math.atan2(ry_ - cy, rx_ - cx) - math.pi / 2
-            add(rx_, ry_, lambda a=az: self._model_sprite("records", FA.records_desk_boxes, a, None, 16))
-            add(rx_ - 2.0, ry_ + 0.1, lambda: (self._board("records"), 16))
+            fix(rx_, ry_, lambda a=az: self._model_sprite("records", FA.records_desk_boxes, a, None, 16))
+            fix(rx_ - 2.0, ry_ + 0.1, lambda: (self._board("records"), 16))
         snap = getattr(view, "snap", None)
         busy = {}
         for o in (getattr(snap, "orders", None) or ()):
@@ -1575,30 +1601,30 @@ class FPRenderer:
             if abs(x - cx) > maxd or abs(y - cy) > maxd or not shops & (16 << idx):
                 continue
             az = math.atan2(y - cy, x - cx) + math.pi / 2     # facing into the room (they're on the back wall)
-            add(x, y, lambda a=az, it=item: self._model_sprite(("crate", it), lambda: FA.crate_boxes(it), a, None, 16),
+            fix(x, y, lambda a=az, it=item: self._model_sprite(("crate", it), lambda: FA.crate_boxes(it), a, None, 16),
                 tag=("crate", item))
         for (x, y, idx) in self.fence_signs:
             if abs(x - cx) > maxd or abs(y - cy) > maxd:
                 continue
             state = 2 if shops & (16 << idx) else 1 if shops & (1 << idx) else 0
-            add(x, y, lambda i=idx, o=state: (self._sale_sign(i, o), 16))
+            fix(x, y, lambda i=idx, o=state: (self._sale_sign(i, o), 16))
         for (x, y, ang) in self.map.ramps:
             if abs(x - cx) < maxd and abs(y - cy) < maxd:
                 az = math.atan2(y - cy, x - cx) - ang
-                add(x, y, lambda a=az: self._model_sprite("ramp", FA.ramp_boxes, a, None, 12))
+                fix(x, y, lambda a=az: self._model_sprite("ramp", FA.ramp_boxes, a, None, 12))
         self._pigeons(view, cx, cy, now, dt, add)
         self._hats(dt, cx, cy, add)
         for (x, y, along, seg) in self.bar_segs:
             if abs(x - cx) < maxd and abs(y - cy) < maxd:
                 az = math.atan2(y - cy, x - cx) - along
-                add(x, y, lambda a=az, L=seg: self._model_sprite(("bars", L), lambda: FA.bars_boxes(L), a, None, 16))
+                fix(x, y, lambda a=az, L=seg: self._model_sprite(("bars", L), lambda: FA.bars_boxes(L), a, None, 16))
         if self.desk is not None and abs(self.desk[0] - cx) < maxd and abs(self.desk[1] - cy) < maxd:
             dx_, dy_, dw_, dh_ = self.desk
             az = math.atan2(dy_ - cy, dx_ - cx)
-            add(dx_, dy_, lambda a=az: self._model_sprite("desk", lambda: FA.desk_boxes(dw_, dh_), a, None, 16))
+            fix(dx_, dy_, lambda a=az: self._model_sprite("desk", lambda: FA.desk_boxes(dw_, dh_), a, None, 16))
         for (x, y, item) in self.crates:
             az = math.atan2(y - cy, x - cx) - math.pi       # the crates face into the shop
-            add(x, y, lambda a=az, it=item: self._model_sprite(("crate", it), lambda: FA.crate_boxes(it), a, None, 16),
+            fix(x, y, lambda a=az, it=item: self._model_sprite(("crate", it), lambda: FA.crate_boxes(it), a, None, 16),
                 tag=("crate", item))
         hd = getattr(self.map, "door_handle", None)
         if hd is not None and abs(hd[0] - cx) < maxd and abs(hd[1] - cy) < maxd:
@@ -1606,7 +1632,7 @@ class FPRenderer:
             rows = [t[5] for t in getattr(view, "traps", {}).values() if t[1] == S.TRAP_DOOR]
             down = bool(rows) and all(life < C.DOOR_PASSABLE for life in rows)
             az = math.atan2(hd[1] - cy, hd[0] - cx) - hd[2]
-            add(hd[0], hd[1], lambda a=az, dn=down: self._model_sprite(
+            fix(hd[0], hd[1], lambda a=az, dn=down: self._model_sprite(
                 ("handle", dn), lambda: FA.door_handle_boxes(dn), a, None, 24), tag=("label", "ALL DOORS", True))
         for t in getattr(view, "traps", {}).values():
             if t[1] in (S.TRAP_SMOKE, S.TRAP_DOOR):
@@ -1617,7 +1643,7 @@ class FPRenderer:
             if t[1] == S.TRAP_JUNK:
                 k = (t[0] - C.JUNK_ID_BASE) % C.JUNK_PER_SHOP
                 az = math.atan2(t[3] - cy, t[2] - cx) - k * 0.8
-                add(t[2], t[3], lambda a=az, k_=k: self._model_sprite(("junk", k_), lambda: FA.junk_boxes(k_),
+                fix(t[2], t[3], lambda a=az, k_=k: self._model_sprite(("junk", k_), lambda: FA.junk_boxes(k_),
                                                                        a, None, 16))
                 continue
             if t[1] == S.TRAP_CELL:
@@ -1625,12 +1651,12 @@ class FPRenderer:
                 if t[5] > 0:                                    # shut (and maybe dented): bars and a padlock
                     bent = round(1.0 - t[5], 1)
                     az = math.atan2(t[3] - cy, t[2] - cx) - math.pi / 2
-                    add(t[2], t[3], lambda a=az, bt=bent: self._model_sprite(
+                    fix(t[2], t[3], lambda a=az, bt=bent: self._model_sprite(
                         ("celldoor", bt), lambda: FA.bars_boxes(L, True, True, bt), a, None, 16))
                 else:                                           # open: swung back on its hinge, into the hall
                     x, y = t[2] - L / 2, t[3] + L / 2
                     az = math.atan2(y - cy, x - cx)
-                    add(x, y, lambda a=az: self._model_sprite(
+                    fix(x, y, lambda a=az: self._model_sprite(
                         ("celldoor", "open"), lambda: FA.bars_boxes(L, True, False), a, None, 16))
                 continue
             if t[1] == S.TRAP_GATE:
@@ -1639,7 +1665,7 @@ class FPRenderer:
                         off = -C.GATE_LEN / 2 + (k + 0.5) * C.GATE_LEN / 2
                         x, y = t[2] + off, t[3]
                         az = math.atan2(y - cy, x - cx) - math.pi / 2
-                        add(x, y, lambda a=az: self._model_sprite("gate", lambda: FA.gate_boxes(C.GATE_LEN / 2),
+                        fix(x, y, lambda a=az: self._model_sprite("gate", lambda: FA.gate_boxes(C.GATE_LEN / 2),
                                                                   a, None, 16))
                 continue
             if t[5] < 0.1 and int(now * 6) % 2:

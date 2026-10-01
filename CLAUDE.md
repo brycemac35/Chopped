@@ -114,10 +114,21 @@ feature is already touching it.
   - **Cars are fitted to their collision box** (`fit_boxes`): the models overhung `Car.hl/hw` by
     ~25 cm a bumper, so gaps looked ~0.5 m narrower than they were. Now the drawn plan is exactly
     the physics box (a ~10% squash per model, heights untouched). Bikes already matched.
-  - **Static city:** `chopped/world3d.py` (feat/world3d, A2) with the contract `build_world(cmap,
-    night) -> .vertices (x y z u v shade, float32) / .atlas / .dynamic (.id, .boxes(open_t))`. Until
-    it lands, `gl3d.stub_build_world` (grey extruded tiles, roofs, roller doors) stands in; the shop
-    doors are posed from the TRAP_DOOR rows (`GL_DOOR_STEPS` meshes per door).
+  - **Static city:** `chopped/world3d.py` (A2): `build_world(cmap, night)` -> `.vertices` (N, 6) x y z
+    u v shade in raw SIM coords (gl3d feeds them as-is: its camera's right = forward turned +90 in xy,
+    so signs read right way round; no face culling) / `.atlas` / `.groups` / `.dynamic`. Day and
+    night worlds are both built at game start (~0.2 s each). If world3d raises, `gl3d.build_world`
+    logs it and falls back to `stub_build_world` (grey boxes). Indoors (`_roof_box`) the
+    `parapets` group isn't drawn. With the real city, trees, lamps, camera poles, counters, the bail
+    desk, records hatch, cell bars, home crates and ramps are world geometry: `fp._collect` routes
+    them through `fix()`, which in gl3d (`static_in_world`) keeps only their labels (`fp.LabelOnly`).
+  - **Dynamic world bits** (`GLRenderer._dynamic`/`_dyn_state`): every `Dynamic` within sprite range
+    is posed from the snapshot -- doors/walkdoor/cell doors from their trap rows' life (quantised to
+    `GL_DOOR_STEPS`), the gate from its row, junk from its row (no row in range, or the garage open
+    = cleared), the lever from the door rows (all shut = down), sale boards and fence crates from
+    `snap.shops`. Fixtures beyond `NET_CULL_RADIUS` keep their last seen state. Their boxes are
+    meshed by gl3d's box pipeline (same shading and outlines as the cars); the sale boards' lettered
+    faces are `quads_for(state)` drawn with the world atlas.
   - **game.py** (all in the "(v0.20) the 3D renderer" block at the end of App): `set_renderer`,
     `_set_mode` (OPENGL|DOUBLEBUF when GL; resizing keeps the context, checked), `_make_fp`,
     `_drop_fp`, `_present_gl` (GPU frame, overlay, then `low` uploaded and alpha-blended; the mod

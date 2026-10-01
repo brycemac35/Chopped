@@ -190,8 +190,16 @@ def _uv(i):
 class StubDoor:
     """A roller door (or the walking door): `open_t` 0 shut .. 1 all the way up."""
 
+    kind = "door"
+    default_state = 1.0
+    info = {}
+
     def __init__(self, did, x, y, w, h):
         self.id, self.x, self.y, self.w, self.h = did, x, y, w, h
+        self.pos = (x, y)
+
+    def boxes_for(self, state):
+        return self.boxes(state)
 
     def boxes(self, open_t):
         lo = max(0.0, min(1.0, open_t)) * self.h          # rolls up into its housing
@@ -287,10 +295,17 @@ def stub_build_world(cmap, night=False):
 
 
 def build_world(cmap, night=False):
-    """world3d's city if it's installed, else the stub."""
+    """world3d's city (A2's: textured facades, trees, counters, crates...), or -- if it isn't
+    there or it throws -- the grey stub, so a broken city build never costs you the game.
+    Returns (world, real?)."""
     if W3 is not None:
-        return W3.build_world(cmap, night=night)
-    return stub_build_world(cmap, night)
+        try:
+            return W3.build_world(cmap, night=night), True
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print("WORLD3D: build failed (%s: %s), drawing the grey stub city" % (e.__class__.__name__, e))
+    return stub_build_world(cmap, night), False
 
 
 # ---------------------------------------------------------------------------- shaders
@@ -623,13 +638,18 @@ class GLRenderer(FP.FPRenderer):
         # the static city (world3d), day and (made the first time it's dark) night
         self.worlds = {}
         self._world_mesh(False)
+        self._world_mesh(True)                 # (now, not at dusk: a ~0.2 s build mid-chase is a hitch you'd feel)
         self.meshes = OrderedDict()            # look key -> _Mesh, LRU (GL_MESH_CACHE)
         self._car_fit = {}                     # model -> (stock extent, hl, hw)
+        self._dyn_seen = {}                    # fixture id -> last state a trap row said
+        self._dyn_quads = {}                   # (dynamic index, state) -> atlas quads (the sale boards' faces)
         self.bill_tex = {}                     # id(surface) -> (surface, Texture)
         self.sky_tex = {}
         self._dyn_cap = 6 * 2048                  # billboard vertices (5 floats each); grows if a forest needs it
         self._dyn_buf = ctx.buffer(reserve=20 * self._dyn_cap)
         self.bill_vao = ctx.vertex_array(self.bill_prog, [(self._dyn_buf, "3f 2f", "in_pos", "in_uv")])
+        self._wx_buf = ctx.buffer(reserve=24 * 600)       # the sale boards' lettered faces, per frame
+        self._wx_vao = ctx.vertex_array(self.world_prog, [(self._wx_buf, "3f 2f 1f", "in_pos", "in_uv", "in_shade")])
         self._part_buf = ctx.buffer(reserve=4 * 6 * 6 * 700)
         self.part_vao = ctx.vertex_array(self.part_prog, [(self._part_buf, "3f 3f", "in_pos", "in_col")])
         self._zero_inst = None
@@ -685,7 +705,7 @@ class GLRenderer(FP.FPRenderer):
         wm = self.worlds.get(night)
         if wm is None:
             t0 = time.perf_counter()
-            world = build_world(self.map, night=night)
+            world, real = build_world(self.map, night=night)
             ctx = self.ctx
             verts = np.ascontiguousarray(world.vertices, dtype=np.float32)
             vbo = ctx.buffer(verts.tobytes()) if verts.size else None
@@ -694,12 +714,81 @@ class GLRenderer(FP.FPRenderer):
             atlas = world.atlas
             tex = ctx.texture(atlas.get_size(), 4, _surf_bytes(atlas))
             tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
-            dyn = {}
-            for obj in getattr(world, "dynamic", ()) or ():
-                dyn[getattr(obj, "id", None)] = obj
-            wm = self.worlds[night] = {"vao": vao, "n": verts.size // 6, "tex": tex, "dyn": dyn,
-                                       "build_ms": (time.perf_counter() - t0) * 1000.0}
+            # draw ranges: everything but the parapets as its own list, so indoors (where the
+            # ceiling hides them anyway) they're skipped, as fp's cam_inside did
+            nv = verts.size // 6
+            groups = getattr(world, "groups", None) or {}
+            par = groups.get("parapets")
+            if par and par[1]:
+                a, n = par
+                inside = [r for r in ((0, a), (a + n, nv - a - n)) if r[1] > 0]
+            else:
+                inside = [(0, nv)]
+            wm = self.worlds[night] = {"vao": vao, "n": nv, "tex": tex, "world": world,
+                                       "dyn": list(getattr(world, "dynamic", ()) or ()),
+                                       "ranges": {"out": [(0, nv)], "in": inside},
+                                       "real": real, "build_ms": (time.perf_counter() - t0) * 1000.0}
+            # with the real city the trees, lamps, counters and crates are in the mesh: fp mustn't
+            # draw them again (only their labels, see fp._collect's `fix`)
+            self.static_in_world = real
         return wm
+
+    # -- the moving bits of the world (world3d's .dynamic) ------------------------------------------
+    def _dyn_state(self, obj, rows, me_xy, shops, lever_down):
+        """What state a world3d Dynamic is in, from the snapshot. Fixtures only come as trap rows
+        within NET_CULL_RADIUS of you; past that the last state seen is kept (or the default)."""
+        kind = obj.kind
+        if kind == "lever":
+            return lever_down
+        if kind in ("crate", "sale_board"):
+            idx = obj.info.get("shop", 0)
+            if kind == "crate":
+                return bool(shops & (16 << idx))
+            return 2 if shops & (16 << idx) else 1 if shops & (1 << idx) else 0
+        t = rows.get(obj.id)
+        seen = self._dyn_seen
+        if t is not None:
+            if kind in ("door", "walkdoor", "celldoor"):
+                st = round(C.clamp(t[5], 0.0, 1.0) * C.GL_DOOR_STEPS) / C.GL_DOOR_STEPS
+            elif kind == "gate":
+                st = 1 if t[5] > 0 else 0
+            else:                                              # junk: its row is there, so the pile is
+                st = True
+            seen[obj.id] = st
+            return st
+        x, y = obj.pos
+        near = (x - me_xy[0]) ** 2 + (y - me_xy[1]) ** 2 < (C.NET_CULL_RADIUS - 3.0) ** 2
+        if kind == "junk" and (near or shops & (16 << obj.info.get("shop", 0))):
+            seen[obj.id] = False                               # in range and no row: cleared
+            return False
+        return seen.get(obj.id, obj.default_state)
+
+    def _dynamic(self, wm, view, cx, cy, groups, extra_quads):
+        """Pose every Dynamic near enough to see: boxes go into the mesh groups (the same shading
+        and outlines as the cars), the lettered sale boards' faces into extra_quads (atlas)."""
+        rows = {t[0]: t for t in getattr(view, "traps", {}).values()}
+        snap = getattr(view, "snap", None)
+        shops = (getattr(snap, "shops", 1) or 1) if snap is not None else 1
+        doors = [t[5] for t in rows.values() if t[1] == S.TRAP_DOOR]
+        lever_down = bool(doors) and all(life < C.DOOR_PASSABLE for life in doors)
+        me = getattr(view, "me", None)
+        me_xy = (me[4], me[5]) if me is not None else (cx, cy)
+        r2 = (C.FP_SPRITE_DIST + 10.0) ** 2
+        for i, obj in enumerate(wm["dyn"]):
+            x, y = obj.pos
+            if (x - cx) ** 2 + (y - cy) ** 2 > r2:
+                continue
+            st = self._dyn_state(obj, rows, me_xy, shops, lever_down)
+            key = ("dyn", wm["real"], i, st)
+            m = self._mesh(key, lambda o=obj, s_=st: o.boxes_for(s_))
+            if m.n:
+                groups.setdefault(key, (m, []))[1].extend((0.0, 0.0, 0.0, 0.0))
+            if obj.kind == "sale_board" and hasattr(obj, "quads_for"):
+                q = self._dyn_quads.get((i, st))
+                if q is None:
+                    q = self._dyn_quads[(i, st)] = np.ascontiguousarray(obj.quads_for(st), dtype=np.float32)
+                if len(q):
+                    extra_quads.append(q)
 
     # -- meshes ------------------------------------------------------------------------------
     def _car_sprite(self, row, az, steps=None, base=12):
@@ -825,6 +914,10 @@ class GLRenderer(FP.FPRenderer):
                     tags.append((tag, x, y, z, 0.0, depth, lat))
                 continue
             res = img_fn()
+            if isinstance(res, FP.LabelOnly):
+                if tag is not None:
+                    tags.append((tag, x, y, z, res.h, depth, lat))
+                continue
             if isinstance(res, MeshRef):
                 m = self._mesh(res.key, res.make)
                 if m.n:
@@ -886,19 +979,18 @@ class GLRenderer(FP.FPRenderer):
         if wm["vao"] is not None:
             wm["tex"].use(0)
             wp["u_tex"].value = 0
-            wm["vao"].render(moderngl.TRIANGLES, vertices=wm["n"])
-        # the moving bits of the world (the shop's roller doors): world-space boxes, posed
-        for t in getattr(view, "traps", {}).values():
-            if t[1] != S.TRAP_DOOR:
-                continue
-            obj = wm["dyn"].get(t[0])
-            if obj is None:
-                continue
-            q = round(C.clamp(t[5], 0.0, 1.0) * C.GL_DOOR_STEPS) / C.GL_DOOR_STEPS
-            key = ("dyn", t[0], q, night)
-            m = self._mesh(key, lambda o=obj, q_=q: o.boxes(q_))
-            if m.n:
-                groups.setdefault(key, (m, []))[1].extend((0.0, 0.0, 0.0, 0.0))
+            # indoors (under a roof) the parapets are behind the ceiling: don't draw them
+            for first, n in wm["ranges"]["in" if self._roof_box(cx, cy) is not None else "out"]:
+                wm["vao"].render(moderngl.TRIANGLES, first=first, vertices=n)
+        # the moving bits of the world: doors, gate, cells, junk, the lever, boards, fence crates
+        extra = []
+        self._dynamic(wm, view, cx, cy, groups, extra)
+        if extra:
+            data = np.ascontiguousarray(np.concatenate(extra), dtype=np.float32)
+            if data.nbytes > self._wx_buf.size:
+                self._wx_buf.orphan(data.nbytes * 2)
+            self._wx_buf.write(data.tobytes())
+            self._wx_vao.render(moderngl.TRIANGLES, vertices=len(data))
         bp = self.box_prog
         bp["u_vp"].write(vp_gl)
         bp["u_dark"].value = dark
