@@ -20,7 +20,7 @@ from . import config as C
 from .enums import *  # noqa: F401,F403
 from .entities import TIERS, buy_price
 from .parts import (SLOTS, SLOT_CATEGORY, CATEGORY_SLOTS, PART_DEFS, PART_IDS, PART_INDEX, DOLLY, Part,
-                    OPTIONAL_SLOTS)
+                    OPTIONAL_SLOTS, wheel_slots)
 from . import vehicles as V
 from .lines import DOOR_BANG_LINES
 from .entities import Trap
@@ -29,8 +29,9 @@ from .physics import obb_rect_contact, circle_rect_contact
 # ---- menu commands (InputState.menu_op) ----------------------------------------------
 (OP_NONE, OP_CLOSE, OP_INSTALL, OP_BUY, OP_REMOVE, OP_SELL, OP_TAKE, OP_PAINT, OP_LIVERY, OP_HORN,
  OP_GLOW, OP_EXTRA, OP_SWITCH) = range(13)
-EXTRA_NOS, EXTRA_EJECTOR, EXTRA_GNOME, EXTRA_HYDRO = range(4)
-EXTRA_NAMES = ("NITROUS (SHIFT)", "EJECTOR SEAT (F AT SPEED)", "GNOME HOOD ORNAMENT", "HYDRAULICS (X: HOP)")
+EXTRA_NOS, EXTRA_EJECTOR, EXTRA_GNOME, EXTRA_HYDRO, EXTRA_JACK = range(5)
+EXTRA_NAMES = ("NITROUS (SHIFT)", "EJECTOR SEAT (F AT SPEED)", "GNOME HOOD ORNAMENT", "HYDRAULICS (X: HOP)",
+              "JACK (CREW TOOL: BOLT WHEELS ON OUTSIDE)")
 
 # parts you can't buy new (they come off scooters, out of trunks, or out of gardens)
 NOT_FOR_SALE = {"eng_electric", "whl_scooter", "gnome", "cash_bag", "briefcase", "rubber_duck",
@@ -77,7 +78,7 @@ def horn_price(h):
 
 
 def extra_price(which):
-    return (C.PRICE_NOS, C.PRICE_EJECTOR, C.PRICE_GNOME_MOUNT, C.PRICE_HYDRAULICS)[which]
+    return (C.PRICE_NOS, C.PRICE_EJECTOR, C.PRICE_GNOME_MOUNT, C.PRICE_HYDRAULICS, C.PRICE_JACK)[which]
 
 
 class Garage:
@@ -179,6 +180,46 @@ class Garage:
             bx, by, bw, bh = self.map.tune_bench
             self.add_pickup(old, bx + bw / 2, by + bh + 1.2)
         self.stash.append(part)
+
+    # ------------------------------------------------------------------ the jack (v0.19)
+    def _jack_interaction(self, p, car, ax, ay):
+        """(key, prompt, hold, action) for bolting a wheel back on a car parked OUTSIDE (inside a shop
+        the mod shop already does it), or None if this isn't that situation: you're holding a wheel
+        and looking at one of the car's bare hubs. Works on any car (stolen, traffic you've stopped, your
+        own, a cop's) -- the car doesn't care who's fixing it. The prompt tells you what's missing."""
+        if not p.hands or p.hands[-1].category != "wheel" or self.in_shop(car.x, car.y) or car.lot:
+            return None
+        c, s = math.cos(car.ang), math.sin(car.ang)
+        lx = (ax - car.x) * c + (ay - car.y) * s
+        ly = -(ax - car.x) * s + (ay - car.y) * c
+        slot = min(wheel_slots(car.model), key=lambda w: math.hypot(car.anchor(w)[0] - lx, car.anchor(w)[1] - ly))
+        if car.parts.get(slot) is not None:
+            return None                     # that hub's occupied: whatever else you could do here, do that
+        ax_, ay_ = car.anchor(slot)
+        if math.hypot(ax_ - lx, ay_ - ly) > C.INTERACT_RANGE_SLOT + 1.0:
+            return None
+        part = p.hands[-1]
+        if not self.has_jack:
+            return (None, "NEED A JACK (SHOP 2)", 0, None)
+        if car.occupants():
+            return (None, "SOMEBODY'S SITTING IN IT. GET THEM OUT FIRST", 0, None)
+        if car.speed() > C.JACK_MAX_SPEED:
+            return (None, "IT'S MOVING. STOP IT FIRST", 0, None)
+        return (("jack", car.id, slot, id(part)),
+                "HOLD E: JACK IT UP AND BOLT ON %s (%ds)" % (part.name.upper(), int(C.JACK_FIT_TIME)),
+                C.JACK_FIT_TIME, lambda: self._jack_fit(p, car, slot, part))
+
+    def _jack_fit(self, p, car, slot, part):
+        """The 15 s are up: the wheel goes on, and the car stops being a four-legged table."""
+        if car.parts.get(slot) is not None or not p.hands or p.hands[-1] is not part or car.occupants():
+            return
+        p.hands.pop()
+        car.parts[slot] = part
+        car.refresh()
+        self.sfx(S_MOD, car.x, car.y)
+        left = car.missing_wheels()
+        self.toast("%s BOLTED ON %s. %s" % (p.name, part.name.upper(),
+                   "STILL %d HUB%s BARE." % (left, "S" if left > 1 else "") if left else "SHE ROLLS AGAIN."), T_INFO)
 
     # ------------------------------------------------------------------ the mod shop
     def _open_modshop(self, p, tier=0):
@@ -385,6 +426,9 @@ class Garage:
         elif which == EXTRA_HYDRO and not car.hydraulics and self._pay(C.PRICE_HYDRAULICS):
             car.hydraulics = True
             self.toast("HYDRAULICS FITTED. PRESS X IN THE CAR. BOUNCE RESPONSIBLY.", T_INFO)
+        elif which == EXTRA_JACK and not self.has_jack and self._pay(C.PRICE_JACK):
+            self.has_jack = True
+            self.toast("YOU OWN A JACK. THE WHOLE CREW CAN BORROW IT. IT WILL NOT BE RETURNED CLEAN.", T_INFO)
         else:
             return
         self.sfx(S_MOD, p.x, p.y)
@@ -399,11 +443,11 @@ def encode_menu(world, me):
     out.append(me.menu_tier & 255)             # (v0.14) which shop's counter: what's for sale new
     out += bytes(((car.id if car else 0) & 0xFF, ((car.id if car else 0) >> 8) & 0xFF))
     if car is None:
-        out += bytes(6)
+        out += bytes((0, 0, 0, 0, 16 if world.has_jack else 0, 0))
     else:
         out += bytes((car.color & 255, car.livery & 255, car.horn_type & 255, car.glow & 255,
                       (1 if car.nos else 0) | (2 if car.ejector else 0) | (4 if car.gnome else 0) |
-                      (8 if car.hydraulics else 0), car.model & 255))
+                      (8 if car.hydraulics else 0) | (16 if world.has_jack else 0), car.model & 255))
     for s in SLOTS:
         part = car.parts.get(s) if car is not None else None
         if part is None:
@@ -427,6 +471,7 @@ def decode_menu(data, off):
     off += 6
     menu["nos"], menu["ejector"], menu["gnome"], menu["hydro"] = bool(ex & 1), bool(ex & 2), bool(ex & 4), \
         bool(ex & 8)
+    menu["jack"] = bool(ex & 16)             # (v0.19) rides in a spare bit: same byte count, so no VERSION bump
     slots = {}
     for s in SLOTS:
         idx, style, cond = data[off:off + 3]

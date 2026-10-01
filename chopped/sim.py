@@ -84,6 +84,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         # (v0.12) shop 1 (home base) is free and always yours; shops 2-4 are fences you buy
         # with crew cash -- see config.SHOP_PRICE/SHOP_RENT and World._buy_shop.
         self.shop_owned = [True] + [False] * (len(C.SHOP_PRICE) - 1)
+        self.has_jack = False       # (v0.19) the crew's one jack (garage.EXTRA_JACK); lets wheels go on outside
         self.personal_id = None
         self.player_car = {}        # (v0.10) player id -> their own personal car's id
         self.bay_owner_name = {}    # (save files) bay index -> the name that claimed it, forever
@@ -616,6 +617,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         # SHOP SEIZED, same "the new run resets everything except your personal car" rule as
         # the locker and the city's civilian cars.
         self.shop_owned = [True] + [False] * (len(C.SHOP_PRICE) - 1)
+        self.has_jack = False             # (v0.19) ...and the jack goes with the shop it was bought at
         self.lots = []                    # (v0.14) Dave's book is torn up; the garages fill back up with junk
         self._reset_workshops()
         # (v0.10) every player's own personal car keeps its mods, back in its own bay --
@@ -960,6 +962,11 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         car = best
         if car is None or bd > C.CAR_AIM_RANGE + (0.8 if car.state == DELIVERED else 0):
             return (None, "", 0, None)
+        # (v0.19) a wheel in your hands and a bare hub in your sights: the jack, before the trunk
+        # (whose "put it in the boot" would otherwise hijack the back wheels)
+        jack = self._jack_interaction(p, car, ax, ay)
+        if jack is not None:
+            return jack
         # the back of the car: the trunk (a delivered car's only if there's something in it,
         # otherwise the back is for stripping the bumper)
         c_, s_ = math.cos(car.ang), math.sin(car.ang)
