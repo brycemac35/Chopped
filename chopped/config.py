@@ -1103,6 +1103,33 @@ MOUSE_SENS_DEFAULT = 100         # 1.0x, the feel the game was tuned at
 MOUSE_SENS_STEP = 5              # A/D steps the slider 5 points (0.05x)
 FP_BOB = 0.06                    # metres of head bob when walking (Doom had lots; this has some)
 
+# --------------------------------------------------------------------------
+# (v0.20) The 3D renderer (gl3d.py, Bryce: "lets transition to a 3d game, but use the stylized
+# look of doom"). Real meshes from the same box models, a GPU, and every trick that keeps it
+# looking like 1993 anyway. RENDERER_DEFAULT is what a fresh settings.json starts on.
+# --------------------------------------------------------------------------
+RENDERER_DEFAULT = "3d"          # "3d" or "classic" (the raycaster; also the automatic fallback with no OpenGL)
+GL_NEAR = 0.05                   # m: the near clip. You can put your nose 5 cm from a bumper and still see it --
+                                 # the whole point of the switch was walking right up to cars
+GL_FAR = 600.0                   # m: past the far corner of a 540 m city (the fog's long gone by then)
+GL_LIGHT = (0.35, -0.55, 0.8)    # the sun's direction (x, y, z up), fixed in the world: high and from the
+                                 # south-east, so a car's roof is brightest and its two sides never match
+GL_OUTLINE_PX = 1.0              # dark edge round every box face, in 640-wide pixels (x the render scale):
+                                 # the one-pixel outline the old sprites had, kept so boxes still read as boxes
+GL_COLOR_LEVELS = 32             # steps per colour channel. 256 is smooth modern banding; 32 gives every
+                                 # shade a slightly hand-picked palette look without posterising the sky
+GL_CULL_BEHIND = 10.0            # m: keep things whose middle is this far BEHIND the camera (a 10 m counter
+                                 # beside you still pokes into view; the sprite view dropped at 0.3 m ahead)
+GL_CULL_MARGIN = 10.0            # m: ...and this far outside the side edges of the view, for the same reason
+GL_MESH_CACHE = 1500             # meshes kept (LRU). A car look is ~60 KB of GPU memory, a person ~20 KB:
+                                 # a whole busy district's worth for well under 100 MB
+GL_GROUND_MIP_EVERY = 0.5        # s between rebuilding the street's mipmaps after new skid marks (the far
+                                 # street can be half a second behind; the near street is updated at once)
+GL_SKY_SCALE = 2                 # the sky panorama's detail (fpart.make_sky's sc), capped: 3x is 30 MB and
+                                 # the clouds look the same
+GL_DOOR_STEPS = 32               # a rolling door's poses: one mesh per 1/32 of its travel (a 1.4 s roll at
+                                 # 60 fps is 84 frames, so it still moves smoothly; it can't be 84 meshes)
+
 
 def lerp(a, b, t):
     return a + (b - a) * t

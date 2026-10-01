@@ -11,6 +11,7 @@ import pygame
 
 from . import config as C
 from . import savefile as SF
+from . import settings as SET
 from .story import CHAPTERS as STORY_CHAPTERS
 from .art import P, PixelFont
 
@@ -646,11 +647,15 @@ class SettingsPanel:
         # two-button OFF/ON (lo 0, hi 1) that reuses the 1X/2X/3X button row
         ("mouse_sens", "MOUSE SENSITIVITY", C.MOUSE_SENS_MIN, C.MOUSE_SENS_MAX, C.MOUSE_SENS_STEP, "mult"),
         ("invert_y", "INVERT Y", 0, 1, 1, "toggle"),
+        # (v0.20) 3D (gl3d) or CLASSIC (the raycaster), last for the same reason. Stored as a word in
+        # settings.json; the two buttons index settings.RENDERERS
+        ("renderer", "RENDERER", 0, len(SET.RENDERERS) - 1, 1, "renderer"),
     )
     HINTS = {
         "fov": "WIDER SEES MORE STREET BUT SHRINKS EVERYTHING. 90 IS THE CLASSIC.",
         "mouse_sens": "HOW FAR THE VIEW TURNS PER MOUSE MOVE (LOOK, AIM, CHASE CAM). 1.00X IS STANDARD.",
         "invert_y": "ON: MOUSE UP LOOKS DOWN, LIKE A FLIGHT STICK.",
+        "renderer": "3D: REAL 3D CARS AND STREETS (NEEDS OPENGL). CLASSIC: THE OLD RAYCASTER.",
         "render_scale": "HOW SHARP THE 3D VIEW IS. LOWER = FASTER, HIGHER = CRISPER.",
         "world_scale": "SHARPER WALLS AND STREETS. LOWER = FASTER. CAN'T EXCEED RENDER SCALE.",
         "master": "EVERYTHING AT ONCE.",
@@ -658,10 +663,11 @@ class SettingsPanel:
         "sfx": "PUNCHES, CRASHES, SIRENS, THE LOT.",
         "engine": "YOUR ENGINE AND EVERYONE ELSE'S.",
     }
-    # Layout (canvas px). The window nearly fills the 360 px canvas: 9 setting rows at 22 px, then the
-    # SAVE FILES header, three slot rows at 20 px, the hint and the key line, all inside BOX.
+    # Layout (canvas px). The window nearly fills the 360 px canvas: 10 setting rows at 20 px (v0.20: were
+    # 22; at 22 the tenth row pushed the hint into the key line), then the SAVE FILES header, three slot
+    # rows at 20 px, the hint and the key line, all inside BOX.
     BOX = pygame.Rect(120, 8, 400, 344)
-    ROW_Y0, ROW_H = 42, 22                        # first row's top and the pitch between rows
+    ROW_Y0, ROW_H = 42, 20                        # first row's top and the pitch between rows
     SLOT_HEAD_Y = ROW_Y0 + len(ROWS) * ROW_H + 4  # the SAVE FILES header line
     SLOT_Y0, SLOT_H = SLOT_HEAD_Y + 14, 20
     TRACK_X, TRACK_W = 250, 190                   # slider track, canvas px
@@ -723,6 +729,9 @@ class SettingsPanel:
         return hi
 
     def _value(self, i):
+        if self.ROWS[i][5] == "renderer":
+            v = self.data.get(self.ROWS[i][0])
+            return SET.RENDERERS.index(v) if v in SET.RENDERERS else 0
         v = int(self.data[self.ROWS[i][0]])
         return min(v, self._cap(i))            # (a saved 3x world under a 2x render reads as 2x)
 
@@ -732,6 +741,8 @@ class SettingsPanel:
         v = max(lo, min(self._cap(i), int(round(v))))
         if self.ROWS[i][5] == "toggle":
             v = bool(v)                      # (settings.json keeps a real true/false)
+        elif self.ROWS[i][5] == "renderer":
+            v = SET.RENDERERS[v]             # (a word in the file, not a button index)
         if v != self.data.get(key):
             self.data[key] = v
             if self.on_change:
@@ -810,7 +821,7 @@ class SettingsPanel:
                 if not self.row_rect(i).collidepoint(pos):
                     continue
                 self.sel = i
-                if row[5] in ("scale", "wscale", "toggle"):
+                if row[5] in ("scale", "wscale", "toggle", "renderer"):
                     for k, r in enumerate(self.scale_rects(i)):
                         if r.collidepoint(pos):
                             if row[2] + k <= self._cap(i):       # (a greyed button does nothing)
@@ -872,7 +883,7 @@ class SettingsPanel:
             col = P["gold"] if sel else P["white"]
             f.draw(low, label, r.x + 10, r.centery - 3, col)
             v = self.data[key]
-            if kind in ("scale", "wscale", "toggle"):
+            if kind in ("scale", "wscale", "toggle", "renderer"):
                 cap = self._cap(i)
                 cur = self._value(i)
                 for k, br in enumerate(self.scale_rects(i)):
@@ -881,7 +892,8 @@ class SettingsPanel:
                     grey = val > cap
                     over = mouse is not None and br.collidepoint(mouse) and not grey
                     low.fill(P["gold"] if on else (70, 60, 100) if over else (20, 19, 30) if grey else (28, 26, 42), br)
-                    f.draw(low, ("OFF", "ON")[val] if kind == "toggle" else "%dX" % val, br.centerx, br.centery - 3,
+                    f.draw(low, ("OFF", "ON")[val] if kind == "toggle" else SET.RENDERERS[val].upper() if kind == "renderer"
+                           else "%dX" % val, br.centerx, br.centery - 3,
                            P["ink"] if on else (80, 76, 96) if grey else P["white"], None, align="center")
                 txt = ""          # (the highlighted button already says it)
             else:

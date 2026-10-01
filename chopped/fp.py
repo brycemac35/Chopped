@@ -529,12 +529,12 @@ class FPRenderer:
         ppm = min(ppm, top)
         return ppm, max(1, ppm // (2 * base))
 
-    def _car_sprite(self, row, az, steps=None, base=12):
-        ppm, ow = self._mip(base)
-        steps = steps or C.CAR_ANGLES
+    def _car_look(self, row):
+        """(v0.20) What a car looks like right now, minus the angle it's seen from: (key, make),
+        where make() builds its boxes. The sprite cache and the 3D renderer's mesh cache both key
+        on it, so the two can't disagree about which car is which."""
         (cid, kind, color, state, flags, mask, styles, x, y, vx, vy, ang, drv, psg, dmg,
          model, livery, extras, extras2) = row[:19]
-        idx = int(round(az / (TWO_PI / steps))) % steps
         lights = 0
         if extras2 & PR.CX_COPCAR:
             kind = S.COP                                 # (v0.9) nicked, but it still looks the part...
@@ -546,13 +546,19 @@ class FPRenderer:
             lights |= 2
         if extras & 8:
             lights |= 4                                  # NOS: blue fire out the back
-        key = (kind, color, mask, styles, dmg, lights, idx, model, livery, extras & 0xF8, extras2 & 1, steps, ppm)
+        key = (kind, color, mask, styles, dmg, lights, model, livery, extras & 0xF8, extras2 & 1)
+        return key, lambda: FA.car_boxes(kind, color, mask, styles, dmg, lights, model, livery, extras, extras2)
+
+    def _car_sprite(self, row, az, steps=None, base=12):
+        ppm, ow = self._mip(base)
+        steps = steps or C.CAR_ANGLES
+        idx = int(round(az / (TWO_PI / steps))) % steps
+        look, make = self._car_look(row)
+        key = look + (idx, steps, ppm)
         # (the hop: hydraulics are drawn as the whole sprite bouncing, see the car loop)
         spr = self.sprites.get(key)
         if spr is None:
-            spr = self.sprites.put(key, FA.render_boxes(
-                FA.car_boxes(kind, color, mask, styles, dmg, lights, model, livery, extras, extras2),
-                idx * TWO_PI / steps, ppm, outline=ow))
+            spr = self.sprites.put(key, FA.render_boxes(make(), idx * TWO_PI / steps, ppm, outline=ow))
         return spr, ppm
 
     OUTFIT_OF = {S.OFFICER: "officer", S.GUARD: "guard", S.KEYGUARD: "keyguard", S.STREAKER: "streaker"}
@@ -612,6 +618,17 @@ class FPRenderer:
             img = self.sign_cache[key] = img
         return img
 
+    def _person_boxes(self, shirt, skin, hair, frame, extra, down, gun=0, outfit=None, char=None):
+        """(v0.20) A person's boxes (shared by the sprites and the 3D meshes). frame 2 = on a bike."""
+        boxes = FA.person_boxes(shirt, skin, hair, 0 if frame == 2 else frame, extra, gun=gun, outfit=outfit, char=char)
+        if frame == 2:
+            boxes = FA.seated(boxes)                # (v0.13) frame 2 = on a motorbike
+        if self.big_heads:
+            boxes = FA.big_head(boxes)
+        if down:
+            boxes = FA.lying(boxes)
+        return boxes
+
     def _person_sprite(self, shirt, skin, hair, frame, extra, down, az, gun=0, outfit=None, char=None):
         n = C.PERSON_ANGLES
         idx = int(round(az / (TWO_PI / n))) % n
@@ -619,15 +636,16 @@ class FPRenderer:
         key = (shirt, skin, hair, frame, extra, down, idx, gun, self.big_heads, outfit, char, ppm)
         spr = self.sprites.get(key)
         if spr is None:
-            boxes = FA.person_boxes(shirt, skin, hair, 0 if frame == 2 else frame, extra, gun=gun, outfit=outfit, char=char)
-            if frame == 2:
-                boxes = FA.seated(boxes)                # (v0.13) frame 2 = on a motorbike
-            if self.big_heads:
-                boxes = FA.big_head(boxes)
-            if down:
-                boxes = FA.lying(boxes)
+            boxes = self._person_boxes(shirt, skin, hair, frame, extra, down, gun, outfit, char)
             spr = self.sprites.put(key, FA.render_boxes(boxes, idx * TWO_PI / n, ppm, outline=ow))
         return spr, ppm
+
+    @staticmethod
+    def _dog_boxes(frame, trousers, down):
+        boxes = FA.dog_boxes(frame, trousers)
+        if down:
+            boxes = [(x0, x1, y0, y1, z0 * 0.4, z1 * 0.4, c) for x0, x1, y0, y1, z0, z1, c in boxes]
+        return boxes
 
     def _dog_sprite(self, frame, trousers, down, az):
         n = C.PERSON_ANGLES
@@ -636,10 +654,8 @@ class FPRenderer:
         key = ("dog", frame, trousers, down, idx, ppm)
         spr = self.sprites.get(key)
         if spr is None:
-            boxes = FA.dog_boxes(frame, trousers)
-            if down:
-                boxes = [(x0, x1, y0, y1, z0 * 0.4, z1 * 0.4, c) for x0, x1, y0, y1, z0, z1, c in boxes]
-            spr = self.sprites.put(key, FA.render_boxes(boxes, idx * TWO_PI / n, ppm, outline=ow))
+            spr = self.sprites.put(key, FA.render_boxes(self._dog_boxes(frame, trousers, down),
+                                                        idx * TWO_PI / n, ppm, outline=ow))
         return spr, ppm
 
     def _model_sprite(self, name, boxes_fn, az, steps=None, base=16):
@@ -1476,19 +1492,29 @@ class FPRenderer:
             self.roof_clip = (ends, rows)
 
     def _sprites(self, surf, view, cx, cy, yaw, eye, me_pid, now, dt, dark, night, bank, hide_car):
+        maxd = C.FP_SPRITE_DIST
+        items = self._collect(view, cx, cy, yaw, me_pid, now, dt, night, bank, hide_car)
+        self._blit_items(surf, items, eye, now, dt, dark, maxd, bank)
+
+    def _collect(self, view, cx, cy, yaw, me_pid, now, dt, night, bank, hide_car, behind=0.3, margin=4.0):
+        """Everything that isn't the static world, as a list of (depth, lat, img_fn, z, tag, x, y):
+        img_fn() returns (sprite, ppm) -- or, in gl3d's subclass, a mesh to draw. (v0.20) Split
+        out of _sprites so the 3D renderer draws exactly the same things: `behind` and `margin`
+        (metres) let it keep things whose middle is just behind the camera or off the side of
+        the view, which a solid 3D car you're standing next to very much still is."""
         ca, sa = math.cos(yaw), math.sin(yaw)
         maxd = C.FP_SPRITE_DIST
-        items = []                                     # (depth, lat, img, anchor_x, anchor_y, ppm, z, extra)
+        items = []
 
         def add(x, y, img_fn, z=0.0, tag=None):
             dx, dy = x - cx, y - cy
             depth = dx * ca + dy * sa
-            if depth < 0.3 or depth > maxd:
+            if depth < behind or depth > maxd:
                 return
             lat = -dx * sa + dy * ca
-            if abs(lat) > depth * self.tanh + 4.0:
+            if abs(lat) > max(depth, 0.0) * self.tanh + margin:
                 return
-            items.append((depth, lat, img_fn, z, tag))
+            items.append((depth, lat, img_fn, z, tag, x, y))
 
         # scenery
         gx, gy = int(cx // 24), int(cy // 24)
@@ -1654,20 +1680,22 @@ class FPRenderer:
                 drv = view.players.get(row[12])
                 if drv is not None:
                     col = PLAYER_COLORS[drv[1] % 4]
-                    az2 = math.atan2(row[8] - cy, row[7] - cx) - row[11]
-                    add(row[7] - math.cos(row[11]) * 0.2, row[8] - math.sin(row[11]) * 0.2,
+                    rx_, ry_ = row[7] - math.cos(row[11]) * 0.2, row[8] - math.sin(row[11]) * 0.2
+                    az2 = math.atan2(ry_ - cy, rx_ - cx) - row[11]      # (v0.20: from the rider's own spot)
+                    add(rx_, ry_,
                         lambda s=col, c=_pchar(drv), a=az2:
                         self._person_sprite(s, None, None, 0, None, False, a, 0, None, c), z=0.25)
             elif V.is_bike(row[15]) and row[0] != hide_car:
                 # (v0.13) a bike's rider (and pillion) sit on top of it, hunched over the bars
                 seat_z = 0.42 if row[15] == V.SPORTBIKE else 0.5
-                az2 = math.atan2(row[8] - cy, row[7] - cx) - row[11]
                 for pid, back in ((row[12], 0.25), (row[13] if len(row) > 13 else 0, 0.75)):
                     rider = view.players.get(pid) if pid else None
                     if rider is None:
                         continue
                     col = PLAYER_COLORS[rider[1] % 4]
-                    add(row[7] - math.cos(row[11]) * back, row[8] - math.sin(row[11]) * back,
+                    rx_, ry_ = row[7] - math.cos(row[11]) * back, row[8] - math.sin(row[11]) * back
+                    az2 = math.atan2(ry_ - cy, rx_ - cx) - row[11]      # (v0.20: from the rider's own spot)
+                    add(rx_, ry_,
                         lambda s=col, c=_pchar(rider), a=az2:
                         self._person_sprite(s, None, None, 2, "fists", False, a, 0, None, c), z=seat_z)
             if row[1] == S.COP and row[18] & PR.CX_DONUT:
@@ -1784,14 +1812,17 @@ class FPRenderer:
                 tag=("dolly", d[4]))
         for e in self.explosions:
             add(e[0], e[1], None, z=1.2, tag=("boom", e))
+        return items
 
+    def _blit_items(self, surf, items, eye, now, dt, dark, maxd, bank):
+        """The classic renderer's half of _sprites: scale, clip against the walls, blit, label."""
         items.sort(key=lambda it: -it[0])
         zbuf = self.zbuf
         hor, D, vw = self.hor, self.D, self.vw
         ks = self.ks                                   # (v0.17) labels, arrows and outlines grow with it
         cs = self.cstep
         text = self.font.draw
-        for depth, lat, img_fn, z, tag in items:
+        for depth, lat, img_fn, z, tag, _x, _y in items:
             sx = vw / 2 + lat / depth * D
             if tag is not None and tag[0] == "boom":
                 self._draw_boom(surf, tag[1], sx, depth, eye, dt)
@@ -1851,46 +1882,54 @@ class FPRenderer:
                         cut = max(0, cut)
                 surf.blit(scaled, (a, top + cut), pygame.Rect(a - left, cut, b - a, sh - cut))
             if tag is not None:
-                if tag[0] == "name" and depth < 40 and runs:
-                    p = tag[1]
-                    col = PLAYER_COLORS[p[1] % 4]
-                    text(surf, p[13], int(sx), top - 8 * ks, col, scale=ks, align="center")
-                    if p[2] == S.CUFFED:
-                        text(surf, "BUSTED", int(sx), top - 15 * ks, P["danger"], scale=ks, align="center")
-                elif tag[0] == "mark" and depth < 70:
-                    bob = math.sin(now * 4 + tag[2]) * 0.12
-                    my = int(ground - (2.3 + bob) * D / depth)
-                    r = max(3 * ks, min(8 * ks, int(0.35 * D / depth)))
-                    pygame.draw.polygon(surf, P["ink"], [(sx - r - ks, my - r - ks), (sx + r + ks, my - r - ks), (sx, my + ks)])
-                    pygame.draw.polygon(surf, tag[1], [(sx - r, my - r), (sx + r, my - r), (sx, my)])
-                elif tag[0] == "contact":
-                    # (v0.14) a contact: their name up close, and a marker from down the street if
-                    # they've got an order in (gold) or a car coming to them (green)
-                    if depth < 22:
-                        text(surf, tag[1], int(sx), top - 8 * ks, P["gold"], scale=ks, align="center")
-                    if tag[2] is not None and depth < 90:
-                        bob = math.sin(now * 4 + tag[3]) * 0.12
-                        my = int(ground - (2.5 + bob) * D / depth)
-                        r = max(3 * ks, min(8 * ks, int(0.35 * D / depth)))
-                        pygame.draw.polygon(surf, P["ink"], [(sx - r - ks, my - r - ks), (sx + r + ks, my - r - ks),
-                                                             (sx, my + ks)])
-                        pygame.draw.polygon(surf, tag[2], [(sx - r, my - r), (sx + r, my - r), (sx, my)])
-                elif tag[0] == "label" and depth < 22:
-                    text(surf, tag[1], int(sx), top - 8 * ks, P["gold"] if tag[2] else P["white"],
-                         scale=ks, align="center")
-                elif tag[0] == "locked" and depth < 4.5:
-                    text(surf, "LOCKED - BUY THE LOT", int(sx), int(ground - 1.3 * D / depth),
-                         P["danger"], scale=ks, align="center")
-                elif tag[0] == "crate" and depth < 9:
-                    label, price = S.MARKET[tag[1]]
-                    text(surf, "%s $%d" % (label.split(" (")[0], price), int(sx),
-                         int(ground - 1.3 * D / depth), P["gold"], scale=ks, align="center")
-                elif tag[0] == "dolly" and tag[1] != 255:
-                    ic = self._icon(bank, tag[1])
-                    kk = D / depth / 14
-                    iw = max(1, int(ic.get_width() * kk))
-                    icon = pygame.transform.scale(ic, (iw, iw))
-                    surf.blit(icon, (int(sx - iw / 2), int(ground - 0.9 * D / depth) - iw))
+                self._draw_tag(surf, tag, sx, top, ground, depth, now, bank, bool(runs))
+
+    def _draw_tag(self, surf, tag, sx, top, ground, depth, now, bank, seen=True):
+        """A sprite's label, marker or icon: `top` and `ground` are its screen rows (the top of
+        the thing and the floor under it), `seen` whether any of it got past the walls."""
+        ks = self.ks
+        D = self.D
+        text = self.font.draw
+        if tag[0] == "name" and depth < 40 and seen:
+            p = tag[1]
+            col = PLAYER_COLORS[p[1] % 4]
+            text(surf, p[13], int(sx), top - 8 * ks, col, scale=ks, align="center")
+            if p[2] == S.CUFFED:
+                text(surf, "BUSTED", int(sx), top - 15 * ks, P["danger"], scale=ks, align="center")
+        elif tag[0] == "mark" and depth < 70:
+            bob = math.sin(now * 4 + tag[2]) * 0.12
+            my = int(ground - (2.3 + bob) * D / depth)
+            r = max(3 * ks, min(8 * ks, int(0.35 * D / depth)))
+            pygame.draw.polygon(surf, P["ink"], [(sx - r - ks, my - r - ks), (sx + r + ks, my - r - ks), (sx, my + ks)])
+            pygame.draw.polygon(surf, tag[1], [(sx - r, my - r), (sx + r, my - r), (sx, my)])
+        elif tag[0] == "contact":
+            # (v0.14) a contact: their name up close, and a marker from down the street if
+            # they've got an order in (gold) or a car coming to them (green)
+            if depth < 22:
+                text(surf, tag[1], int(sx), top - 8 * ks, P["gold"], scale=ks, align="center")
+            if tag[2] is not None and depth < 90:
+                bob = math.sin(now * 4 + tag[3]) * 0.12
+                my = int(ground - (2.5 + bob) * D / depth)
+                r = max(3 * ks, min(8 * ks, int(0.35 * D / depth)))
+                pygame.draw.polygon(surf, P["ink"], [(sx - r - ks, my - r - ks), (sx + r + ks, my - r - ks),
+                                                     (sx, my + ks)])
+                pygame.draw.polygon(surf, tag[2], [(sx - r, my - r), (sx + r, my - r), (sx, my)])
+        elif tag[0] == "label" and depth < 22:
+            text(surf, tag[1], int(sx), top - 8 * ks, P["gold"] if tag[2] else P["white"],
+                 scale=ks, align="center")
+        elif tag[0] == "locked" and depth < 4.5:
+            text(surf, "LOCKED - BUY THE LOT", int(sx), int(ground - 1.3 * D / depth),
+                 P["danger"], scale=ks, align="center")
+        elif tag[0] == "crate" and depth < 9:
+            label, price = S.MARKET[tag[1]]
+            text(surf, "%s $%d" % (label.split(" (")[0], price), int(sx),
+                 int(ground - 1.3 * D / depth), P["gold"], scale=ks, align="center")
+        elif tag[0] == "dolly" and tag[1] != 255:
+            ic = self._icon(bank, tag[1])
+            kk = D / depth / 14
+            iw = max(1, int(ic.get_width() * kk))
+            icon = pygame.transform.scale(ic, (iw, iw))
+            surf.blit(icon, (int(sx - iw / 2), int(ground - 0.9 * D / depth) - iw))
 
     # ------------------------------------------------------------------ (v0.9) cosmetic sillies
     def _air_height(self, row, now):
@@ -2082,13 +2121,33 @@ class FPRenderer:
         if 0 < r < 600:
             pygame.draw.circle(surf, col, (int(sx), sy), r, 0 if t < 0.3 else max(1, int(r * 0.2)))
 
-    def _particles(self, surf, cx, cy, yaw, eye, dt):
+    @staticmethod
+    def particle_look(p):
+        """(v0.20) A particle's (colour, size in metres) right now; both renderers use it."""
+        kind = p[8]
+        t = p[6] / p[7]
+        size = (0.12 if kind in (SPARK, DEBRIS) else 0.4 if kind != CONFETTI else 0.15) *             (1.0 + (1 - t) * (2.0 if kind == SMOKE else 0.0))
+        if kind == SPARK:
+            c = P["fire1"] if t > 0.5 else P["fire2"]
+        elif kind == FIRE:
+            c = (P["fire1"], P["fire2"], P["fire3"])[min(2, int((1 - t) * 3))]
+        elif kind == SMOKE:
+            c = P["smoke"] if t < 0.5 else P["smoke_l"]
+        elif kind == DUST:
+            c = (150, 146, 140)
+        else:
+            c = p[9] or P["metal_l"]
+        return c, size
+
+    def _particles(self, surf, cx, cy, yaw, eye, dt, sink=None):
+        """Move every particle, then draw it -- or (v0.20) with a `sink` list, hand the live ones
+        over instead (gl3d draws them as little 3D squares, depth-tested against everything)."""
         ca, sa = math.cos(yaw), math.sin(yaw)
         hor, D, vw, vh = self.hor, self.D, self.vw, self.vh
         zbuf = self.zbuf
-        fill = surf.fill
+        fill = surf.fill if surf is not None else None
         alive = []
-        fire_cols = (P["fire1"], P["fire2"], P["fire3"])
+        look = self.particle_look
         for p in self.particles:
             p[6] -= dt
             if p[6] <= 0:
@@ -2108,6 +2167,9 @@ class FPRenderer:
             p[3] *= d
             p[4] *= d
             alive.append(p)
+            if sink is not None:
+                sink.append(p)
+                continue
             dx, dy = p[0] - cx, p[1] - cy
             depth = dx * ca + dy * sa
             if depth < 0.3:
@@ -2118,19 +2180,8 @@ class FPRenderer:
             sy = int(hor + (eye - p[2]) * D / depth)
             if not (0 <= sy < vh):
                 continue
-            t = p[6] / p[7]
-            size = max(1, int((0.12 if kind in (SPARK, DEBRIS) else 0.4 if kind != CONFETTI else 0.15)
-                              * D / depth * (1.0 + (1 - t) * (2.0 if kind == SMOKE else 0.0))))
-            if kind == SPARK:
-                c = P["fire1"] if t > 0.5 else P["fire2"]
-            elif kind == FIRE:
-                c = fire_cols[min(2, int((1 - t) * 3))]
-            elif kind == SMOKE:
-                c = P["smoke"] if t < 0.5 else P["smoke_l"]
-            elif kind == DUST:
-                c = (150, 146, 140)
-            else:
-                c = p[9] or P["metal_l"]
+            c, sm = look(p)
+            size = max(1, int(sm * D / depth))
             fill(c, (sx - size // 2, sy - size // 2, size, size))
         self.particles = alive
         keep = []
