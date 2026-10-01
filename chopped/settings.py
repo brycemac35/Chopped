@@ -29,8 +29,8 @@ def settings_path():
 
 
 def _num(v, lo, hi, default):
-    """A number in [lo, hi] as an int; anything unusable (None, text, NaN, bool) is the default."""
-    if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v:
+    """A number in [lo, hi] as an int; anything unusable (None, text, NaN, +-Infinity, bool) is the default."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v or v in (float("inf"), float("-inf")):
         return default
     return int(max(lo, min(hi, round(v))))
 
@@ -108,7 +108,25 @@ def defaults():
             "master": C.VOL_MASTER_DEFAULT, "music": C.VOL_MUSIC_DEFAULT,
             "sfx": C.VOL_SFX_DEFAULT, "engine": C.VOL_ENGINE_DEFAULT,
             "name": "", "char": None,
-            "world_scale": getattr(C, "WORLD_SCALE_DEFAULT", 1), "servers": []}
+            "world_scale": getattr(C, "WORLD_SCALE_DEFAULT", 1), "servers": [],
+            "mouse_sens": C.MOUSE_SENS_DEFAULT, "invert_y": False}
+
+
+def mouse_mult(d):
+    """The MOUSE SENSITIVITY slider as a multiplier (1.0 = the tuned feel), clamped."""
+    return _num(d.get("mouse_sens"), C.MOUSE_SENS_MIN, C.MOUSE_SENS_MAX, C.MOUSE_SENS_DEFAULT) / 100.0
+
+
+def yaw_delta(d, rel):
+    """Radians of turn for `rel` mouse counts sideways (mouse-look yaw and the chase-cam orbit)."""
+    return rel * C.MOUSE_SENS * mouse_mult(d)
+
+
+def pitch_delta(d, rely, view_h):
+    """Change in the pitch shear (view pixels) for `rely` mouse counts down. Normally mouse up looks
+    up (rely < 0 -> positive); INVERT Y flips it, flight-stick style."""
+    sign = -1.0 if d.get("invert_y") is True else 1.0
+    return -rely * C.MOUSE_PITCH_SENS * view_h * mouse_mult(d) * sign
 
 
 def sanitize(data):
@@ -122,6 +140,8 @@ def sanitize(data):
         d[k] = _num(data.get(k), 0, 100, d[k])
     lo, hi, dflt = _world_range()
     d["world_scale"] = _num(data.get("world_scale"), lo, hi, d["world_scale"])
+    d["mouse_sens"] = _num(data.get("mouse_sens"), C.MOUSE_SENS_MIN, C.MOUSE_SENS_MAX, d["mouse_sens"])
+    d["invert_y"] = data.get("invert_y") is True        # (only a real true; "yes" or 1 is junk)
     d["servers"] = _clean_servers(data.get("servers"))
     d["name"] = _clean_name(data.get("name"))
     ch = data.get("char")
@@ -132,7 +152,7 @@ def sanitize(data):
 
 def load(path=None):
     try:
-        with open(path or settings_path(), "r", encoding="utf-8") as f:
+        with open(path or settings_path(), "r", encoding="utf-8-sig") as f:     # (-sig: Notepad's BOM)
             return sanitize(json.load(f))
     except (OSError, ValueError):
         return defaults()

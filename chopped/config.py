@@ -284,6 +284,13 @@ SMOKE_SCREEN_MAX = 8
 HOP_TIME = 0.7                   # s of hydraulic bounce per press of X (and you can't re-hop mid-air)
 HOP_CROWD_RANGE = 14.0           # peds this close stop to enjoy the lowrider show (and don't witness)
 PRICE_HYDRAULICS = 500
+# ---- (v0.19) the jack: bolt a wheel back on a car parked OUTSIDE the shop ------------------------
+# Bryce: "be able to reinstall wheels when the car is parked outside the shop. Takes 15 seconds and
+# requires a new item called jack." A crew tool (like the locker and the dolly: one jack, everybody
+# borrows it), bought once at shop 2's counter or better (EXTRA_SHOP_TIER), never used up.
+PRICE_JACK = 150                 # $ once. Cheap on purpose: the pain is the 15 s, not the receipt
+JACK_FIT_TIME = 15.0             # s of hold-E per wheel. Long enough that you do it with a lookout, not mid-chase
+JACK_MAX_SPEED = 1.0             # m/s: a car that's still rolling can't be jacked (traffic you've stopped is fine)
 
 # --------------------------------------------------------------------------
 # v0.7 mod shop and parts locker (garage.py)
@@ -886,7 +893,7 @@ PART_SHOP_TIER = {
     # shop 4: the two engines people get murdered over
     "eng_tt_3_0": 3, "eng_sc_6_2": 3,
 }
-EXTRA_SHOP_TIER = (1, 2, 0, 1)   # NOS, ejector seat, gnome mount, hydraulics (garage.EXTRA_*)
+EXTRA_SHOP_TIER = (1, 2, 0, 1, 1)   # NOS, ejector seat, gnome mount, hydraulics, the jack (garage.EXTRA_*)
 # ---- Dave the auctioneer (the old sell bench) --------------------------------------------------
 # (label, price x value, chance somebody bids, s to the hammer). Ask more and you wait longer and
 # might get nothing: an unsold part goes back in the locker, an unsold car stays in the shop. The
@@ -1088,6 +1095,12 @@ FP_FLOOR_DIST = 70.0             # metres of textured street before it fades to 
 FP_SPRITE_DIST = 95.0            # beyond this, cars and people aren't drawn (matches the net cull)
 FP_TURN_SPEED = 2.8              # rad/s turning with the arrow keys
 MOUSE_SENS = 0.0032              # rad per mouse pixel
+# (v0.19) the player's MOUSE SENSITIVITY slider multiplies MOUSE_SENS and MOUSE_PITCH_SENS. Stored as an
+# integer percent in settings.json (the settings code only deals in ints): 100 = the tuning above.
+MOUSE_SENS_MIN = 25              # 0.25x: slow enough for a sniper's patience, or a very large desk
+MOUSE_SENS_MAX = 300             # 3x: one flick of the wrist is a U-turn; past this nobody can aim
+MOUSE_SENS_DEFAULT = 100         # 1.0x, the feel the game was tuned at
+MOUSE_SENS_STEP = 5              # A/D steps the slider 5 points (0.05x)
 FP_BOB = 0.06                    # metres of head bob when walking (Doom had lots; this has some)
 
 
