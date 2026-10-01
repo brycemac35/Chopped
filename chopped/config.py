@@ -284,6 +284,13 @@ SMOKE_SCREEN_MAX = 8
 HOP_TIME = 0.7                   # s of hydraulic bounce per press of X (and you can't re-hop mid-air)
 HOP_CROWD_RANGE = 14.0           # peds this close stop to enjoy the lowrider show (and don't witness)
 PRICE_HYDRAULICS = 500
+# ---- (v0.19) the jack: bolt a wheel back on a car parked OUTSIDE the shop ------------------------
+# Bryce: "be able to reinstall wheels when the car is parked outside the shop. Takes 15 seconds and
+# requires a new item called jack." A crew tool (like the locker and the dolly: one jack, everybody
+# borrows it), bought once at shop 2's counter or better (EXTRA_SHOP_TIER), never used up.
+PRICE_JACK = 150                 # $ once. Cheap on purpose: the pain is the 15 s, not the receipt
+JACK_FIT_TIME = 15.0             # s of hold-E per wheel. Long enough that you do it with a lookout, not mid-chase
+JACK_MAX_SPEED = 1.0             # m/s: a car that's still rolling can't be jacked (traffic you've stopped is fine)
 
 # --------------------------------------------------------------------------
 # v0.7 mod shop and parts locker (garage.py)
@@ -886,7 +893,7 @@ PART_SHOP_TIER = {
     # shop 4: the two engines people get murdered over
     "eng_tt_3_0": 3, "eng_sc_6_2": 3,
 }
-EXTRA_SHOP_TIER = (1, 2, 0, 1)   # NOS, ejector seat, gnome mount, hydraulics (garage.EXTRA_*)
+EXTRA_SHOP_TIER = (1, 2, 0, 1, 1)   # NOS, ejector seat, gnome mount, hydraulics, the jack (garage.EXTRA_*)
 # ---- Dave the auctioneer (the old sell bench) --------------------------------------------------
 # (label, price x value, chance somebody bids, s to the hammer). Ask more and you wait longer and
 # might get nothing: an unsold part goes back in the locker, an unsold car stays in the shop. The

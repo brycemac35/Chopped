@@ -165,14 +165,15 @@ class ModShop:
                 out.append(Item(name + " NEON", "FITTED" if m["glow"] == c + 1 else "$%d" % C.PRICE_GLOW,
                                 G.OP_GLOW, c + 1, preview=("glow", c + 1), col=CAR_COLORS[c]))
         elif kind == "extra":
-            owned = (m["nos"], m["ejector"], m["gnome"], m.get("hydro", False))
+            owned = (m["nos"], m["ejector"], m["gnome"], m.get("hydro", False), m.get("jack", False))
             tier = m.get("tier", 0)
             for k, name in enumerate(G.EXTRA_NAMES):
                 need = C.EXTRA_SHOP_TIER[k] if k < len(C.EXTRA_SHOP_TIER) else 0
                 if not owned[k] and need > tier:
                     out.append(Item(name, "SHOP %d ONLY" % (need + 1), col=(120, 118, 130)))
                     continue
-                out.append(Item(name, "FITTED" if owned[k] else "$%d" % G.extra_price(k), G.OP_EXTRA, k,
+                out.append(Item(name, ("OWNED" if k == G.EXTRA_JACK else "FITTED") if owned[k] else "$%d" % G.extra_price(k),
+                                G.OP_EXTRA, k,
                                 preview=("gnome", True) if k == G.EXTRA_GNOME else None))
         elif kind == "switch":
             # (v0.10) any delivered car sitting in the shop becomes your new personal ride

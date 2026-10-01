@@ -85,6 +85,8 @@ def dump(world):
         # (v0.14) the business: Mo's dolly, and how much junk is left in each garage you own
         # (orders, the auction and sold cars are the day's weather: they start fresh)
         "dolly_level": world.dolly_level, "dolly_job": world.dolly_job,
+        # (v0.19) the crew's jack: a tool you paid for stays paid for
+        "has_jack": world.has_jack,
         "junk_left": {str(i): len(v) for i, v in world.junk.items()},
     }
 
@@ -118,6 +120,7 @@ def apply(world, data):
     world.story_n, world.story_flags, world.story_told = 0, {}, False
     world.dolly_level = max(0, min(len(C.DOLLY_UPGRADES), int(data.get("dolly_level", 0))))
     world.dolly_job = bool(data.get("dolly_job", False))
+    world.has_jack = bool(data.get("has_jack", False))
     world.lots = []
     world._reset_workshops()                 # (unowned garages full again, owned ones as they were:)
     junk_left = data.get("junk_left")
