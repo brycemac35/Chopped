@@ -17,6 +17,7 @@ tested headless and the Audio class turns them into Sounds.
 
 import math
 import random
+import time
 
 BPM = 140
 STEPS_PER_BAR = 16
@@ -44,6 +45,8 @@ class Beat:
     def __init__(self, rate=22050, seed=140):
         self.rate = rate
         self.rng = random.Random(seed)
+        self.nap = 0.0                # seconds slept after each voice is mixed (the background render sets it)
+        self._voices = {}             # (voice, args) -> samples: the repeated notes of the loop render once
         self.step = 60.0 / BPM / 4.0
         self.n = int(round(self.step * STEPS_PER_BAR * BARS * rate))
 
@@ -58,16 +61,29 @@ class Beat:
         n = int(length * r)
         out = [0.0] * n
         ph = 0.0
+        punch, decay = self._tab808(n)                 # exp(-38 t), exp(-1.6 t): the same for every note this long
+        sin, tanh = math.sin, math.tanh
+        two_pi_r = 2 * math.pi / r
+        gl = f1 != f0
+        g0, gw, tail = length * 0.55, length * 0.35, length - 0.03
         for i in range(n):
             t = i / r
-            glide = min(1.0, max(0.0, (t - length * 0.55) / (length * 0.35))) if f1 != f0 else 0.0
-            f = f0 + (f1 - f0) * glide
-            f *= 1.0 + 1.6 * math.exp(-t * 38.0)              # the punch
-            ph += 2 * math.pi * f / r
-            env = min(1.0, t * 400) * math.exp(-t * 1.6) * (1.0 - max(0.0, (t - length + 0.03) / 0.03))
-            v = math.sin(ph) * env * 1.6
-            out[i] = math.tanh(v)
+            f = f0
+            if gl:
+                f = f0 + (f1 - f0) * min(1.0, max(0.0, (t - g0) / gw))
+            f *= 1.0 + 1.6 * punch[i]                     # the punch
+            ph += two_pi_r * f
+            env = min(1.0, t * 400) * decay[i] * (1.0 - max(0.0, (t - tail) / 0.03))
+            out[i] = tanh(sin(ph) * env * 1.6)
         return out
+
+    def _tab808(self, n):
+        got = self._voices.get(("tab808", n))
+        if got is None:
+            r = self.rate
+            got = self._voices[("tab808", n)] = ([math.exp(-(i / r) * 38.0) for i in range(n)],
+                                                 [math.exp(-(i / r) * 1.6) for i in range(n)])
+        return got
 
     def kick(self):
         r = self.rate
@@ -134,19 +150,40 @@ class Beat:
         n = int(length * r)
         out = [0.0] * n
         p1 = p2 = pm = 0.0
+        env_t, wob_t, mod_t = self._tab_bell(n)       # the envelopes don't depend on the pitch: shared by all the notes
+        sin = math.sin
+        c2 = 2 * math.pi * f * 1.007 / r
+        cm = 2 * math.pi * f * 3.5 / r
+        c1 = 2 * math.pi * f / r
         for i in range(n):
-            t = i / r
-            env = math.exp(-t * 2.2) * min(1.0, t * 200)
-            wob = 1.0 + 0.004 * math.sin(t * 5.5)
-            pm += 2 * math.pi * f * 3.5 / r
-            mod = math.sin(pm) * 1.2 * math.exp(-t * 6)
-            p1 += 2 * math.pi * f * wob / r
-            p2 += 2 * math.pi * f * 1.007 / r
-            out[i] = (math.sin(p1 + mod) * 0.6 + math.sin(p2) * 0.25) * env
+            pm += cm
+            p1 += c1 * wob_t[i]
+            p2 += c2
+            out[i] = (sin(p1 + sin(pm) * mod_t[i]) * 0.6 + sin(p2) * 0.25) * env_t[i]
         return out
 
+    def _tab_bell(self, n):
+        got = self._voices.get(("tabbell", n))
+        if got is None:
+            r = self.rate
+            ts = [i / r for i in range(n)]
+            got = self._voices[("tabbell", n)] = (
+                [math.exp(-t * 2.2) * min(1.0, t * 200) for t in ts],
+                [1.0 + 0.004 * math.sin(t * 5.5) for t in ts],
+                [1.2 * math.exp(-t * 6) for t in ts])
+        return got
+
     # ------------------------------------------------------------------ mixing
+    def cached(self, name, *args):
+        """A deterministic voice (no rng) rendered once per distinct argument set. Callers only read it."""
+        got = self._voices.get((name, args))
+        if got is None:
+            got = self._voices[(name, args)] = getattr(self, name)(*args)
+        return got
+
     def add(self, buf, sound, start, gain):
+        if self.nap:
+            time.sleep(self.nap)
         n = self.n
         for i, v in enumerate(sound):
             j = start + i
@@ -169,7 +206,7 @@ class Beat:
             for step, length, slide in BASS_HITS:
                 f0 = _semi(ROOT_808, root + (12 if (b == 7 and step == 10) else 0))
                 f1 = _semi(ROOT_808, nxt) if slide else f0
-                self.add(street, self.s808(f0, f1, length * self.step), self.at(b * bar + step), 0.9)
+                self.add(street, self.cached("s808", f0, f1, length * self.step), self.at(b * bar + step), 0.9)
             self.add(street, kick, self.at(b * bar), 0.7)
             self.add(street, kick, self.at(b * bar + 10), 0.55)
             self.add(street, clap, self.at(b * bar + 8), 0.6)
@@ -188,7 +225,7 @@ class Beat:
             self.add(heat, open_hat, self.at(b * bar + 14), 0.25)
         for loop in range(BARS // 2):
             for step, st in COWBELL:
-                self.add(heat, self.cowbell(_semi(ROOT_BELL * 1.5, st)), self.at(loop * 2 * bar + step), 0.35)
+                self.add(heat, self.cached("cowbell", _semi(ROOT_BELL * 1.5, st)), self.at(loop * 2 * bar + step), 0.35)
         for k, st in enumerate(BELL):
             self.add(street, self.bell(_semi(ROOT_BELL, st)), self.at(k * bar // 2), 0.28)
         # vinyl: crackle and a little hiss, because it was definitely recorded in a basement
@@ -202,11 +239,14 @@ class Beat:
 
     @staticmethod
     def _normalise(buf, peak=0.92):
-        m = max(1e-6, max(abs(v) for v in buf))
+        m = max(1e-6, max(buf), -min(buf))
         k = peak / m
         return [v * k for v in buf]
 
 
-def compose(rate=22050):
-    """(street layer, heat layer), equal length, loopable."""
-    return Beat(rate).compose()
+def compose(rate=22050, nap=0.0):
+    """(street layer, heat layer), equal length, loopable. nap > 0 sleeps that long after every voice
+    is mixed, so a background render shares the interpreter with the frame loop."""
+    b = Beat(rate)
+    b.nap = nap
+    return b.compose()

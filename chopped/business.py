@@ -44,7 +44,7 @@ from .enums import *  # noqa: F401,F403
 from .entities import Trap
 from .parts import Part, DOLLY, engine_class, ENGINE_CLASS_NAMES
 from . import vehicles as V
-from .quests import wrap
+from .quests import wrap, compass_word
 from .characters import stat
 from .lines import (JUNK_LINES, CLEANUP_LINES, SHOP_OPEN_LINES, AUCTION_SOLD_LINES, AUCTION_UNSOLD_LINES,
                     CAR_SOLD_LINES, CAR_UNSOLD_LINES, HANDOVER_LINES, PAPERS_LINES, PAPERS_REFUSED,
@@ -96,6 +96,8 @@ class Business:
         self.order_rep_today = 0
         self.dolly_level = 0            # index into what the dolly can lift (ENGINE_CLASS_NAMES)
         self.dolly_job = False          # Mo's told you what he needs for the next one
+        self.papers_pick = {}           # (v0.19) pid -> car id the records hatch is currently offering them
+        self.papers_asked = set()       # (v0.19) pids who tried to sell a car whole and were sent for papers
         self._reset_workshops()
         self._roll_orders()
 
@@ -121,6 +123,11 @@ class Business:
         if idx == 0:
             return True
         return self.shop_owned[idx] and not self.junk.get(idx)
+
+    def lot_cap(self):
+        """(v0.19) how many lots Dave's book holds: a base, plus a few for each extra open garage."""
+        extra = sum(1 for i in range(1, len(self.shop_owned)) if self.shop_ready(i))
+        return C.AUCTION_MAX_LOTS + C.AUCTION_LOTS_PER_SHOP * extra
 
     def shops_byte(self):
         """(wire) bits 0-3: owned. Bits 4-7: open for business (cleared out)."""
@@ -306,7 +313,7 @@ class Business:
 
     def _auction_interaction(self, p):
         """Dave's counter: whatever you're holding goes under the hammer at your price."""
-        if len(self.lots) >= C.AUCTION_MAX_LOTS:
+        if len(self.lots) >= self.lot_cap():
             return (None, "DAVE: THE BOOK'S FULL (%d LOTS). WAIT FOR A HAMMER, %dS" % (
                 len(self.lots), int(self.next_hammer()) + 1), 0, None)
         tag = self.ask_label(p)
@@ -336,7 +343,7 @@ class Business:
 
     def _list_part(self, part, tier, who=None):
         """Under the hammer. Returns False (and does nothing) if Dave's book is full."""
-        if len(self.lots) >= C.AUCTION_MAX_LOTS:
+        if len(self.lots) >= self.lot_cap():
             return False
         ask = ask_price(part.value, tier)
         t = self._hammer_time(tier)
@@ -365,7 +372,7 @@ class Business:
         return bx + bw / 2, by + bh / 2
 
     def _list_car(self, p, car):
-        if car.state != DELIVERED or not car.papers or car.lot or len(self.lots) >= C.AUCTION_MAX_LOTS:
+        if car.state != DELIVERED or not car.papers or car.lot or len(self.lots) >= self.lot_cap():
             return
         name = V.model(car.model).name.upper()
         ask = ask_price(self.whole_price(car), p.ask)
@@ -379,6 +386,14 @@ class Business:
 
     def _lot_of(self, car):
         return next((lot for lot in self.lots if lot.car_id == car.id), None)
+
+    def _listing_fee(self, lot):
+        """(v0.19) a lot nobody bid on costs its tier's share of the ask (only GREEDY: see
+        config.AUCTION_UNSOLD_FEE). Never takes you below $0: Dave isn't a bank."""
+        fee = min(self.cash, int(round(lot.ask * C.AUCTION_UNSOLD_FEE[lot.tier])))
+        if fee > 0:
+            self.cash -= fee
+            self._tell("DAVE KEEPS A $%d LISTING FEE. GREED HAS A PRICE." % fee, T_BAD)
 
     def _auction_tick(self, dt):
         if not self.lots:
@@ -400,6 +415,7 @@ class Business:
                 else:
                     self._to_locker(lot.part)
                     self._tell(self.rng.choice(AUCTION_UNSOLD_LINES) % (lot.name, lot.ask), T_BAD)
+                    self._listing_fee(lot)
                 continue
             car = self.cars.get(lot.car_id)
             if car is None or car.state != DELIVERED:
@@ -407,6 +423,7 @@ class Business:
             car.lot = False
             if not sold:
                 self._tell(self.rng.choice(CAR_UNSOLD_LINES) % (lot.name, lot.ask), T_BAD)
+                self._listing_fee(lot)
                 continue
             lot.ask = self._sale_pay(lot.who, lot.ask)   # (the lister's charm goes into the agreed price)
             if not self.map.contacts:
@@ -429,15 +446,35 @@ class Business:
         """What THIS player pays: the clerk knows a guy (characters: fee_mult)."""
         return int(self.papers_price(car) * stat(p.char, "fee_mult"))
 
-    def _papers_candidate(self):
-        best, bv = None, -1
-        for car in self.cars.values():
-            if car.kind != CIV or car.state != DELIVERED or car.papers or car.lot:
-                continue
-            v = self.whole_price(car)
-            if v > bv:
-                best, bv = car, v
-        return best
+    def _papers_candidates(self):
+        """Delivered cars with no logbook and no lot, priciest first (then by id: a stable order to cycle)."""
+        cars = [c for c in self.cars.values() if c.kind == CIV and c.state == DELIVERED and not c.papers and not c.lot]
+        return sorted(cars, key=lambda c: (-self.whole_price(c), c.id))
+
+    def _papers_candidate(self, p=None):
+        """The car the hatch is offering: the one this player cycled to, else the priciest."""
+        cars = self._papers_candidates()
+        if p is not None:
+            pick = self.papers_pick.get(p.id)
+            for c in cars:
+                if c.id == pick:
+                    return c
+        return cars[0] if cars else None
+
+    def _cycle_papers(self, p):
+        """(v0.19, bug: it always picked the priciest) X at the hatch: offer the next car."""
+        cars = self._papers_candidates()
+        if len(cars) < 2:
+            return
+        cur = self._papers_candidate(p)
+        i = cars.index(cur) if cur in cars else -1
+        self.papers_pick[p.id] = cars[(i + 1) % len(cars)].id
+        self.sfx(S_SQUEAK, p.x, p.y)
+
+    def wants_papers(self, p):
+        """(v0.19) this player asked to sell a car whole and a delivered car still lacks its papers:
+        the green compass points at the records hatch (protocol.encode_biz bit 5)."""
+        return p is not None and p.id in self.papers_asked and self._papers_candidate() is not None
 
     def _records_interaction(self, p, ax, ay):
         rec = self.map.records
@@ -445,21 +482,27 @@ class Business:
             return None
         if self.heat > C.PAPERS_MAX_HEAT or p.jumpsuit:
             return (None, PAPERS_REFUSED, 0, None)
-        car = self._papers_candidate()
+        car = self._papers_candidate(p)
         if car is None:
             return (None, "RECORDS: PAPERS FOR A CAR YOU'VE 'BOUGHT'. GET ONE HOME TO THE SHOP FIRST.", 0, None)
         price = self.papers_cost(p, car)
         name = V.model(car.model).name.upper()
+        cars = self._papers_candidates()
+        cycle = (lambda: self._cycle_papers(p)) if len(cars) > 1 else None      # noqa: E731
+        more = "   X: NEXT CAR (%d/%d)" % (cars.index(car) + 1, len(cars)) if cycle else ""
+        alt = (cycle,) if cycle else ()
         if self.cash < price:
-            return (None, "RECORDS: PAPERS FOR THE %s, $%d - CAN'T AFFORD THEM" % (name, price), 0, None)
-        return (("papers", car.id), "HOLD E: BUY PAPERS FOR THE %s - $%d" % (name, price), C.PAPERS_TIME,
-                lambda: self._buy_papers(p, car, price))
+            return (None, "RECORDS: PAPERS FOR THE %s, $%d - CAN'T AFFORD THEM%s" % (name, price, more), 0, None) + alt
+        return (("papers", car.id), "HOLD E: BUY PAPERS FOR THE %s - $%d%s" % (name, price, more), C.PAPERS_TIME,
+                lambda: self._buy_papers(p, car, price)) + alt
 
     def _buy_papers(self, p, car, price):
         if self.cars.get(car.id) is not car or car.papers or self.cash < price or self.heat > C.PAPERS_MAX_HEAT:
             return
         self.cash -= price
         car.papers = True
+        self.papers_pick.pop(p.id, None)
+        self.papers_asked.discard(p.id)             # (the errand's done: the arrow can stop nagging)
         self.sfx(S_CASH, p.x, p.y)
         line = self.rng.choice(PAPERS_LINES)
         self._tell(line % ((V.model(car.model).name.upper(), price) if line.count("%") == 2 else price), T_MONEY)
@@ -473,7 +516,7 @@ class Business:
             return (None, "THE %s IS UNDER THE HAMMER: $%d, %dS TO GO" % (
                 name, lot.ask if lot else 0, int(lot.t) + 1 if lot else 0), 0, None)
         if car.papers:
-            if len(self.lots) >= C.AUCTION_MAX_LOTS:
+            if len(self.lots) >= self.lot_cap():
                 return (None, "DAVE'S BOOK IS FULL. WAIT FOR A HAMMER, THEN LIST THE %s" % name, 0, None, cycle)
             ask = ask_price(self.whole_price(car), p.ask)
             return (("listcar", car.id), "HOLD E: AUCTION THE %s WHOLE AT $%d (%s)   X: PRICE" % (
@@ -482,8 +525,14 @@ class Business:
         return (res[0], label + "X: SELL WHOLE?", res[2], res[3], lambda: self._no_papers(p, car))
 
     def _no_papers(self, p, car):
-        self._say("DAVE", "NO PAPERS, NO AUCTION. THE PRECINCT'S RECORDS HATCH SELLS THEM. ABOUT $%d FOR THAT."
-                  % self.papers_price(car))
+        where = ""
+        rec = self.map.records
+        if rec is not None:
+            dx, dy = rec[0] - p.x, rec[1] - p.y
+            where = " IT'S %dM %s OF HERE (FOLLOW THE GREEN ARROW)." % (int(math.hypot(dx, dy)), compass_word(dx, dy))
+        self.papers_asked.add(p.id)
+        self._say("DAVE", "NO PAPERS, NO AUCTION. THE PRECINCT'S RECORDS HATCH SELLS THEM, ABOUT $%d FOR THAT.%s"
+                  % (self.papers_price(car), where))
 
     def _sale_deliveries(self):
         for car in list(self.cars.values()):
@@ -642,12 +691,12 @@ class Business:
 
     def dolly_refusal(self, part):
         need = engine_class(part.type_id)
-        up = C.DOLLY_UPGRADES[need - 1] if 0 < need <= len(C.DOLLY_UPGRADES) else None
-        why = "A %s ON THE STOCK DOLLY? IT'D FOLD" % ENGINE_CLASS_NAMES[need] if self.dolly_level == 0 else \
-            "TOO MUCH ENGINE FOR THIS DOLLY"
+        up = self._mo_job()                        # (the NEXT upgrade Mo can build, not the one for this engine)
+        # (v0.19) say it plainly and point at Mo: "the dolly's too small" was buried in a joke
+        why = "THE DOLLY'S TOO SMALL FOR A %s" % ENGINE_CLASS_NAMES[need]
         if up is not None:
             return "%s. MO BUILDS THE %s (REP %d)" % (why, up[4], up[0])
-        return why
+        return why + ". ASK MO"
 
     def _mo_job(self):
         return C.DOLLY_UPGRADES[self.dolly_level] if self.dolly_level < len(C.DOLLY_UPGRADES) else None

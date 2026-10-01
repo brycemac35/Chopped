@@ -88,7 +88,15 @@ class ModShop:
             self.seq = menu["ack"]                # nothing of ours is in flight yet
             self.pending.clear()
             self.focus = 0
+        # (v0.18.2) a buy can slide a LOCKER row in above the highlight; keep it on the same row,
+        # or a second Enter quietly swaps your shiny new part back out for the old one
+        old = self.items() if self.focus == 1 else ()
+        label = old[self.item].label if 0 <= self.item < len(old) else None
         self.menu = menu
+        if label is not None:
+            same = [i for i, it in enumerate(self.items()) if it.label == label]
+            if same and self.item not in same:
+                self.item = min(same, key=lambda i: abs(i - self.item))
 
     def next_command(self):
         """(seq, op, a, b) to put in this tick's input. A new command only goes
@@ -125,7 +133,7 @@ class ModShop:
             for i, (tid, style, cond) in enumerate(m["stash"]):
                 if PART_DEFS[tid][1] == cat:
                     out.append(Item("LOCKER: " + Part(tid, cond, style).name.upper(), "%d%%  FIT" % (cond * 100),
-                                    G.OP_INSTALL, i, si, preview=("slot", slot, (tid, style, cond)), col=P["gold"]))
+                                    G.OP_INSTALL, *G.pack_install(i, si, tid), preview=("slot", slot, (tid, style, cond)), col=P["gold"]))
             tier = m.get("tier", 0)
             for k, (tid, style, price) in enumerate(G.catalogue(slot)):
                 need = G.part_tier(tid)

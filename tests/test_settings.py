@@ -85,6 +85,48 @@ class TestSettingsFile(unittest.TestCase):
         with open(SET.settings_path()) as f:
             self.assertIsInstance(json.load(f), dict)
 
+    def test_world_scale_clamps(self):
+        lo, hi = SET._world_range()[:2]
+        self.assertEqual(SET.sanitize({"world_scale": 99})["world_scale"], hi)
+        self.assertEqual(SET.sanitize({"world_scale": -4})["world_scale"], lo)
+        self.assertEqual(SET.sanitize({"world_scale": "x"})["world_scale"], SET.defaults()["world_scale"])
+
+    def test_servers_default_empty_and_old_files(self):
+        self.assertEqual(SET.defaults()["servers"], [])
+        with open(SET.settings_path(), "w") as f:
+            json.dump({"fov": 100}, f)                     # a v0.17 file
+        self.assertEqual(SET.load()["servers"], [])
+
+    def test_servers_round_trip_dedupe_and_order(self):
+        sv = []
+        for i, a in enumerate(["10.0.0.1", "HostA.example.com:28000", "10.0.0.1:%d" % C.DEFAULT_PORT, "10.0.0.2"]):
+            sv = SET.remember_server(sv, a, name="bob" if i == 1 else None, now=1000 + i)
+        self.assertEqual([e["addr"] for e in sv], ["10.0.0.2", "10.0.0.1", "HostA.example.com:28000"])
+        self.assertEqual(sv[2]["name"], "BOB")
+        sv = SET.remember_server(sv, "hosta.example.com:28000", now=2000)      # same host, any case: moves up, keeps its name
+        self.assertEqual(sv[0]["addr"], "hosta.example.com:28000")
+        self.assertEqual(sv[0]["name"], "BOB")
+        self.assertEqual(len(sv), 3)
+        SET.save({"servers": sv})
+        self.assertEqual(SET.load()["servers"], sv)
+
+    def test_servers_cap_and_junk(self):
+        sv = []
+        for i in range(12):
+            sv = SET.remember_server(sv, "10.0.0.%d" % i, now=100 + i)
+        self.assertEqual(len(sv), SET.SERVERS_MAX)
+        self.assertEqual(sv[0]["addr"], "10.0.0.11")
+        d = SET.sanitize({"servers": [None, 5, {"addr": ""}, {"addr": "bad addr!"}, {"addr": "x" * 200, "last": "no"},
+                                      {"addr": "a.b", "name": 7, "last": -5}, "1.2.3.4"]})
+        self.assertEqual(sorted(e["addr"] for e in d["servers"]),
+                         sorted(["badaddr", "x" * SET.ADDR_MAX, "a.b", "1.2.3.4"]))
+        for e in d["servers"]:
+            self.assertGreaterEqual(e["last"], 0)
+            self.assertLessEqual(len(e["addr"]), SET.ADDR_MAX)
+            self.assertNotIn("name", e)
+        self.assertEqual(SET.sanitize({"servers": "nope"})["servers"], [])
+        self.assertEqual(SET.remember_server([], "  "), [])
+
     def test_volumes_are_floats_0_to_1(self):
         v = SET.volumes({"master": 100, "music": 70, "sfx": 0, "engine": 80})
         self.assertEqual(v, (1.0, 0.7, 0.0, 0.8))
@@ -132,7 +174,7 @@ class TestSettingsPanel(unittest.TestCase):
 
     def test_mouse_click_and_drag_slider(self):
         p = self.panel
-        t = p.track_rect(2)                                # MASTER
+        t = p.track_rect([r[0] for r in p.ROWS].index("master"))
         ev = self.pg.event.Event(self.pg.MOUSEBUTTONDOWN, button=1, pos=(t.x, t.centery))
         p.handle(ev)
         self.assertEqual(self.data["master"], 0)

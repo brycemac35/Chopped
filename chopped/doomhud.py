@@ -1039,6 +1039,8 @@ class DoomHud:
             lines.append(("...IS THE BOOT HONKING?", (255, 150, 200)))
         if flags & S.INSP_OWNER:
             lines.append(("SOMEONE'S WATCHING IT FROM A WINDOW", P["danger"]))
+        if flags & getattr(S, "INSP_HOT", 0):
+            lines.append(("HOT: DRAWS HEAT", P["danger"]))    # (v0.19) sporty models cost double to take
         shown = min(len(lines), 1 + int((age - C.INSPECT_DELAY) * 40))          # (types itself out)
         h = 4 + 8 * len(lines)
         low.blit(self._panel(w, h, 160), (x, y))
@@ -1600,7 +1602,7 @@ class DoomHud:
                      "COP CARS CARJACK LIKE TRAFFIC: STOP ONE, HOLD E, DRAG THE OFFICER OUT (+30 HEAT)",
                      "THE IMPOUND BIKES OUTSIDE THE PRECINCT HAVE THE KEYS IN.  H: HORN (CONFUSES COPS)")),
         ("SILLY", ("V CHASE CAM   TAB MAP   T DANCE   M MUSIC   F8 FISHEYE   F9 BIG HEADS   F10 DISCO   C BOX",
-                  "PAUSE (ESC): I INSTRUCTIONS   S SETTINGS (FOV, RENDER SCALE, VOLUMES)   Q LEAVE TO MENU")),
+                  "PAUSE (ESC): I INSTRUCTIONS   S SETTINGS (FOV, RENDER SCALE, WORLD DETAIL, VOLUMES, SAVE FILES)   Q LEAVE TO MENU")),
     )
 
     def pause_hit(self, pos):

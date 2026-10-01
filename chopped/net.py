@@ -151,6 +151,11 @@ class Server:
         path = self.save_path
 
         def _save(w):
+            if w.gameover_t > 0:
+                # (v0.18.2) SHOP SEIZED banner: the world still holds the seized assets until
+                # reset_run fires, and a save now would hand them back. Wait for the reset.
+                w.toast("SHOP SEIZED. NO SAVING UNTIL THE LANDLORD'S DONE.", T_BAD)
+                return
             ok = SF.save_to(w, path)
             w.toast("GAME SAVED. DAY %d, $%d." % (w.day, w.cash) if ok else "COULDN'T WRITE THE SAVE FILE!",
                     T_INFO if ok else T_BAD)
@@ -180,6 +185,10 @@ class Server:
             self.thread.join(timeout=2.0)
         self.running = False
         if self.save_path:
+            if self.world.gameover_t > 0:
+                # (v0.18.2) quit mid-banner: finish the seizure now, so the file holds the NEW run
+                # and not the assets the landlord just took (quitting can't undo SHOP SEIZED)
+                self.world.reset_run()
             SF.save_to(self.world, self.save_path)      # the world's quiescent now the thread's joined
         for c in list(self.clients.values()):
             for _ in range(3):
@@ -211,7 +220,8 @@ class Server:
         self._timeouts(now)
         if self.save_path and now >= self._next_save:
             self._next_save = now + C.AUTOSAVE_INTERVAL
-            SF.save_to(self.world, self.save_path)
+            if self.world.gameover_t <= 0:      # (v0.18.2) never autosave the seized assets
+                SF.save_to(self.world, self.save_path)
         return self._next_tick - time.perf_counter()
 
     def _send(self, data, addr):

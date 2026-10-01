@@ -88,6 +88,25 @@ feature is already touching it.
 
 ## 1. Status and your tasks, in order
 
+### Where things stand (Sept 30, 2026, v0.18.2 playtest fixes, uncommitted, RELEASE not bumped)
+- Bryce: "play test the game until 10 bugs appear". Ten windowed QA bots found 11; all fixed, no
+  wire change (VERSION stays 17). Tests: `tests/test_v0182_server.py`, `tests/test_v0182_sim.py`.
+  **561 total, all OK.** Fixes: no saving during SHOP SEIZED (`net.py`; quitting mid-banner saves
+  the reset run); bought fence garages are no police/ped sanctuary, only the home shop is
+  (`sim._collect_targets`, `police._law_targets`, `brawl._brawler`); sold/listed cars and cars a
+  player took are never towed as bail wrecks (`bailed` cleared in `_enter_car`); dolly strips the
+  nearest in-reach engine; held parts don't hijack a delivered car's rear strip prompts; break-in /
+  wrong-wire heat goes through `_crime` (resets cooling); haymaker: fists punch on release, a held
+  charge lands, a whiff toasts `WHIFF_LINES`; OP_INSTALL carries the part type in spare bits
+  (`garage.pack_install`/`unpack_install`, keep `STASH_MAX` < 64) so a double Enter can't fit the
+  wrong part; SWITCH CAR toasts why it refused; story car chapters reset when the tracked car is
+  gone; Night Job / The Repo / Clown Car Chaos fail when their car is gone (`quests.CAR_LOST_JOBS`);
+  SLIM's prompt says SILENT and hides cut-the-wires; mod shop highlight stays on its row after a
+  buy; Paige's chapter-3 line no longer says "come back" before the REP gate.
+- **Flagged for Bryce:** punches land on release now; The Repo/Clown Car Chaos failing (was
+  "stuck for the day"); SLIM can't pick cut-the-wires; grenade/RPG splash still goes through walls;
+  greying out auctioned cars in SWITCH CAR needs a car-row flag (wire change). Not yet code-reviewed.
+
 ### Where things stand (Sept 30, 2026, RELEASE 0.18.0: the sound rework, the door lever, traffic that unjams)
 - **v0.18** (Bryce: "rework the audio sounds and soundscape. the horns are insufferable when there's a
   traffic jam. make the shop with doors closed a dead zone from outside noise. add a handle to close

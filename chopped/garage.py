@@ -37,6 +37,22 @@ NOT_FOR_SALE = {"eng_electric", "whl_scooter", "gnome", "cash_bag", "briefcase",
                 "eng_bike_600", "eng_bike_450", "whl_bike", "seat_saddle"}   # (v0.13: strip a bike for those)
 
 
+def pack_install(i, slot_i, tid):
+    """(v0.18.2) OP_INSTALL's two argument bytes, with the part TYPE the player chose riding in
+    spare bits so the host can refuse a stale locker index. Same two bytes on the wire, so no
+    VERSION bump: arg = locker index (6 bits, STASH_MAX is 40) | type-code high 2 bits << 6;
+    arg2 = slot (4 bits, 15 slots) | type-code low 4 bits << 4. The code is PART_INDEX + 1 so 0
+    means "an old client that doesn't say": those still get the old category-only check."""
+    code = PART_INDEX[tid] + 1
+    return (i & 63) | ((code >> 4) << 6), (slot_i & 15) | ((code & 15) << 4)
+
+
+def unpack_install(a, b):
+    """-> (locker index, slot index, wanted part-type index or None for a legacy caller)."""
+    code = ((a >> 6) << 4) | (b >> 4)
+    return a & 63, b & 15, (code - 1 if code else None)
+
+
 def part_tier(tid):
     """(v0.14) the cheapest shop (0 = home) whose counter will sell you this part new."""
     return C.PART_SHOP_TIER.get(tid, 0)
@@ -199,7 +215,8 @@ class Garage:
             p.menu = False
             return
         if op == OP_INSTALL:
-            self._ms_install(p, car, a, b)
+            i, slot_i, want = unpack_install(a, b)
+            self._ms_install(p, car, i, slot_i, want)
         elif op == OP_BUY:
             self._ms_buy(p, car, a, b)
         elif op == OP_REMOVE:
@@ -252,9 +269,20 @@ class Garage:
         becomes an ordinary car again -- strip it, sell it whole, whatever -- and this one
         takes over its bay and keeps its owner's mods from here on."""
         new = self.cars.get(target_id)
-        if new is None or new is old or new.kind != CIV or new.state != DELIVERED:
+        if new is None or new is old:
             return
-        if new.lot or new.sale is not None or not all(self.in_shop(x, y) for x, y in new.corners()):
+        # (v0.18.2) every refusal says why; the menu used to just sit there looking broken
+        if new.lot:
+            self.toast("THAT ONE'S UNDER DAVE'S HAMMER. WAIT FOR THE GAVEL.", T_BAD)
+            return
+        if new.sale is not None:
+            self.toast("THAT ONE'S SOLD. THE BUYER'S ON HIS WAY FOR IT.", T_BAD)
+            return
+        if new.kind != CIV or new.state != DELIVERED:
+            self.toast("ONLY A DELIVERED CAR CAN BE YOUR RIDE.", T_BAD)
+            return
+        if not all(self.in_shop(x, y) for x, y in new.corners()):
+            self.toast("THAT ONE'S NOT FULLY IN THE SHOP. PARK IT INSIDE FIRST.", T_BAD)
             return
         old.kind, old.owner, old.state = CIV, None, DELIVERED
         old.stolen = old.alarm = False
@@ -288,11 +316,16 @@ class Garage:
         self.cash -= price
         return True
 
-    def _ms_install(self, p, car, i, slot_i):
+    def _ms_install(self, p, car, i, slot_i, want=None):
+        """want = the part TYPE index the player chose (None: a legacy caller, category-checked
+        only). A stale locker index (double Enter, a crewmate taking a part) used to fit
+        whatever slid into that position; now a mismatch fits nothing."""
         if not (0 <= i < len(self.stash) and 0 <= slot_i < len(SLOTS)):
             return
         slot = SLOTS[slot_i]
         part = self.stash[i]
+        if want is not None and PART_INDEX[part.type_id] != want:
+            return          # the locker shuffled under your cursor: do nothing rather than the wrong thing
         if part.category != SLOT_CATEGORY[slot]:
             return
         if slot in V.model(car.model).no_slots:
@@ -477,7 +510,7 @@ class Appraisal:
             if len(best) == 3:
                 break
         flags = (INSP_RATTLE if car.trunk else 0) | (INSP_HONK if car.special == "clown" else 0) | \
-                (INSP_OWNER if car.special == "owner" else 0)
+                (INSP_OWNER if car.special == "owner" else 0) | (INSP_HOT if V.model(car.model).sporty else 0)
         return (value, car.parts.get("Engine"), car.parts.get("Transmission"), car.parts.get("ECU"), cond,
                 best, flags)
 

@@ -205,8 +205,11 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
 
     def _spawn_impound_bike(self, k, x, y, a):
         mid = V.SPORTBIKE if k % 2 == 0 else V.DIRTBIKE
-        car = Car(self.new_id(), CIV, x, y, a, model_loadout(self.impound_rng, mid), color=5 if k % 2 == 0 else 4,
-                  model=mid)
+        parts = model_loadout(self.impound_rng, mid)
+        for part in parts.values():
+            if part is not None:
+                part.condition *= C.IMPOUND_WEAR         # (v0.19) impounded wrecks: they run, they don't pay
+        car = Car(self.new_id(), CIV, x, y, a, parts, color=5 if k % 2 == 0 else 4, model=mid)
         car.state = RUNNING                          # keys in, engine ticking over
         car.special = "impound"
         car.refresh()
@@ -396,15 +399,17 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         self._release_dolly(p)        # it'd never fit in a Kei anyway
         self._drop_carry(p, throw=False)   # (they would, but that's a different game)
         p.z = p.vz = 0.0
+        car.bailed = False            # (v0.18.2) a crook has it now; it's theirs, not a wreck for the tow truck
         if seat == DRIVER and car.kind == CIV and not car.stolen and car.state == RUNNING and car.sale is None:
             # a car whose driver bailed, engine still running: finders keepers, says nobody
             car.stolen = True
-            self._crime(C.HEAT_BREAKIN)
+            heat = self.theft_heat(p, car, C.HEAT_BREAKIN)
+            self._crime(heat)
             if car.special == "impound":
                 car.special = None
                 self.toast(self.rng.choice(IMPOUND_LINES) % p.name, T_BAD)
             else:
-                self.toast("%s TOOK A CAR IN BROAD DAYLIGHT. +%d HEAT" % (p.name, C.HEAT_BREAKIN), T_BAD)
+                self.toast("%s TOOK A CAR IN BROAD DAYLIGHT. +%d HEAT" % (p.name, heat), T_BAD)
             self._quest_on_steal(p, car)
         if seat == DRIVER:
             car.driver = p.id
@@ -790,8 +795,15 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         if b & B_TAUNT:
             self._dance(p, dt)
         fists = p.weapon == ARM_FISTS and not p.hands and p.dolly is None and p.carrying is None
-        charged = self._charge_fists(p, bool(b & B_FIRE) and fists, dt) if fists or p.charge_t else False
-        if fire_tap and p.fire_cd <= 0 and not charged:
+        # (v0.18.2: the haymaker never landed. The press threw a normal punch at once, which knocked
+        # the target out of range before the wind-up finished, so the haymaker whiffed on thin air.
+        # Now a held fist WAITS: let go early = the ordinary punch, hold to HAYMAKER_CHARGE = the big one.
+        # A click too brief for the button to ever show as held still punches right away.)
+        winding = fists and bool(b & B_FIRE)
+        was_charging = p.charge_t > 0
+        charged = self._charge_fists(p, winding, dt) if fists or p.charge_t else False
+        quick = fists and was_charging and not winding and not charged   # released before it was a haymaker
+        if ((fire_tap and not winding) or quick) and p.fire_cd <= 0 and not charged:
             if p.carrying is not None:
                 self._drop_carry(p, throw=True)           # YEET
                 p.fire_cd = C.THROW_COOLDOWN
@@ -951,8 +963,13 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         # the back of the car: the trunk (a delivered car's only if there's something in it,
         # otherwise the back is for stripping the bumper)
         c_, s_ = math.cos(car.ang), math.sin(car.ang)
-        if (ax - car.x) * c_ + (ay - car.y) * s_ < -car.hl * 0.45 and car.kind != TRAFFIC and \
-                (car.state != DELIVERED or car.trunk or p.hands):
+        # (v0.18.2: "or p.hands" used to hijack the whole rear -- wheels RL/RR, bumper, exhaust -- the
+        # moment you held ANYTHING. Now hands only win the back of a delivered car when the aimed
+        # slot has nothing strippable for them; otherwise the normal strip / HANDS FULL prompt shows.)
+        back = (ax - car.x) * c_ + (ay - car.y) * s_ < -car.hl * 0.45 and car.kind != TRAFFIC
+        if back and car.state == DELIVERED and not car.trunk and p.hands and car.kind == CIV:
+            back = self._strip_interaction(p, car)[0] is None
+        if back and (car.state != DELIVERED or car.trunk or p.hands):
             tr = self._trunk_interaction(p, car)
             if tr is not None:
                 return tr
@@ -969,7 +986,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         if car.kind == TRAFFIC:
             if car.speed() > C.CARJACK_MAX_SPEED:
                 return (None, "IT'S MOVING. STOP IT FIRST: STAND IN THE ROAD, SPIKES, A ROADBLOCK...", 0, None)
-            return (("carjack", car.id), "HOLD E: DRAG THE DRIVER OUT (CARJACK)", C.CARJACK_TIME,
+            return (("carjack", car.id), "HOLD E: DRAG THE DRIVER OUT (CARJACK)" + self._hot_hint(car), C.CARJACK_TIME,
                     lambda: self._carjack(p, car))
         if car.kind == PERSONAL:
             if car.driver is None:
@@ -984,11 +1001,22 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             # one), quiet if you luck into the right one and worse than smashing if you don't.
             if p.sneak:
                 return (("cutwires", car.id),
-                        "HOLD E: CUT THE WIRES (1 IN %d QUIET)   X: FORGET IT, SMASH IT" % alarm_wires(p.char),
+                        "HOLD E: CUT THE WIRES (1 IN %d QUIET)   X: FORGET IT, SMASH IT" % alarm_wires(p.char)
+                        + self._hot_hint(car),
                         C.ALARM_CUT_TIME * stat(p.char, "alarm_cut_time"), lambda: self._cut_wires(p, car), lambda: setattr(p, "sneak", False))
-            return (("breakin", car.id), ("HOLD E: SNAP THE STEERING LOCK (ALARM)" if V.is_bike(car.model) else
-                                          "HOLD E: BREAK IN (SETS OFF ALARM)") + "   X: CUT THE WIRES INSTEAD (SLOWER)",
-                    C.BREAKIN_TIME * stat(p.char, "breakin_time"), lambda: self._break_in(p, car), lambda: setattr(p, "sneak", True))
+            # (v0.18.2) honest prompt: SLIM's break-in is silent AND faster than his wire-cutting, so
+            # he's not told it rings, and isn't offered the "slower" way at all (it would just be worse).
+            loud = stat(p.char, "breakin_alarm") > 0.0
+            break_t = C.BREAKIN_TIME * stat(p.char, "breakin_time")
+            cut_t = C.ALARM_CUT_TIME * stat(p.char, "alarm_cut_time")
+            how = "SNAP THE STEERING LOCK" if V.is_bike(car.model) else "BREAK IN"
+            label = "HOLD E: %s (%s)" % (how, "ALARM" if V.is_bike(car.model) and loud else
+                                         "SETS OFF ALARM" if loud else "SILENT")
+            alt = None
+            if loud or cut_t < break_t:
+                label += "   X: CUT THE WIRES INSTEAD (%s)" % ("SLOWER" if cut_t >= break_t else "FASTER")
+                alt = lambda: setattr(p, "sneak", True)
+            return (("breakin", car.id), label + self._hot_hint(car), break_t, lambda: self._break_in(p, car), alt)
         if car.state == BROKEN_IN:
             return (("hotwire", car.id), "HOLD E: HOTWIRE", C.HOTWIRE_TIME * stat(p.char, "hotwire_time"), lambda: self._hotwire(p, car))
         if car.state == RUNNING:
@@ -1045,15 +1073,21 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
                 STRIP_TIME[cat] * stat(p.char, "strip_time"), lambda: self._strip(p, car, best))
 
     def _break_in(self, p, car):
+        loud = stat(p.char, "breakin_alarm") > 0.0       # (v0.19) SLIM's windows break politely
+        heat = self.theft_heat(p, car, C.HEAT_BREAKIN)
         car.state = BROKEN_IN
-        car.alarm = True
+        car.alarm = loud
         car.stolen = True
         p.sneak = False
-        self.heat = min(C.HEAT_MAX, self.heat + C.HEAT_BREAKIN)
+        self._crime(heat)             # (v0.18.2: was a bare self.heat +=, so it cooled before the hotwire ended)
         self._charge(p, "gta")
-        self.sfx(S_BREAKIN, car.x, car.y)
-        self.toast("%s SMASHED A WINDOW. ALARM! +%d HEAT" % (p.name, C.HEAT_BREAKIN), T_BAD)
-        self._breakin_specials(p, car, loud=True)
+        if loud:
+            self.sfx(S_BREAKIN, car.x, car.y)
+            self.toast("%s SMASHED A WINDOW. ALARM! +%d HEAT" % (p.name, heat), T_BAD)
+        else:
+            self.sfx(S_STRIP, car.x, car.y)
+            self.toast("%s EASED THE WINDOW IN. NOT A PEEP. +%d HEAT" % (p.name, heat), T_BAD)
+        self._breakin_specials(p, car, loud=loud)
         self._quest_on_steal(p, car)
 
     def _cut_wires(self, p, car):
@@ -1070,9 +1104,10 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             self.toast("%s CUT THE RIGHT WIRE. NOT A PEEP." % p.name, T_INFO)
         else:
             car.alarm = True
-            self.heat = min(C.HEAT_MAX, self.heat + C.ALARM_CUT_FAIL_HEAT)
+            heat = self.theft_heat(p, car, C.ALARM_CUT_FAIL_HEAT)
+            self._crime(heat)         # (v0.18.2: resets the cooling timer, like every other crime)
             self.sfx(S_BREAKIN, car.x, car.y)
-            self.toast("%s CUT THE WRONG WIRE. ALARM! +%d HEAT" % (p.name, C.ALARM_CUT_FAIL_HEAT), T_BAD)
+            self.toast("%s CUT THE WRONG WIRE. ALARM! +%d HEAT" % (p.name, heat), T_BAD)
         self._breakin_specials(p, car, loud=not quiet)
         self._quest_on_steal(p, car)
 
@@ -1222,6 +1257,9 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
 
     def _engine_car_near(self, p, d):
         """(delivered car with an engine still in it, is its engine bay in reach?)"""
+        # (v0.18.2: this used to return the FIRST car in range, even when its engine was out of reach
+        # and the one beside it was right under the dolly's nose. Now the nearest engine wins.)
+        best, best_reach = None, 1e9
         for car in self.cars.values():
             if car.state != DELIVERED or car.parts.get("Engine") is None:
                 continue
@@ -1229,8 +1267,11 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
                 continue
             ex, ey = car.to_world(*car.anchor("Engine"))
             reach = min(math.hypot(ex - p.x, ey - p.y), math.hypot(ex - d.x, ey - d.y))
-            return car, reach < C.INTERACT_RANGE_SLOT + 1.2
-        return None, False
+            if reach < best_reach:
+                best, best_reach = car, reach
+        if best is None:
+            return None, False
+        return best, best_reach < C.INTERACT_RANGE_SLOT + 1.2
 
     def _dolly_load(self, p, pk):
         d = p.dolly
@@ -1274,6 +1315,17 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
                     self.toast("THE DOLLY FOUND ITS OWN WAY HOME. SPOOKY.", T_INFO)
 
     # ------------------------------------------------------------------ violence
+    @staticmethod
+    def _hot_hint(car):
+        """(v0.19) tacked onto the theft prompts: sporty cars cost SPORTY_HEAT_MULT x the heat."""
+        return "   HOT: DRAWS HEAT" if V.model(car.model).sporty else ""
+
+    @staticmethod
+    def theft_heat(p, car, base):
+        """(v0.19) the heat for getting into somebody else's car: x SPORTY_HEAT_MULT on a sporty
+        model (the good loot draws the eyes), x the thief's own stat (SLIM: half)."""
+        return base * (C.SPORTY_HEAT_MULT if V.model(car.model).sporty else 1.0) * stat(p.char, "theft_heat")
+
     def _crime(self, heat):
         """Something loud and illegal just happened."""
         self.heat = min(C.HEAT_MAX, self.heat + heat)
@@ -1624,9 +1676,10 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         car.stolen, car.alarm, car.special = True, False, None
         car.throttle = car.steer = 0.0
         car.handbrake = car.horn = False
-        self._crime(C.CARJACK_HEAT)
+        heat = self.theft_heat(p, car, C.CARJACK_HEAT)
+        self._crime(heat)
         self.sfx(S_PUNCH, x, y)
-        self.toast("%s DRAGGED THE DRIVER OUT. CARJACKED! +%d HEAT" % (p.name, C.CARJACK_HEAT), T_BAD)
+        self.toast("%s DRAGGED THE DRIVER OUT. CARJACKED! +%d HEAT" % (p.name, heat), T_BAD)
         self._quest_on_steal(p, car)
         self._story_event("carjack", car)
         self._enter_car(p, car, DRIVER)
@@ -2680,8 +2733,8 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
                 t.append((car.x, car.y, car.vx, car.vy, True, car))
         for p in self.players.values():
             wanted = self.heat > 0 or (p.jumpsuit and C.JUMPSUIT_WITNESS)   # (orange: wanted on sight)
-            if wanted and p.state in (FOOT, TUMBLE) and not p.jailed and not self.in_shop(p.x, p.y) \
-                    and not p.hidden():                                   # (v0.9) it's just a box
+            if wanted and p.state in (FOOT, TUMBLE) and not p.jailed and not self.map.in_garage(p.x, p.y) \
+                    and not p.hidden():       # (v0.18.2: only HOME is sanctuary; a bought garage has no door; v0.9: hidden = it's just a box)
                 t.append((p.x, p.y, p.vx, p.vy, False, p))
         return t
 
@@ -3444,6 +3497,8 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         the fleet tops itself up off-screen. Never: anything with somebody in it or at its door, a
         stolen car, or a money truck mid-robbery."""
         for car in list(self.cars.values()):
+            if car.sale is not None or car.lot:
+                continue                  # (v0.18.2) sold or on the auction block: a buyer is owed this car
             if car.kind == TRAFFIC:
                 limit = C.TRAFFIC_STUCK_DESPAWN
             elif car.kind == CIV and car.bailed and not car.stolen:

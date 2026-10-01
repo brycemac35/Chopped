@@ -10,17 +10,18 @@ Performance notes: ~4 ms a frame at 480x238 on a laptop. The expensive
 things (texture shading, sprite rotations) are done once and cached; the
 per-frame work is arithmetic, subsurface() and transform.scale().
 
-(v0.17) Hi-res: the view is `scale` x 640x328 (config.RENDER_SCALE_DEFAULT). The walls are
-still cast one ray per 640-wide column and drawn `scale` px wide -- a 32-texel brick wall
-has nothing more to show, and the Python ray loop is the one cost that grows with width.
-Sprites, the floor, the roof, particles and tracers get the full resolution.
+(v0.17) Hi-res: the view is `scale` x 640x328 (config.RENDER_SCALE_DEFAULT). Sprites,
+particles and tracers get the full resolution.
+(v0.19) The static world -- walls, street, ceilings, sky -- draws at its own WORLD scale
+`kw` (1..ks, set_world_scale): kw x 640 columns and rows, with textures built at kw x their
+old texel density, then blown up to the view if kw < ks. kw = 1 is the v0.17 look.
 """
 
 import colorsys
 import math
 import random
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 
 import pygame
 
@@ -28,6 +29,7 @@ from . import config as C
 from .config import clamp
 from . import mapgen as M
 from . import fpart as FA
+from . import art as ART
 from . import sim as S
 from . import protocol as PR
 from .art import P, PLAYER_COLORS, SKINS, HAIRS, SHIRTS, PixelFont, shade
@@ -126,7 +128,8 @@ class FPRenderer:
         self.cam_inside = False       # (v0.12.1) camera under the shop roof: skip what the ceiling hides
         self.vw, self.vh = vw, vh
         self.ks = max(1, int(scale))  # (v0.17) render scale: vw is ks x 640. Text, lines and marks grow by it
-        self.cstep = self.ks          # screen columns per wall ray (one ray per 640-wide column, see top)
+        self.kw = 1                   # (v0.19) world scale: walls/street/sky at kw x 640 (set_world_scale)
+        self.cstep = self.ks          # view columns per zbuf step (one wall ray per world column)
         self.hor0 = vh // 2
         self.hor = self.hor0          # moves with pitch (looking up/down: Build-engine y-shearing)
         self.fov = math.radians(C.FP_FOV)
@@ -140,33 +143,46 @@ class FPRenderer:
         n = cmap.n
         size = int(n * T * FLOOR_PPM)
         self.floor_map = pygame.transform.scale(map_surf, (size, size)).convert()
+        # (v0.19) the same edits in metres, for the hi-res floor chunks: (rect, colour, blend flags)
+        self._floor_edits = []
         # the benches are 3D objects here; scrub their flat top-down drawings off the floor
         for bx, by, bw, bh in (cmap.sell_bench, cmap.tune_bench) + tuple(
                 fs["bench"] for fs in getattr(cmap, "fence_shops", ()) if fs.get("bench") is not None):
             self.floor_map.fill(P["concrete"], (int(bx * FLOOR_PPM) - 2, int(by * FLOOR_PPM) - 2,
                                                 int(bw * FLOOR_PPM) + 6, int(bh * FLOOR_PPM) + 6))
+            self._floor_edits.append(((bx - 0.5, by - 0.5, bw + 1.5, bh + 1.5), P["concrete"], 0))
         if getattr(cmap, "bail_desk", None) is not None:      # (and the precinct desk: it's 3D too)
             bx, by, bw, bh = cmap.bail_desk
             self.floor_map.fill(FA.PRECINCT_LINO, (int(bx * FLOOR_PPM) - 2, int(by * FLOOR_PPM) - 2,
                                                   int(bw * FLOOR_PPM) + 6, int(bh * FLOOR_PPM) + 12))
+            self._floor_edits.append(((bx - 0.5, by - 0.5, bw + 1.5, bh + 3.0), FA.PRECINCT_LINO, 0))
         # (v0.9) the shop has a roof now: its floor is in the shade
         gx, gy, gw, gh = cmap.garage_rect
         shadow = pygame.Rect(int(gx * FLOOR_PPM), int(gy * FLOOR_PPM), int(gw * FLOOR_PPM), int(gh * FLOOR_PPM))
         self.floor_map.fill((200, 200, 212), shadow, special_flags=pygame.BLEND_RGB_MULT)
-        self.roof_tex = FA.roof_texture(gw, gh, ROOF_PPM).convert()
-        self.roof_tex.set_colorkey(ROOF_KEY)
+        self._floor_edits.append(((gx, gy, gw, gh), (200, 200, 212), pygame.BLEND_RGB_MULT))
         # (v0.14) the garages you can buy are proper buildings now, roofs and all: every roof is
-        # (key, floor rect, texture) -- "home", or the fence shop's index into cmap.fence_shops
-        self.roofs = [("home", cmap.garage_rect, self.roof_tex)]
+        # (key, floor rect) -- "home", or the fence shop's index into cmap.fence_shops. (v0.19) The
+        # textures are made per world scale by _roofs()
+        self._roof_rects = [("home", cmap.garage_rect)]
         for i, fs in enumerate(getattr(cmap, "fence_shops", ())):
             if fs.get("rect") is None:
                 continue
             fx, fy, fw, fh = fs["rect"]
             self.floor_map.fill((200, 200, 212), pygame.Rect(int(fx * FLOOR_PPM), int(fy * FLOOR_PPM),
                                 int(fw * FLOOR_PPM), int(fh * FLOOR_PPM)), special_flags=pygame.BLEND_RGB_MULT)
-            tex = FA.roof_texture(fw, fh, ROOF_PPM).convert()
-            tex.set_colorkey(ROOF_KEY)
-            self.roofs.append((i, fs["rect"], tex))
+            self._floor_edits.append(((fx, fy, fw, fh), (200, 200, 212), pygame.BLEND_RGB_MULT))
+            self._roof_rects.append((i, fs["rect"]))
+        self._roof_sets = {}
+        # (v0.19) the hi-res street: the automap's own 5 px/m surface (live: its skid marks and
+        # labels come along), cut into FLOOR_CHUNK_M chunks at 5 x kw px/m on demand, LRU by bytes
+        self._map_src = map_surf
+        self._chunks = OrderedDict()          # (ix, iy, kw) -> Surface
+        self._chunk_bytes = 0
+        self._chunk_budget = 0                # chunks still allowed to be built this frame
+        self._detail_tiles = {}               # (tile kind, variant, px) -> Surface
+        self._skid_log = {}                   # (ix, iy) -> deque of (x0, y0, x1, y1) in metres
+        self._crop_cache = {}
         self.cam_box = None           # (v0.14) the building (walls included) whose roof the camera's under
         self.roof_layer = pygame.Surface((vw, vh)).convert()
         self.roof_layer.set_colorkey(ROOF_KEY)
@@ -174,11 +190,10 @@ class FPRenderer:
         # (v0.10) one fraction per front tile-column (7: a walking door, 4 bays, 2 solid
         # piers) instead of one shared value -- each of the shop's 5 doors moves on its own.
         self.door_open = [1.0] * (C.BLOCK_TILES - 2)
-        # tall enough to look up into. (v0.17) Painted at the old 640-wide size and blown up by ks
-        # the first time it's needed: a hi-res sky is just the same clouds with thinner edges
+        # tall enough to look up into. (v0.19) Painted at the world scale the first time it's
+        # needed (FA.make_sky's sc): same clouds, lit edges and single-pixel stars at 2x/3x
         self._sky_base_h = int(vh // self.ks * 0.95)
-        self.sky_h = self._sky_base_h * self.ks
-        self._sky_base = {k: FA.make_sky(k, 4 * (vw // self.ks), self._sky_base_h) for k in FA.SKY_KEYS}
+        self.sky_h = self._sky_base_h * self.kw
         self.skies = {}
         self.hires = None             # the car the chase camera is following: drawn in more detail
         self.big_heads = False        # F9. You know you want to.
@@ -231,19 +246,44 @@ class FPRenderer:
         self.roof_layer.set_colorkey(ROOF_KEY)
         self.roof_clip = None
         self.zbuf = [1e9] * self.vw
-        self.sky_h = self._sky_base_h * scale
+        self._fog_key = None
+        self._lo = None
+        if self.kw > scale:                  # (v0.19) the world can't be sharper than the view
+            self.set_world_scale(scale)
+        self._apply_fov(self._cur_fov)
+
+    def set_world_scale(self, w):
+        """(v0.19) The settings screen's WORLD DETAIL: walls, street, ceilings and sky at w x 640,
+        with textures built at w x their old density. Clamped to WORLD_SCALE_MIN..MAX and to the
+        render scale. Safe mid-game: textures, skies and floor chunks are made lazily per scale
+        (the old scale's floor chunks and skies are dropped; wall textures age out of their LRU).
+        Returns the scale actually used."""
+        try:
+            w = int(w)
+        except (TypeError, ValueError):
+            w = C.WORLD_SCALE_DEFAULT
+        w = max(C.WORLD_SCALE_MIN, min(C.WORLD_SCALE_MAX, self.ks, w))
+        if w == self.kw:
+            return w
+        self.kw = w
+        self.sky_h = self._sky_base_h * w
         self.skies = {}
+        self._chunks.clear()
+        self._chunk_bytes = 0
+        self._crop_cache.clear()
+        self._lo = None
         self._fog_key = None
         self._apply_fov(self._cur_fov)
+        return w
 
     def _apply_fov(self, fov):
         """Everything that hangs off the FOV: the focal length D and one ray slope per wall column
-        (a ray per cstep screen columns, aimed through the middle of its block)."""
+        (v0.19: one per WORLD column, kw x 640 of them, aimed through the middle of each)."""
         self._cur_fov = fov
         self.tanh = math.tan(fov / 2)
         self.D = (self.vw / 2) / self.tanh
-        cs, vw = self.cstep, self.vw
-        self.ray_k = [(2.0 * (x + cs / 2.0) / vw - 1.0) * self.tanh for x in range(0, vw, cs)]
+        n = self.vw // self.ks * getattr(self, "kw", 1)
+        self.ray_k = [(2.0 * (x + 0.5) / n - 1.0) * self.tanh for x in range(n)]
 
     def _build_walls(self):
         """Every wall tile gets a texture id and a height. Buildings keep one
@@ -253,7 +293,7 @@ class FPRenderer:
         self.wall_def = [None]                     # index 0 = no wall
         self.inner_plain = {}                      # sign wall -> the same wall without the sign (back face)
         self.wall_of = [0] * (n * n)
-        self.tex_cache = {}
+        self.tex_cache = OrderedDict()             # (did, night, world scale) -> WallTex, LRU
         defs = {}
 
         def def_id(key):
@@ -327,52 +367,77 @@ class FPRenderer:
                 self.inner_plain[def_id(("door", k, 1, first))] = def_id(("door", k, 0, first))
 
     def _wall_tex(self, did, night):
-        key = (did, night)
-        wt = self.tex_cache.get(key)
-        if wt is None:
-            d = self.wall_def[did]
-            if d[0] == "bld":
-                surf = FA.facade(d[1], d[2], d[3], night)
-            elif d[0] == "precinct":
-                surf = FA.precinct_wall(64, night)
-                if d[1]:
-                    sign = pygame.Surface((FA.TEX, 10), pygame.SRCALPHA)
-                    sign.fill((30, 60, 150))
-                    self.font.draw(sign, "POLICE", FA.TEX // 2, 2, P["white"], None, align="center")
-                    surf.blit(sign, (0, 14))
-            elif d[0] == "door":
-                surf = FA.roller_door(d[1], night)
-                first = d[3]
-                if d[2]:
-                    sign = pygame.Surface((FA.TEX * 2, 9), pygame.SRCALPHA)
-                    self.font.draw(sign, "HONK", FA.TEX * 2 // 2, 1, (250, 232, 80), (0, 0, 0),
-                                   align="center")
-                    surf.blit(sign, (-(d[1] - first) * FA.TEX, 18))
-            elif d[0] == "brick":
-                # (the back wall's sign faces both ways, so it sits below the ceiling line --
-                # 3 to 4.75 m up -- rather than being sliced in half by the roof from inside)
-                sy = FACADE_PX - int(4.75 * FA.TEX / 4)
-                surf = FA.brick_wall(FACADE_PX, night, sign=d[1] >= 0, sign_y=sy)
-                if d[1] >= 0:
-                    sign = pygame.Surface((FA.TEX * 3, 12), pygame.SRCALPHA)
-                    self.font.draw(sign, "CHOP SHOP", FA.TEX * 3 // 2, 3, P["gold"], (0, 0, 0), align="center")
-                    surf.blit(sign, (-d[1] * FA.TEX, sy + 2))
-            elif d[0] == "pier":
-                surf = FA.brick_wall(FACADE_PX, night, sign=True)
-                sign = pygame.Surface((FA.TEX * 2, 12), pygame.SRCALPHA)
-                self.font.draw(sign, "CHOP SHOP", FA.TEX, 3, P["gold"], (0, 0, 0), align="center")
-                surf.blit(sign, (-d[1] * FA.TEX, 12))
-            elif d[0] == "walkdoor":
-                surf = FA.walk_door(FACADE_PX, night)
-            elif d[0] == "fsign":
-                surf = FA.brick_wall(FACADE_PX, night, sign=True)
-                sign = pygame.Surface((FA.TEX, 12), pygame.SRCALPHA)
-                self.font.draw(sign, "SHOP %d" % (d[1] + 1), FA.TEX // 2, 3, P["gold"], (0, 0, 0), align="center")
-                surf.blit(sign, (0, 12))
-            else:
-                surf = FA.concrete_wall(48, night)
-            wt = self.tex_cache[key] = FA.WallTex(surf)
+        """(v0.19) At the current world scale kw, cached LRU by bytes (WALL_TEX_MB): a 3x six-storey
+        facade shaded at every light level is a few MB, and a long drive sees a lot of facades."""
+        sc = self.kw
+        key = (did, night, sc)
+        cache = self.tex_cache
+        wt = cache.get(key)
+        if wt is not None:
+            cache.move_to_end(key)
+            return wt
+        d = self.wall_def[did]
+
+        def put_sign(surf, sign, x, y):
+            # the lettering stays the 3x5 font at its old size, just in chunkier pixels
+            if sc > 1:
+                sign = pygame.transform.scale_by(sign, sc)
+            surf.blit(sign, (x * sc, y * sc))
+        if d[0] == "bld":
+            surf = FA.facade(d[1], d[2], d[3], night, sc)
+        elif d[0] == "precinct":
+            surf = FA.precinct_wall(64, night, sc)
+            if d[1]:
+                sign = pygame.Surface((FA.TEX, 10), pygame.SRCALPHA)
+                sign.fill((30, 60, 150))
+                self.font.draw(sign, "POLICE", FA.TEX // 2, 2, P["white"], None, align="center")
+                put_sign(surf, sign, 0, 14)
+        elif d[0] == "door":
+            surf = FA.roller_door(d[1], night, sc)
+            first = d[3]
+            if d[2]:
+                sign = pygame.Surface((FA.TEX * 2, 9), pygame.SRCALPHA)
+                self.font.draw(sign, "HONK", FA.TEX * 2 // 2, 1, (250, 232, 80), (0, 0, 0),
+                               align="center")
+                put_sign(surf, sign, -(d[1] - first) * FA.TEX, 18)
+        elif d[0] == "brick":
+            # (the back wall's sign faces both ways, so it sits below the ceiling line --
+            # 3 to 4.75 m up -- rather than being sliced in half by the roof from inside)
+            sy = FACADE_PX - int(4.75 * FA.TEX / 4)
+            surf = FA.brick_wall(FACADE_PX, night, sign=d[1] >= 0, sign_y=sy, sc=sc)
+            if d[1] >= 0:
+                sign = pygame.Surface((FA.TEX * 3, 12), pygame.SRCALPHA)
+                self.font.draw(sign, "CHOP SHOP", FA.TEX * 3 // 2, 3, P["gold"], (0, 0, 0), align="center")
+                put_sign(surf, sign, -d[1] * FA.TEX, sy + 2)
+        elif d[0] == "pier":
+            surf = FA.brick_wall(FACADE_PX, night, sign=True, sc=sc)
+            sign = pygame.Surface((FA.TEX * 2, 12), pygame.SRCALPHA)
+            self.font.draw(sign, "CHOP SHOP", FA.TEX, 3, P["gold"], (0, 0, 0), align="center")
+            put_sign(surf, sign, -d[1] * FA.TEX, 12)
+        elif d[0] == "walkdoor":
+            surf = FA.walk_door(FACADE_PX, night, sc)
+        elif d[0] == "fsign":
+            surf = FA.brick_wall(FACADE_PX, night, sign=True, sc=sc)
+            sign = pygame.Surface((FA.TEX, 12), pygame.SRCALPHA)
+            self.font.draw(sign, "SHOP %d" % (d[1] + 1), FA.TEX // 2, 3, P["gold"], (0, 0, 0), align="center")
+            put_sign(surf, sign, 0, 12)
+        else:
+            surf = FA.concrete_wall(48, night, sc)
+        wt = cache[key] = FA.WallTex(surf)
+        self._trim_tex_cache()
         return wt
+
+    def _trim_tex_cache(self):
+        budget = C.WALL_TEX_MB * 1024 * 1024
+        cache = self.tex_cache
+        total = sum(t.bytes for t in cache.values())
+        while total > budget and len(cache) > C.WALL_TEX_KEEP:
+            _k, old = cache.popitem(last=False)
+            total -= old.bytes
+
+    def wall_tex_bytes(self):
+        """(v0.19) What the wall textures weigh right now (tests, the harness)."""
+        return sum(t.bytes for t in self.tex_cache.values())
 
     def wall_height(self, did):
         d = self.wall_def[did]
@@ -717,10 +782,8 @@ class FPRenderer:
         # the frame in there, all of it painted over a moment later by _roof)
         self.cam_box = self._roof_box(cx, cy)
         self.cam_inside = self.cam_box is not None
-        if self.ks > 1 and not C.FP_HIRES_WORLD:
-            self._world_lowres(cx, cy, yaw, eye, dark, night, tod)
-        else:
-            self._world(surf, cx, cy, yaw, eye, dark, night, tod)
+        self._chunk_budget = C.FLOOR_CHUNKS_PER_FRAME
+        self._world_pass(cx, cy, yaw, eye, dark, night, tod)
         self._sprites(surf, view, cx, cy, yaw, eye, me_pid, now, dt, dark, night, bank, hide_car)
         self._tracers(surf, cx, cy, yaw, eye, dt)
         self._particles(surf, cx, cy, yaw, eye, dt)
@@ -740,15 +803,18 @@ class FPRenderer:
         self._walls(surf, cx, cy, yaw, eye, dark, night)
         self._roof(surf, cx, cy, yaw, eye)
 
-    def _world_lowres(self, cx, cy, yaw, eye, dark, night, tod):
-        """(v0.17) The static world at the old 640x328, blown up ks x into the view; the sprites,
-        hands and particles then go on top at full res. The street is a 4 px/m texture and the
-        walls 8 px/m, so at 2x there's nothing sharper to show -- but their Python loops (a ray per
-        column, a mode-7 slice per row) are most of the frame, and at full res they cost ~8 ms
-        more in the shop. C.FP_HIRES_WORLD = True draws them at full res anyway.
-        Works by pointing the renderer's screen geometry at the small surface for the duration."""
-        ks = self.ks
-        bw, bh = self.vw // ks, self.vh // ks
+    def _world_pass(self, cx, cy, yaw, eye, dark, night, tod):
+        """(v0.19) The static world at the world scale kw: straight into the view when kw == ks,
+        otherwise at kw x 640 into a side surface that's blown up to the view (kw = 1 is v0.17's
+        _world_lowres: the old 640x328 world under full-res sprites). Works by pointing the
+        renderer's screen geometry at the small surface for the duration. Afterwards zbuf and
+        roof_clip are in view columns again, with self.cstep view columns per wall ray."""
+        ks, kw = self.ks, self.kw
+        if kw >= ks:
+            self.cstep = 1
+            self._world(self.view, cx, cy, yaw, eye, dark, night, tod)
+            return
+        bw, bh = self.vw // ks * kw, self.vh // ks * kw
         lo = self.__dict__.get("_lo")
         if lo is None or lo["surf"].get_size() != (bw, bh):
             lo = self._lo = {"surf": pygame.Surface((bw, bh)).convert(), "zbuf": [1e9] * bw,
@@ -756,37 +822,44 @@ class FPRenderer:
             lo["roof"].set_colorkey(ROOF_KEY)
         hi = (self.vw, self.vh, self.hor, self.D, self.zbuf, self.roof_layer, self.sky_h,
               self._fog_key, self._fog_rows)
-        hor_lo = self.hor // ks
-        self.vw, self.vh, self.hor, self.D = bw, bh, hor_lo, self.D / ks
-        self.zbuf, self.roof_layer, self.sky_h = lo["zbuf"], lo["roof"], self._sky_base_h
+        hor_lo = self.hor * kw // ks
+        self.vw, self.vh, self.hor, self.D = bw, bh, hor_lo, self.D * kw / ks
+        self.zbuf, self.roof_layer, self.sky_h = lo["zbuf"], lo["roof"], self._sky_base_h * kw
         self._fog_key, self._fog_rows = lo["fog"]
-        self.ks = self.cstep = 1                 # (ray_k is already one ray per 640-wide column)
+        self.cstep = 1                           # (ray_k is already one ray per world column)
         try:
             self._world(lo["surf"], cx, cy, yaw, eye, dark, night, tod)
         finally:
             lo["fog"] = (self._fog_key, self._fog_rows)
             (self.vw, self.vh, _h, self.D, self.zbuf, self.roof_layer, self.sky_h,
              self._fog_key, self._fog_rows) = hi
-            self.ks = self.cstep = ks
-        self.hor = hor_lo * ks                   # the sprites plant themselves on the same horizon
+        self.hor = hor_lo * ks // kw             # the sprites plant themselves on the same horizon
         pygame.transform.scale(lo["surf"], (self.vw, self.vh), self.view)
         zlo = lo["zbuf"]
-        self.zbuf = [z for z in zlo for _ in range(ks)]
-        if self.roof_clip is not None:
-            ends, rows = self.roof_clip
-            self.roof_clip = (ends, [r * ks for r in rows])
-        self.lintels = {x * ks: (d, y * ks) for x, (d, y) in self.lintels.items()}   # (in view px)
+        if ks % kw == 0:
+            r = self.cstep = ks // kw
+            self.zbuf = [z for z in zlo for _ in range(r)]
+            if self.roof_clip is not None:
+                ends, rows = self.roof_clip
+                self.roof_clip = (ends, [y * r for y in rows])
+        else:                                    # (3x view, 2x world: a zbuf entry per view column)
+            self.cstep = 1
+            src = [x * kw // ks for x in range(self.vw)]
+            self.zbuf = [zlo[i] for i in src]
+            if self.roof_clip is not None:
+                ends, rows = self.roof_clip
+                self.roof_clip = ([ends[i] for i in src], [rows[i] * ks // kw for i in src])
+        self.lintels = {x * ks // kw: (d, y * ks // kw) for x, (d, y) in self.lintels.items()}
 
     def _sky_img(self, key):
-        """The panorama at render scale, made on first use. Only the (at most two) skies on
+        """The panorama at the world scale, made on first use. Only the (at most two) skies on
         show are kept: at 3x one is 30 MB."""
-        sky = self.skies.get((key, self.ks))
+        sky = self.skies.get((key, self.kw))
         if sky is None:
-            base = self._sky_base[key]
-            sky = base if self.ks == 1 else pygame.transform.scale_by(base, self.ks).convert()
+            sky = FA.make_sky(key, 4 * (self.vw // self.kw), self._sky_base_h, self.kw)
             if len(self.skies) >= 2:
                 self.skies.clear()
-            self.skies[(key, self.ks)] = sky
+            self.skies[(key, self.kw)] = sky
         return sky
 
     def _sky(self, surf, yaw, tod):
@@ -809,31 +882,176 @@ class FPRenderer:
             sky.set_alpha(None)
 
     def _floor(self, surf, cx, cy, yaw, eye, dark):
-        R = int(C.FP_FLOOR_DIST * FLOOR_PPM)
-        px, py = int(cx * FLOOR_PPM), int(cy * FLOOR_PPM)
-        crop = pygame.Surface((2 * R, 2 * R)).convert()
-        crop.fill(P["void"])
-        crop.blit(self.floor_map, (0, 0), pygame.Rect(px - R, py - R, 2 * R, 2 * R))
-        rot = pygame.transform.rotate(crop, math.degrees(yaw) + 90.0)
-        rw, rh = rot.get_size()
-        ox, oy = rw / 2.0, rh / 2.0
         hor, vw, vh, D, th = self.hor, self.vw, self.vh, self.D, self.tanh
         haze = shade((150, 150, 160), 1.0 - 0.8 * dark)
+        # (v0.19) at world scale 2+ the rows nearer than FLOOR_DETAIL_DIST come from the hi-res
+        # chunks; the far rows (a screen row per metre or worse) stay on the 4 px/m map
+        split = vh
+        if self.kw > 1:
+            near = self._near_floor(cx, cy, yaw)
+            if near is not None:
+                rot_n, oxn, oyn, ppm_n, dn = near
+                split = max(hor + 1, min(vh, int(math.ceil(hor + eye * D / dn - 0.5))))
+                self._floor_rows(surf, rot_n, oxn, oyn, ppm_n, split, vh, eye, haze)
+        if split > hor + 1:
+            R = int(C.FP_FLOOR_DIST * FLOOR_PPM)
+            px, py = int(cx * FLOOR_PPM), int(cy * FLOOR_PPM)
+            crop = self._crop_cache.get(("base", R))
+            if crop is None:
+                crop = self._crop_cache[("base", R)] = pygame.Surface((2 * R, 2 * R)).convert()
+            crop.fill(P["void"])
+            crop.blit(self.floor_map, (0, 0), pygame.Rect(px - R, py - R, 2 * R, 2 * R))
+            rot = pygame.transform.rotate(crop, math.degrees(yaw) + 90.0)
+            rw, rh = rot.get_size()
+            self._floor_rows(surf, rot, rw / 2.0, rh / 2.0, FLOOR_PPM, hor + 1, split, eye, haze)
+        self._floor_fog(surf, eye, dark, haze)
+
+    def _floor_rows(self, surf, rot, ox, oy, ppm, r0, r1, eye, haze):
+        """Mode 7: screen rows r0..r1-1, each a 1-px slice of the rotated ground `rot` (ppm px/m,
+        the camera at (ox, oy), forward = up) stretched across the view."""
+        hor, vw, D, th = self.hor, self.vw, self.D, self.tanh
         maxd = C.FP_FLOOR_DIST - 2
+        rw, rh = rot.get_size()
         scale = pygame.transform.scale
-        for r in range(hor + 1, vh):
-            d = eye * D / (r - hor + 0.5)
+        sub = rot.subsurface
+        blit = surf.blit
+        k = eye * D
+        hwk = th * ppm
+        for r in range(r0, r1):
+            d = k / (r - hor + 0.5)
             if d > maxd:
                 surf.fill(haze, (0, r, vw, 1))
                 continue
-            hw = d * th * FLOOR_PPM
-            y = int(oy - d * FLOOR_PPM)
+            hw = d * hwk
+            y = int(oy - d * ppm)
             x0 = int(ox - hw)
             w = max(1, int(2 * hw))
             if y < 0 or x0 < 0 or x0 + w > rw:
                 surf.fill(haze, (0, r, vw, 1))
                 continue
-            surf.blit(scale(rot.subsurface((x0, y, w, 1)), (vw, 1)), (0, r))
+            blit(scale(sub((x0, y, w, 1)), (vw, 1)), (0, r))
+
+    def _near_floor(self, cx, cy, yaw):
+        """(v0.19) The hi-res street around the camera, rotated: (rot, cam x, cam y, px/m, how far
+        it reaches) or None. Only a disc covering the view out to FLOOR_DETAIL_DIST is cut out --
+        centred ahead of you when that's smaller than centred on you -- so the rotate costs about
+        what the 4 px/m one does."""
+        ppm = C.PPM * self.kw
+        t = self.tanh
+        dn = C.FLOOR_DETAIL_DIST
+        ahead = dn * (1.0 + t * t) / 2.0          # the circle through the camera and the view's far corners
+        around = dn * math.sqrt(1.0 + t * t)
+        r, off = (ahead, ahead) if ahead < around else (around, 0.0)
+        cap = C.FLOOR_DETAIL_DIST * 1.5            # (F8's 170-degree fisheye: pull the detail in instead)
+        if r > cap:
+            dn *= cap / r
+            off *= cap / r
+            r = cap
+        r += 1.0
+        ca, sa = math.cos(yaw), math.sin(yaw)
+        mx, my = cx + ca * off, cy + sa * off      # the disc's centre, in metres
+        S = int(2 * r * ppm)
+        X0, Y0 = int(mx * ppm) - S // 2, int(my * ppm) - S // 2
+        crop = self._crop_cache.get(("near", S))
+        if crop is None:
+            crop = self._crop_cache[("near", S)] = pygame.Surface((S, S)).convert()
+        crop.fill(P["void"])
+        cm = C.FLOOR_CHUNK_M
+        cpx = int(cm * ppm)
+        size_m = self.map.n * T
+        ix0, iy0 = max(0, int(X0 // cpx)), max(0, int(Y0 // cpx))
+        ix1 = min(int(math.ceil(size_m / cm)) - 1, int((X0 + S) // cpx))
+        iy1 = min(int(math.ceil(size_m / cm)) - 1, int((Y0 + S) // cpx))
+        for iy in range(iy0, iy1 + 1):
+            for ix in range(ix0, ix1 + 1):
+                ch = self._floor_chunk(ix, iy)
+                if ch is None:                     # (not built yet: the blurry map for a frame or two)
+                    ch = self._chunk_stand_in(ix, iy, ppm)
+                crop.blit(ch, (ix * cpx - X0, iy * cpx - Y0))
+        rot = pygame.transform.rotate(crop, math.degrees(yaw) + 90.0)
+        RW, RH = rot.get_size()
+        vx, vy = (X0 + S / 2.0) - cx * ppm, (Y0 + S / 2.0) - cy * ppm
+        ox = RW / 2.0 - (-vx * sa + vy * ca)
+        oy = RH / 2.0 + (vx * ca + vy * sa)
+        return rot, ox, oy, ppm, dn
+
+    def _chunk_rect_m(self, ix, iy):
+        cm = C.FLOOR_CHUNK_M
+        size_m = self.map.n * T
+        x0, y0 = ix * cm, iy * cm
+        return x0, y0, min(cm, size_m - x0), min(cm, size_m - y0)
+
+    def _chunk_stand_in(self, ix, iy, ppm):
+        x0, y0, w, h = self._chunk_rect_m(ix, iy)
+        src = self.floor_map.subsurface((int(x0 * FLOOR_PPM), int(y0 * FLOOR_PPM),
+                                         int(w * FLOOR_PPM), int(h * FLOOR_PPM)))
+        return pygame.transform.scale(src, (int(w * ppm), int(h * ppm)))
+
+    def _detail_tile(self, kind, var, px):
+        key = (kind, var, px)
+        t = self._detail_tiles.get(key)
+        if t is None:
+            t = self._detail_tiles[key] = ART.floor_detail_tile(kind, var, px).convert()
+        return t
+
+    def _floor_chunk(self, ix, iy):
+        """(v0.19) One FLOOR_CHUNK_M square of street at 5 x kw px/m: the automap's pixels blown up
+        kw x (so every line, label and skid mark is where it was), with a hi-res detail tile
+        showing through wherever the map is plain ground colour, then the same scrubs and shop
+        shade as the 4 px/m floor, then this chunk's skid marks replayed. None if this frame has
+        already built its FLOOR_CHUNKS_PER_FRAME."""
+        kw = self.kw
+        key = (ix, iy, kw)
+        ch = self._chunks.get(key)
+        if ch is not None:
+            self._chunks.move_to_end(key)
+            return ch
+        if self._chunk_budget <= 0:
+            return None
+        self._chunk_budget -= 1
+        ppm = C.PPM * kw
+        mp = C.PPM                                  # the automap's px/m
+        x0, y0, w, h = self._chunk_rect_m(ix, iy)
+        src = self._map_src.subsurface((int(x0 * mp), int(y0 * mp), int(w * mp), int(h * mp)))
+        up = pygame.transform.scale_by(src, kw)
+        ch = pygame.Surface(up.get_size()).convert()
+        ch.blit(up, (0, 0))
+        cm = self.map
+        n = cm.n
+        tp = int(T * ppm)                           # px per tile
+        base = ART.tile_base()
+        kinds = ART.FLOOR_DETAIL_KINDS
+        tx0, ty0 = int(round(x0 / T)), int(round(y0 / T))
+        for ty in range(ty0, ty0 + int(round(h / T))):
+            for tx in range(tx0, tx0 + int(round(w / T))):
+                kind = cm.tiles[ty * n + tx]
+                if kind not in kinds:
+                    continue
+                lx, ly = (tx - tx0) * tp, (ty - ty0) * tp
+                ch.blit(self._detail_tile(kind, (tx * 7 + ty * 13) % 4, tp), (lx, ly))
+                up.set_colorkey(base[kind])         # ...and the map's own pixels back on top of it
+                ch.blit(up, (lx, ly), (lx, ly, tp, tp))
+        for (ex, ey, ew, eh), col, flags in self._floor_edits:
+            r = pygame.Rect(int((ex - x0) * ppm), int((ey - y0) * ppm), int(ew * ppm), int(eh * ppm))
+            ch.fill(col, r, special_flags=flags)
+        lw = max(1, int(round(0.25 * ppm)))
+        for (ax, ay, bx, by) in self._skid_log.get((ix, iy), ()):
+            pygame.draw.line(ch, (38, 38, 46), ((ax - x0) * ppm, (ay - y0) * ppm), ((bx - x0) * ppm, (by - y0) * ppm), lw)
+        self._chunks[key] = ch
+        nb = ch.get_width() * ch.get_height() * ch.get_bytesize()
+        self._chunk_bytes += nb
+        budget = C.FLOOR_DETAIL_MB * 1024 * 1024
+        while self._chunk_bytes > budget and len(self._chunks) > 9:
+            _k, old = self._chunks.popitem(last=False)
+            self._chunk_bytes -= old.get_width() * old.get_height() * old.get_bytesize()
+        return ch
+
+    def floor_detail_bytes(self):
+        """(v0.19) What the hi-res floor chunks weigh right now (tests, the harness)."""
+        return self._chunk_bytes
+
+    def _floor_fog(self, surf, eye, dark, haze):
+        hor, vw, vh, D = self.hor, self.vw, self.vh, self.D
         # distance haze + night: one pre-made gradient, rebuilt only when the light changes
         key = (round(dark, 2), round(eye, 2), hor)
         if self._fog_key != key:
@@ -856,6 +1074,13 @@ class FPRenderer:
                      special_flags=pygame.BLEND_RGB_MULT)
 
     def _walls(self, surf, cx, cy, yaw, eye, dark, night):
+        """One ray per world column finds the nearest wall; a 1-px texture column is stretched
+        to its height. (v0.19) Two things keep 2x/3x affordable:
+          - the grid march (the expensive, Python-heavy bit) runs on every other ray; a ray
+            between two that hit the same wall plane can't have been blocked by anything (a
+            4 m tile can't hide in a 2-column wedge), so it's solved with one division;
+          - neighbouring columns showing the same texel at the same height (a wall up close
+            is 5-20 columns per texel) are scaled and blitted as one strip."""
         cm = self.map
         n = cm.n
         wall_of = self.wall_of
@@ -873,12 +1098,15 @@ class FPRenderer:
         dc0, dc1 = self.door_cols
         door_defs = self.door_defs
         walk_col, walk_cx, half_walk = self.walk_col, self.walk_cx, C.WALK_DOOR_W / 2
-        lintels = self.lintels = {}          # (v0.12.1) column -> (lintel distance, its bottom row)
+        jamb_def, walk_def, edge_def = self.jamb_def, self.walk_def, self.edge_def
+        self.lintels = {}                    # (v0.12.1) column -> (lintel distance, its bottom row)
         fence_gap = self.fence_gap
         cs = self.cstep                      # (v0.17) screen columns per ray: each slice is cs wide
-        for i, k in enumerate(self.ray_k):
-            x = i * cs
-            dx, dy = ca + rx * k, sa + ry * k
+
+        def cast(dx, dy):
+            """The grid march: (did, side, dist, door_at, lintel, plane). plane = (side, step,
+            grid line) of a plain wall hit, for the in-between rays; None if anything odd
+            (a door, a lintel, the map's edge) was on the way."""
             mx, my = mx0, my0
             ddx = abs(1.0 / dx) if dx else 1e30
             ddy = abs(1.0 / dy) if dy else 1e30
@@ -890,7 +1118,6 @@ class FPRenderer:
                 sy, sdy = -1, fy0 * ddy
             else:
                 sy, sdy = 1, (1.0 - fy0) * ddy
-            did = 0
             side = 0
             door_at = None
             lintel = None                  # (v0.12.1) (distance, bottom height, front column) over a doorway
@@ -911,94 +1138,168 @@ class FPRenderer:
                             # (v0.12.1) the walking door: brick jambs either side of a person-
                             # sized gap, a real door in it, and brick over it up to the parapet
                             if abs(cx + cross * dx - walk_cx) > half_walk:
-                                did = self.jamb_def
-                                break
+                                return jamb_def, 1, cross, door_at, lintel, None
                             if up < 0.5:
-                                did = self.walk_def
-                                break
+                                return walk_def, 1, cross, door_at, lintel, None
                             lintel = (cross, C.WALK_DOOR_H, fc)
                         else:
                             lintel = (cross, C.ROOF_H, fc)
                         if fc != walk_col and up < 0.98:
                             if up <= 0.01:
-                                did = door_defs[mx - dc0]      # (all the way down: it's a wall)
-                                break
+                                return door_defs[fc], 1, cross, door_at, lintel, None   # (all the way down: a wall)
                             # half up: remember it, keep marching to whatever's behind it, and
                             # draw the door over that afterwards (so the gap isn't sky)
-                            door_at = (door_defs[mx - dc0], (sdy - ddy) * T, up)
+                            door_at = (door_defs[fc], cross, up)
                     elif sy < 0 and lintel is None and (mx, my) in fence_gap:
                         # (v0.14) walking up to a bought garage's open front: brick over the gap
                         lintel = ((sdy - ddy) * T, C.ROOF_H, None)
                 if 0 <= mx < n and 0 <= my < n:
                     did = wall_of[my * n + mx]
                     if did:
-                        break
+                        if side == 0:
+                            dist = (sdx - ddx) * T
+                            plane = (0, sx, mx if sx > 0 else mx + 1)
+                        else:
+                            dist = (sdy - ddy) * T
+                            plane = (1, sy, my if sy > 0 else my + 1)
+                        return did, side, dist, door_at, lintel, (plane if door_at is None and lintel is None else None)
                 else:
-                    did = self.edge_def
-                    break
+                    dist = ((sdx - ddx) if side == 0 else (sdy - ddy)) * T
+                    return edge_def, side, dist, door_at, lintel, None
+            return 0, side, 0.0, door_at, lintel, None
+
+        rays = self.ray_k
+        nr = len(rays)
+        hits = [None] * nr
+        stride = 2 if nr > 800 else 1        # (world scale 2+: every other ray marches, see above)
+        for i in range(0, nr, stride):
+            k = rays[i]
+            hits[i] = cast(ca + rx * k, sa + ry * k)
+        if stride == 2:
+            for i in range(1, nr, 2):
+                k = rays[i]
+                dx, dy = ca + rx * k, sa + ry * k
+                a = hits[i - 1][5]
+                if a is not None and i + 1 < nr and hits[i + 1][5] == a:
+                    side, step, line = a
+                    if side == 0:
+                        dist = (line * T - cx) / dx
+                        mx, my = (line if step > 0 else line - 1), int((cy + dist * dy) // T)
+                    else:
+                        dist = (line * T - cy) / dy
+                        mx, my = int((cx + dist * dx) // T), (line if step > 0 else line - 1)
+                    if dist > 0 and 0 <= mx < n and 0 <= my < n:
+                        did = wall_of[my * n + mx]
+                        if did:
+                            hits[i] = (did, side, dist, None, None, a)
+                            continue
+                hits[i] = cast(dx, dy)
+
+        # ---- draw. `run` is a strip waiting to be blitted: [key, x, width, src col, (y, h)]
+        run = None
+        inner_plain = self.inner_plain
+        wall_def = self.wall_def
+        shades = FA.SHADES
+        cam_inside = self.cam_inside
+        for i in range(nr):
+            did, side, dist, door_at, lintel, _pl = hits[i]
+            x = i * cs
+            k = rays[i]
+            dx, dy = ca + rx * k, sa + ry * k
             if not did:
                 zbuf[x:x + cs] = (1e9,) * cs
-                if door_at is not None:
-                    self._door_slice(surf, x, dx, dy, door_at, cx, cy, eye, base_level, night)
-                if lintel is not None:
-                    self._lintel_slice(surf, x, dx, lintel, cx, eye, base_level, night)
+                if door_at is not None or lintel is not None:
+                    if run is not None:
+                        blit(scale(run[3], (run[2], run[4][1])), (run[1], run[4][0]))
+                        run = None
+                    if door_at is not None:
+                        self._door_slice(surf, x, dx, dy, door_at, cx, cy, eye, base_level, night)
+                    if lintel is not None:
+                        self._lintel_slice(surf, x, dx, lintel, cx, eye, base_level, night)
                 continue
-            dist = ((sdx - ddx) if side == 0 else (sdy - ddy)) * T
             if dist < 0.05:
                 dist = 0.05
             zbuf[x:x + cs] = (dist,) * cs
             hit = (cy + dist * dy) if side == 0 else (cx + dist * dx)
-            u = int((hit % T) / T * FA.TEX)
-            if (side == 0 and dx < 0) or (side == 1 and dy > 0):
-                u = FA.TEX - 1 - u                          # so text reads the right way round (v0.8: it
-                                                            # didn't -- CHOP SHOP had been POHS POHC for ages)
-            if did in self.inner_plain and not (side == 1 and dy < 0):
-                did = self.inner_plain[did]                 # (a one-sided sign: only the street face has it)
+            if did in inner_plain and not (side == 1 and dy < 0):
+                did = inner_plain[did]                      # (a one-sided sign: only the street face has it)
             wt = self._wall_tex(did, night)
+            tw = wt.tw
+            u = int((hit % T) / T * tw)                     # (v0.19: tw = TEX x the world scale)
+            if (side == 0 and dx < 0) or (side == 1 and dy > 0):
+                u = tw - 1 - u                              # so text reads the right way round (v0.8: it
+                                                            # didn't -- CHOP SHOP had been POHS POHC for ages)
             H = self.wall_height(did)
             level = base_level + int(dist / 11.0) + side
-            col = wt.cols[level if level < FA.SHADES else FA.SHADES - 1][u]
+            col = wt.level(level if level < shades else shades - 1)[u]
             th = wt.h
-            if H > C.ROOF_H and self.cam_inside and self.wall_def[did][0] in ("brick", "pier", "walkdoor", "fsign") \
+            c0 = 0                                          # first texture row in use
+            if H > C.ROOF_H and cam_inside and wall_def[did][0] in ("brick", "pier", "walkdoor", "fsign") \
                     and self._in_shop_box(cx + dist * dx, cy + dist * dy):
-                cut = int(th * (1.0 - C.ROOF_H / H))       # (the parapet's above the ceiling)
-                col = col.subsurface((0, cut, 1, th - cut))
-                th -= cut
+                c0 = int(th * (1.0 - C.ROOF_H / H))        # (the parapet's above the ceiling)
                 H = C.ROOF_H
             top = hor - (H - eye) * D / dist
             bot = hor + eye * D / dist
             h = bot - top
             if h < 1:
                 continue
-            if top >= 0 and bot <= vh:
-                blit(scale(col, (cs, int(bot) - int(top) or 1)), (x, int(top)))
-            else:
-                # up close: only scale the part of the texture that's on screen
-                y0, y1 = max(0.0, top), min(float(vh), bot)
-                if y1 <= y0:
-                    continue
-                t0 = (y0 - top) / h * th
-                t1 = (y1 - top) / h * th
-                ti0 = min(th - 1, int(t0))
-                ti1 = max(ti0 + 1, min(th, int(math.ceil(t1))))
-                piece = col.subsurface((0, ti0, 1, ti1 - ti0))
-                # stretch so texel edges land where they should
-                py0 = top + ti0 / th * h
-                ph = (ti1 - ti0) / th * h
-                blit(scale(piece, (cs, max(1, int(ph)))), (x, int(py0)))
-            if door_at is not None:
-                self._door_slice(surf, x, dx, dy, door_at, cx, cy, eye, base_level, night)
-            if lintel is not None or self.wall_def[did][0] == "door":
-                if lintel is None:
-                    lintel = (dist, C.ROOF_H, None)      # a shut bay door: brick above it too
-                self._lintel_slice(surf, x, dx, lintel, cx, eye, base_level, night)
+            if True:
+                r0 = None
+                if top >= 0 and bot <= vh:
+                    r0, r1 = c0, th
+                    y, hh = int(top), int(bot) - int(top) or 1
+                else:
+                    # up close: only scale the part of the texture that's on screen
+                    y0, y1 = max(0.0, top), min(float(vh), bot)
+                    if y1 > y0:
+                        tn = th - c0
+                        ti0 = min(tn - 1, int((y0 - top) / h * tn))
+                        ti1 = max(ti0 + 1, min(tn, int(math.ceil((y1 - top) / h * tn))))
+                        r0, r1 = c0 + ti0, c0 + ti1
+                        # stretch so texel edges land where they should
+                        y, hh = int(top + ti0 / tn * h), max(1, int((ti1 - ti0) / tn * h))
+                if r0 is not None:
+                    key = (col, r0, r1, y, hh)
+                    if run is not None and run[0] == key and run[1] + run[2] == x:
+                        run[2] += cs
+                    else:
+                        if run is not None:
+                            blit(scale(run[3], (run[2], run[4][1])), (run[1], run[4][0]))
+                        src = col if (r0 == 0 and r1 == th) else col.subsurface((0, r0, 1, r1 - r0))
+                        run = [key, x, cs, src, (y, hh)]
+            if door_at is not None or lintel is not None or wall_def[did][0] == "door":
+                if run is not None:
+                    blit(scale(run[3], (run[2], run[4][1])), (run[1], run[4][0]))
+                    run = None
+                if door_at is not None:
+                    self._door_slice(surf, x, dx, dy, door_at, cx, cy, eye, base_level, night)
+                if lintel is not None or wall_def[did][0] == "door":
+                    if lintel is None:
+                        lintel = (dist, C.ROOF_H, None)      # a shut bay door: brick above it too
+                    self._lintel_slice(surf, x, dx, lintel, cx, eye, base_level, night)
+        if run is not None:
+            blit(scale(run[3], (run[2], run[4][1])), (run[1], run[4][0]))
 
     def _roof_box(self, cx, cy):
         """(v0.14) the roofed building the camera's standing in, walls included, or None."""
-        for _k, (gx, gy, gw, gh), _t in self.roofs:
+        for _k, (gx, gy, gw, gh) in self._roof_rects:
             if gx <= cx <= gx + gw and gy <= cy <= gy + gh:
                 return (gx - T, gy - T, gw + 2 * T, gh + 2 * T)
         return None
+
+    @property
+    def roofs(self):
+        """(key, floor rect, ceiling texture) per roofed building, the textures at ROOF_PPM x the
+        world scale (v0.19), made the first time that scale's needed."""
+        rs = self._roof_sets.get(self.kw)
+        if rs is None:
+            rs = []
+            for key, (gx, gy, gw, gh) in self._roof_rects:
+                tex = FA.roof_texture(gw, gh, ROOF_PPM * self.kw).convert()
+                tex.set_colorkey(ROOF_KEY)
+                rs.append((key, (gx, gy, gw, gh), tex))
+            self._roof_sets = {self.kw: rs}           # (only one scale's worth kept)
+        return rs
 
     def _in_shop_box(self, x, y):
         """The footprint of the building the camera's inside, walls included (a fence shop
@@ -1024,11 +1325,11 @@ class FPRenderer:
             return
         self.lintels[x] = (dist, y1)         # the roof mustn't show through it (see _roof)
         cs = self.cstep
-        u = int(((cx + dist * dx) % T) / T * FA.TEX)
         did = self.walk_def if h0 < C.ROOF_H else self.jamb_def
         wt = self._wall_tex(did, night)
+        u = int(((cx + dist * dx) % T) / T * wt.tw)
         level = min(FA.SHADES - 1, base_level + int(dist / 11.0) + 1)
-        col = wt.cols[level][u]
+        col = wt.level(level)[u]
         th = wt.h
         t0 = int((1.0 - top_h / C.SHOP_FACADE_H) * th)          # texture row at the top edge
         t1 = max(t0 + 1, min(th, int(round((1.0 - h0 / C.SHOP_FACADE_H) * th))))
@@ -1043,15 +1344,15 @@ class FPRenderer:
         dist = max(0.05, dist)
         cs = self.cstep
         self.zbuf[x:x + cs] = (min(self.zbuf[x], dist),) * cs
-        u = int(((cx + dist * dx) % T) / T * FA.TEX)
-        if dy > 0:
-            u = FA.TEX - 1 - u                 # (the same flip rule as the walls: side 1)
         if did in self.inner_plain and not dy < 0:
             did = self.inner_plain[did]
         wt = self._wall_tex(did, night)
+        u = int(((cx + dist * dx) % T) / T * wt.tw)
+        if dy > 0:
+            u = wt.tw - 1 - u                  # (the same flip rule as the walls: side 1)
         H = self.wall_height(did)
         level = min(FA.SHADES - 1, base_level + int(dist / 11.0) + 1)
-        col = wt.cols[level][u]
+        col = wt.level(level)[u]
         th = wt.h
         cut = min(th - 1, int(up * th))
         col = col.subsurface((0, cut, 1, th - cut))
@@ -1116,7 +1417,8 @@ class FPRenderer:
         rot = pygame.transform.rotate(tex, math.degrees(yaw) + 90.0)
         RW, RHt = rot.get_size()
         # where the camera lands in the rotated texture (forward = up the image, right = right)
-        vx, vy = (gx + gw / 2 - cx) * ROOF_PPM, (gy + gh / 2 - cy) * ROOF_PPM
+        rp = ROOF_PPM * self.kw                  # (v0.19) the texture's px/m at this world scale
+        vx, vy = (gx + gw / 2 - cx) * rp, (gy + gh / 2 - cy) * rp
         ox = RW / 2.0 - (-vx * sa + vy * ca)
         oy = RHt / 2.0 + (vx * ca + vy * sa)
         layer = self.roof_layer
@@ -1125,10 +1427,10 @@ class FPRenderer:
         drawn = False
         for r in range(r_lo, r_hi):
             d = rh * D / (hor - r + 0.5)
-            y = int(oy - d * ROOF_PPM)
+            y = int(oy - d * rp)
             if y < 0 or y >= RHt:
                 continue
-            hw = d * th * ROOF_PPM
+            hw = d * th * rp
             x0 = ox - hw
             w = 2 * hw
             a, b = max(0, int(x0)), min(RW, int(x0 + w) + 1)
@@ -1924,15 +2226,37 @@ class FPRenderer:
             for lx, ly in ((-1.4, -1.0), (-1.4, 1.0)):
                 wx = c[7] + fx * lx - fy * ly
                 wy = c[8] + fy * lx + fx * ly
-                pts.append((int(wx * FLOOR_PPM), int(wy * FLOOR_PPM)))
+                pts.append((wx, wy))
             prev = self.skid_prev.get(c[0])
             if prev:
                 for a, b in zip(prev, pts):
-                    if abs(a[0] - b[0]) + abs(a[1] - b[1]) < 10:
-                        pygame.draw.line(self.floor_map, (38, 38, 46), a, b, 1)
+                    pa = (int(a[0] * FLOOR_PPM), int(a[1] * FLOOR_PPM))
+                    pb = (int(b[0] * FLOOR_PPM), int(b[1] * FLOOR_PPM))
+                    if abs(pa[0] - pb[0]) + abs(pa[1] - pb[1]) < 10:
+                        pygame.draw.line(self.floor_map, (38, 38, 46), pa, pb, 1)
+                        self._skid_hires(a, b)
             self.skid_prev[c[0]] = pts
             if self.rng.random() < 0.35:
                 self.emit(DUST, c[7] - fx * 2, c[8] - fy * 2, 0.2, -vx * 0.05, -vy * 0.05, 0.3, 0.6)
         for k in list(self.skid_prev):
             if k not in seen:
                 del self.skid_prev[k]
+
+    def _skid_hires(self, a, b):
+        """(v0.19) A skid segment (metres) for the hi-res street: logged against every chunk it
+        touches (so a chunk built later still has it) and drawn into any that are built now.
+        The log is bounded: SKID_LOG_PER_CHUNK segments a chunk, oldest dropped first."""
+        cm = C.FLOOR_CHUNK_M
+        seg = (a[0], a[1], b[0], b[1])
+        keys = {(int(x // cm), int(y // cm)) for x, y in (a, b)}
+        for ix, iy in keys:
+            log = self._skid_log.get((ix, iy))
+            if log is None:
+                log = self._skid_log[(ix, iy)] = deque(maxlen=C.SKID_LOG_PER_CHUNK)
+            log.append(seg)
+            ch = self._chunks.get((ix, iy, self.kw))
+            if ch is not None:
+                ppm = C.PPM * self.kw
+                x0, y0 = ix * cm, iy * cm
+                pygame.draw.line(ch, (38, 38, 46), ((a[0] - x0) * ppm, (a[1] - y0) * ppm),
+                                 ((b[0] - x0) * ppm, (b[1] - y0) * ppm), max(1, int(round(0.25 * ppm))))

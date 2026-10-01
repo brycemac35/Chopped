@@ -33,6 +33,7 @@ import math
 from . import config as C
 from . import vehicles as V
 from .enums import T_BAD, T_INFO, T_MONEY, T_SAY, S_CASH
+from .parts import DOLLY
 
 # ---------------------------------------------------------------------------
 # The 15 jobs. Order is fixed -- it's how a job's index (not its string id)
@@ -49,13 +50,13 @@ QUEST_ORDER = (
 QUESTS = {
     "hotwire_special": ("HOT WIRE SPECIAL", "STEAL A KEI HATCH. KEEP HEAT UNDER 40. DELIVER IT CLEAN.",
                         "EASY", 280, 1, 0, 240.0, False),
-    "heat_run": ("HEAT RUN", "DELIVER ANY CAR. DON'T LET HEAT SIT OVER 60 FOR MORE THAN 20S.",
+    "heat_run": ("HEAT RUN", "GET HEAT UP TO 40, THEN DELIVER ANY CAR. DON'T SIT OVER 60 FOR MORE THAN 20S.",
                  "EASY", 320, 1, 0, None, False),
     "part_collector": ("PART COLLECTOR", "STRIP 3 ONE-HANDED PARTS.",
                        "EASY", 300, 1, 0, None, False),
     "night_job": ("NIGHT JOB", "STEAL A CAR, STAY FREE FOR 90S, DELIVER IT UNCRASHED.",
                  "HARD", 500, 1, 0, None, False),
-    "engine_pull": ("THE ENGINE PULL", "DELIVER A CAR WITH ITS ENGINE IN, WINCH IT OUT, BOLT IT ON YOUR OWN RIDE.",
+    "engine_pull": ("THE ENGINE PULL", "DELIVER A CAR WITH AN ENGINE YOUR DOLLY CAN LIFT, WINCH IT OUT, BOLT IT ON YOUR RIDE.",
                    "MEDIUM", 400, 2, 6, None, True),
     "body_shop_wars": ("BODY SHOP WARS", "TOMMY'S AFTER THE SAME CAR. STEAL AND DELIVER ONE INSIDE 5 MINUTES.",
                        "MEDIUM", 350, 2, 6, 300.0, False),
@@ -79,7 +80,12 @@ QUESTS = {
                         "HARD", 800, 4, 16, 480.0, True),
 }
 
-STYLED_THRESHOLD = 5           # (corporate_contract/black_market_deal) "tuned-tier" == this many styled parts
+# (v0.19) jobs that can't be done by one person (a passenger to strip; two cars on a two-crew
+# cadence) -- _rotate_quests won't deal them to a solo crew. Engine Pull is a "crew job" by label but
+# one person can winch and bolt, so it isn't in here.
+NEEDS_CREW = frozenset(("family_business", "black_market_deal", "king_of_downtown"))
+
+STYLED_THRESHOLD = 5          # (corporate_contract/black_market_deal) "tuned-tier" == this many styled parts
 ACT_THRESHOLDS = (6, 16, 25)   # story points -> act II, act III, campaign-complete (ACT_NAMES below)
 ACT_NAMES = ("STRUGGLING", "GROWING", "DOMINANCE")
 ACT_BEATS = {
@@ -136,6 +142,15 @@ def wrap(text, width):
     return lines
 
 
+# jobs that arm on one specific car and have no timeout of their own to rescue them if it
+# vanishes (night_job's 90 s clock only starts the wait, it never fails it). id -> toast reason.
+CAR_LOST_JOBS = {
+    "night_job": "THE CAR'S GONE. NEXT CAR",
+    "the_repo": "THE CAR'S GONE. NEXT ONE",
+    "clown_car_chaos": "THE CLOWN CAR'S GONE. NEXT ONE",
+}
+
+
 class Quests:
     def _init_quests(self):
         self.story_points = 0
@@ -152,7 +167,8 @@ class Quests:
         """New day, new jobs. Picked from whatever your story points have unlocked; a job
         already done forever isn't excluded (Bryce may want the cash again), only masked
         as DONE TODAY until the next rotation."""
-        pool = [q for q in QUEST_ORDER if QUESTS[q][5] <= self.story_points]
+        pool = [q for q in QUEST_ORDER if QUESTS[q][5] <= self.story_points
+                and (len(self.players) >= 2 or q not in NEEDS_CREW)]      # (v0.19) no passenger, no Family Business
         self.today_quests = self.rng.sample(pool, min(3, len(pool)))
         self.quest_progress = {q: {} for q in self.today_quests}
         self.quest_done_today = set()
@@ -271,6 +287,12 @@ class Quests:
             if qid in self.quest_done_today:
                 continue
             q = self._q(qid)
+            if qid in CAR_LOST_JOBS and "car" in q and q["car"] not in self.cars:
+                # (v0.18.2) towed, crushed or recycled: the job armed on that car and would
+                # sit dead for the rest of the day. Blow it like perfect_steal does, which also
+                # clears the progress so the next car you steal arms it fresh.
+                self._fail_quest(qid, CAR_LOST_JOBS[qid])
+                continue
             if qid == "hotwire_special":
                 if "car" in q:
                     q["t"] = q.get("t", 0.0) + dt
@@ -284,6 +306,8 @@ class Quests:
                     q["over_t"] = q.get("over_t", 0.0) + dt
                 else:
                     q["over_t"] = 0.0
+                if self.heat >= C.HEAT_RUN_MIN_HEAT:
+                    q["hot"] = True         # (v0.19) it has to have actually been a heat RUN
             elif qid == "night_job":
                 if "car" in q and "evaded" not in q:
                     q["t"] = q.get("t", 0.0) + dt
@@ -353,7 +377,7 @@ class Quests:
                     self._complete_quest(qid)
                 else:
                     self._fail_quest(qid, "crashed it")
-            elif qid == "heat_run" and q.get("over_t", 0.0) <= 20.0:
+            elif qid == "heat_run" and q.get("hot") and q.get("over_t", 0.0) <= 20.0:
                 self._complete_quest(qid)
             elif qid == "night_job" and q.get("car") == car.id:
                 if q.get("evaded") and car.damage == 0:
@@ -365,8 +389,13 @@ class Quests:
                     self._fail_quest(qid, "CRASHED IT. NEXT CAR" if car.damage > 0 else
                                      "HOME BEFORE 90S. NEXT CAR")
             elif qid == "engine_pull":
-                if car.parts.get("Engine") is not None:
-                    q["delivered_with_engine"] = car.id
+                eng = car.parts.get("Engine")
+                if eng is not None and eng.bulk == DOLLY:
+                    if self.dolly_fits(eng):
+                        q["delivered_with_engine"] = car.id
+                    else:
+                        # (v0.19) it used to accept a V8 the stock dolly can't lift, and strand you
+                        self._tell("ENGINE PULL: THAT ENGINE'S TOO BIG FOR YOUR DOLLY. GET A SMALLER ONE, OR SEE MO", T_INFO)
             elif qid == "body_shop_wars" and q.get("car") == car.id:
                 self._complete_quest(qid)
             elif qid == "the_repo" and q.get("car") == car.id:

@@ -110,7 +110,7 @@ On the main menu, the **CHARACTER** row (or a click on the panel's arrows) picks
 
 ### Settings (v0.17)
 
-**SETTINGS** is a row on the main menu and a button on the pause menu (**S**). Rows: **FOV** (60-120 degrees, default 90), **RENDER SCALE** (1x, 2x or 3x: how sharp the 3D view is; lower is faster), and four volume sliders: **MASTER**, **MUSIC**, **SFX**, **ENGINES** (0-100%). **W/S** picks a row, **A/D** changes it (hold to repeat), or click and drag a slider; **Esc**/**Enter** goes back. Changes apply immediately and are saved when you leave the screen.
+**SETTINGS** is a row on the main menu and a button on the pause menu (**S**). Rows: **FOV** (60-120 degrees, default 90), **RENDER SCALE** (1x, 2x or 3x: how sharp the 3D view is; lower is faster), **WORLD DETAIL** (1x-3x: sharper walls, streets and ceilings; can't exceed the render scale, v0.19), four volume sliders: **MASTER**, **MUSIC**, **SFX**, **ENGINES** (0-100%). **W/S** picks a row, **A/D** changes it (hold to repeat), or click and drag a slider; **Esc**/**Enter** goes back. Changes apply immediately and are saved when you leave the screen. A **SAVE FILES** section at the bottom lists the three save slots with a **[DEL] DELETE** button each (or select one and press **Del**); it asks first, and the slot of a game you're hosting is greyed out (leave to the menu to delete it).
 
 They live in `%APPDATA%\Chopped\settings.json` (`~/.local/share/chopped/settings.json` elsewhere; `CHOPPED_SAVE_DIR`, if set, holds it instead). The file also remembers your **name** and **character** from the main menu, so the game opens as you. `--name` and `--char` on the command line still win for that run. A missing or corrupt file just means the defaults.
 
@@ -132,7 +132,7 @@ The status bar reads, left to right: **ARMS** (the weapons you own, 1-9), **CASH
    - **Engines are too heavy to carry.** Grab the **hand dolly** from its yellow box in the shop's north-east corner (E, with empty hands; it takes both). Take the hood off first, then push the dolly up to the engine bay and hold E for 10 s to strip the engine onto it. You can also tip a loose engine onto it (1 s), such as one from an exploded cop.
    - Pushing an empty dolly is a brisk walk. A loaded one is slow and tiring. **G** lets go. Getting busted, knocked flat or into a car also lets go, and the engine stays on the dolly for your partner. A dolly left outside the shop for 90 s finds its own way home.
    - When everything you can lift is gone, hold E to **crush the shell**. You get $150 plus 50% of any engine still in it.
-   - **Or sell it whole (v0.9): press X** at a delivered car. A man called Dave pays 70% of what the parts would fetch one at a time, plus the $150 shell, no spanners needed (the engine included, so no dolly either). A **complete** sports car, muscle car or rice rocket fetches a $400 collector's bonus on top, and a complete 4x4 $250. Whatever's in the boot stays with you.
+   - **Or sell it whole:** press X at a delivered car. It needs **papers** first (see *Selling a car whole* under Dave below); then Dave auctions it at 85% of what the parts would fetch one at a time, plus the $150 shell, no spanners needed. A **complete** sports car, muscle car or rice rocket fetches a $400 collector's bonus on top, and a complete 4x4 $250. Whatever's in the boot stays with you.
    - **Check the trunk.** Look at the back of your ride, or of any car you've broken into, and press E. Stolen cars sometimes have loot in the back: a bag of cash, a mystery briefcase, a giant rubber duck, a gnome. Trunks also hold your parts on the way home (a Kei takes 3 hands' worth, a box van 10). Pickups and vans have a **bed**: push the loaded dolly up to it and hold E to load the engine.
 5. **Sell** a part by holding E for half a second at the **$ SELL $** bench (engines sell off the dolly, at full price). Or take it to the **mod shop** (below).
 
@@ -159,9 +159,9 @@ Look at the **TUNE-UP** bench and press E. Whatever you're holding (and the engi
 | Shop | Price | Rent/day | Adds to the market |
 |---|---|---|---|
 | 1 (home base) | free | $100 | Pistol, ammo, spikes, roadblocks |
-| 2 | $4,000 | +$150 | Shotgun, banana peels, donuts |
-| 3 | $12,000 | +$250 | SMG, assault rifle, rubber chicken, whoopee cushion, cardboard box |
-| 4 | $30,000 | +$400 | Sniper rifle, grenade launcher, RPG |
+| 2 | $4,000 | +$300 | Shotgun, banana peels, donuts |
+| 3 | $12,000 | +$600 | SMG, assault rifle, rubber chicken, whoopee cushion, cardboard box |
+| 4 | $30,000 | +$1,200 | Sniper rifle, grenade launcher, RPG |
 
 Buying a shop is permanent (until SHOP SEIZED). Rent is billed once, at midnight, for every shop you own added together.
 
@@ -178,9 +178,9 @@ Fitting parts you already have (from the locker) works at any counter; it's only
 
 ### The business (v0.14)
 
-- **Dave the auctioneer.** The sell bench is an auction counter now. Bring a part (or the dolly) and hold E: it goes under the hammer at the price you set with **X** -- QUICK SALE (80%, always sells, 15 s), FAIR (100%, 85%, 30 s), PUNCHY (125%, 55%, 45 s) or GREEDY (160%, 25%, 60 s). The money comes when the hammer falls; an unsold part goes back in the locker. The mod shop's locker "sell" is an auction too (at FAIR).
-- **Selling a car whole** needs **papers**: buy them at the **records hatch** outside the precinct (10% of the car's value, $100 minimum; the clerk won't serve you above 25 heat or in an orange jumpsuit). A papered car in the shop gets "HOLD E: AUCTION IT WHOLE" (X for the price). When it sells, one of the city's **contacts** has bought it: it's a legal car again (the cameras don't care), and you **drive it to them** -- park within 7 m and you're paid, minus anything that fell off on the way. Whole cars fetch 85% of their parts' value plus the shell and any collector's bonus.
-- **Drop-off orders.** Eight contacts stand around town (a gold marker over the ones with an order). Each day three of them want parts -- "3 wheels", "a gearbox", "an engine" -- and pay **1.5x** a part's value handed over in person, a bonus for the full set, and +1 REP (two a day at most). Hold the part, walk up, hold E. A green arrow on the HUD points to whoever wants what you're carrying.
+- **Dave the auctioneer.** The sell bench is an auction counter now. Bring a part (or the dolly) and hold E: it goes under the hammer at the price you set with **X** -- QUICK SALE (70%, always sells, 10 s), FAIR (100%, 85% chance, 25 s), PUNCHY (125%, 75%, 40 s) or GREEDY (160%, 40%, 60 s, and Dave keeps a 10% listing fee if nobody bids). The money comes when the hammer falls; an unsold part goes back in the locker. The book holds 16 lots, plus 4 for every extra garage of yours that's open. The mod shop's locker "sell" is an auction too (at FAIR).
+- **Selling a car whole** needs **papers**: buy them at the **records hatch** outside the precinct (10% of the car's value, $100 minimum; the clerk won't serve you above 25 heat or in an orange jumpsuit). At the hatch, X cycles through your unpapered cars (E buys for the one shown); try to sell one without papers and Dave points you to the hatch with a green arrow. A papered car in the shop gets "HOLD E: AUCTION IT WHOLE" (X for the price). When it sells, one of the city's **contacts** has bought it: it's a legal car again (the cameras don't care), and you **drive it to them** -- park within 7 m and you're paid, minus anything that fell off on the way. Whole cars fetch 85% of their parts' value plus the shell and any collector's bonus.
+- **Drop-off orders.** Eight contacts stand around town (a gold marker over the ones with an order). Each day three of them want parts -- "3 wheels", "a gearbox", "an engine" -- and pay **1.5x** a part's value handed over in person, a bonus for the full set ($30 a part), and +1 REP (two a day at most). Hold the part, walk up, hold E. A green arrow on the HUD points to whoever wants what you're carrying.
 - **Mo's dolly.** The hand truck only takes a four-cylinder. **X at Mo's counter** (the tune-up bench): at 4 REP he'll build a **heavy-duty dolly** (sixes) for a gearbox and $300; at 10 REP an **engine crane** (V8s and the diesel) for a six-cylinder engine on the dolly and $900. Bigger engines left in a car still pay 50% when it's crushed, or go with it when it's sold whole.
 
 ### Vehicles and styles
@@ -404,7 +404,7 @@ Under the story, top right, is today's board: **3 jobs**, your crew's **REP**, a
 
 The host runs the authoritative simulation. Everyone else connects to the host's IP on **UDP port 27015**. Up to 4 players can join.
 
-1. **Same network (LAN):** choose **HOST GAME**. The screen shows `LAN: 192.168.x.y:27015`. Friends choose **JOIN GAME** and type that IP.
+1. **Same network (LAN):** choose **HOST GAME**. The screen shows `LAN: 192.168.x.y:27015`. Friends choose **JOIN GAME** and type that IP (**Enter** to start typing; the box is fixed, long input scrolls, **Ctrl+V** pastes, hold **Backspace** to delete; `IP:PORT` or a hostname works). Hosts you've connected to are remembered under the box: **Up/Down** pick, **Enter** joins, **Del** twice (or click the X) forgets one, and the box starts on the most recent.
 2. **Over the internet with UPnP:** hosting automatically asks your router to forward UDP 27015. If the router agrees, the host screen shows `UPNP OK` and your **INTERNET** IP. Give friends that IP.
 3. **UPnP failed?** The host screen says `UPNP FAILED - FORWARD UDP 27015 OR PLAY ON LAN`. Log into your router and forward **UDP 27015** to the host PC's LAN IP. Then friends join using your public IP (search "what is my IP").
    - Alternatively, use a virtual-LAN tool such as Tailscale, ZeroTier or Radmin VPN and join on that network's IP.
@@ -420,7 +420,7 @@ Other details:
 
 ## Save files
 
-**(v0.12.1) Save slots, right on the main menu.** Under HOST sits a **SAVE SLOT** row: A/D (or the arrow keys, or Enter) cycles through slots 1-3 and OFF, and it shows what's in each one (day, cash, act, and on the hint line your rep and crew). If the slot has a save, the top item reads **CONTINUE THE RUN**; if it's empty, **HOST NEW GAME** starts a fresh crew in it. Press **Del** (or X) twice on the slot row to wipe it. While hosting, **F5** saves right now, and the pause screen (Esc) says where it's saving. Slots live in `%APPDATA%\Chopped\saves` on Windows (`~/.local/share/chopped/saves` elsewhere). A save also remembers its **city**, so you continue in the same streets with the same shops. OFF means nothing is written.
+**(v0.12.1) Save slots, right on the main menu.** Under HOST sits a **SAVE SLOT** row: A/D (or the arrow keys, or Enter) cycles through slots 1-3 and OFF, and it shows what's in each one (day, cash, act, and on the hint line your rep and crew). If the slot has a save, the top item reads **CONTINUE THE RUN**; if it's empty, **HOST NEW GAME** starts a fresh crew in it. Press **Del** (or X) on the slot row, or click its **[DEL] DELETE** button, to delete a slot: a dialog names the day, cash and act you'd lose (**Enter** deletes, **Esc** keeps). While hosting, **F5** saves right now, and the pause screen (Esc) says where it's saving. Slots live in `%APPDATA%\Chopped\saves` on Windows (`~/.local/share/chopped/saves` elsewhere). A save also remembers its **city**, so you continue in the same streets with the same shops. OFF means nothing is written.
 
 `--save FILE` on the command line (works with `--host` or `--server`) still picks an exact file instead, and a headless `--server --save FILE` reloads that save's city too:
 

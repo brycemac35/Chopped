@@ -138,7 +138,7 @@ class Police:
         custody, outside the shop -- while there's heat, or while wearing orange."""
         out = []
         for p in self.players.values():
-            if p.state not in (FOOT, TUMBLE) or p.jailed or self.in_shop(p.x, p.y) or \
+            if p.state not in (FOOT, TUMBLE) or p.jailed or self.map.in_garage(p.x, p.y) or \
                     self.map.in_precinct(p.x, p.y) or p.hidden() or p.head_start_t > 0:
                 continue                        # (v0.12.1: a fresh escapee gets a head start)
             if self.heat > 0 or (p.jumpsuit and C.JUMPSUIT_WITNESS):

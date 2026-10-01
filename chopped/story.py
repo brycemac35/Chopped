@@ -24,6 +24,8 @@ No pygame in here (the sim imports it; tests/test_v09.py checks).
 """
 
 from .enums import T_SAY, T_STORY, T_MONEY, T_INFO, T_BAD
+from .parts import Part
+from . import vehicles as V
 
 # ---- objective kinds ---------------------------------------------------------------
 OBJ_DELIVER, OBJ_INSTALL, OBJ_TALK, OBJ_CARJACK, OBJ_HEAT, OBJ_BUY, OBJ_BREAKOUT, OBJ_COPCAR, \
@@ -42,11 +44,13 @@ class Chapter:
     chapters have one step; the two-step ones -- get the heat up THEN lose it, get pinched
     THEN break out -- move to the next entry as story_n goes up). A count objective shows
     its progress as (n/N) on the end of its only goal."""
-    __slots__ = ("key", "title", "giver", "rep", "cash", "kind", "arg", "goals")
+    __slots__ = ("key", "title", "giver", "rep", "cash", "kind", "arg", "goals", "reward")
 
-    def __init__(self, key, title, giver, rep, cash, kind, arg, goals):
+    def __init__(self, key, title, giver, rep, cash, kind, arg, goals, reward=()):
         self.key, self.title, self.giver, self.rep, self.cash = key, title, giver, rep, cash
         self.kind, self.arg, self.goals = kind, arg, goals
+        # (v0.19) a part id or a tuple of them, delivered to the crew locker on completion. Never REP.
+        self.reward = (reward,) if isinstance(reward, str) else tuple(reward)
 
     def goal(self, n):
         if self.kind in (OBJ_DELIVER, OBJ_INSTALL, OBJ_DAYCOUNT) and self.arg > 1:
@@ -65,19 +69,19 @@ CHAPTERS = [
     Chapter("word_on_the_street", "WORD ON THE STREET", "fixer", 1, 150, OBJ_TALK, "tommy",
             ("GO AND SAY HELLO TO TOMMY AT HIS LOT",)),
     Chapter("moving_target", "MOVING TARGET", "paige", 3, 400, OBJ_CARJACK, None,
-            ("CARJACK A CAR OUT OF TRAFFIC", "DELIVER THE CARJACKED CAR")),
+            ("CARJACK A CAR OUT OF TRAFFIC", "DELIVER THE CARJACKED CAR"), reward="ecu_tuned"),
     Chapter("feel_the_heat", "FEEL THE HEAT", "fixer", 6, 500, OBJ_HEAT, 50.0,
             ("GET THE HEAT UP TO 50", "NOW LOSE THEM: HEAT BACK TO 0, NO CUFFS")),
     Chapter("hostile_takeover", "HOSTILE TAKEOVER", "fixer", 8, 600, OBJ_BUY, 1,
-            ("BUY TOMMY'S LOT (HOLD E AT THE FOR SALE SIGN)",)),
+            ("BUY TOMMY'S LOT (HOLD E AT THE FOR SALE SIGN)",), reward="trn_tuned_6mt"),
     Chapter("inside_job", "THE INSIDE JOB", "paige", 10, 750, OBJ_BREAKOUT, None,
             ("GET ARRESTED. ON PURPOSE. SORRY", "BREAK OUT OF THE PRECINCT. NO BAIL")),
     Chapter("blue_lights", "BLUE LIGHTS", "tommy", 13, 900, OBJ_COPCAR, None,
             ("STOP A COP CAR AND CARJACK IT", "DELIVER THE COP CAR")),
     Chapter("audition", "THE AUDITION", "kingpin", 16, 1200, OBJ_DAYCOUNT, 3,
-            ("DELIVER 3 CARS BEFORE MIDNIGHT",)),
+            ("DELIVER 3 CARS BEFORE MIDNIGHT",), reward="eng_tuned_2_0t"),
     Chapter("the_big_one", "THE BIG ONE", "kingpin", 20, 3000, OBJ_HOT, 75.0,
-            ("DELIVER A CAR WITH 75+ HEAT ON YOU",)),
+            ("DELIVER A CAR WITH 75+ HEAT ON YOU",), reward=("eng_tt_3_0", "whl_tuned_light")),
 ]
 CHAPTER_KEYS = [ch.key for ch in CHAPTERS]
 
@@ -123,7 +127,8 @@ BEATS = {
         ("TOMMY", "LET ME SAVE YOU SOME TIME: THIS TOWN'S GOT ROOM FOR ONE CHOP SHOP, AND IT'S GOT MY NAME "
                   "ON THE SIGN."),
         ("TOMMY", "RUN HOME TO PAIGE. TELL HER TOMMY SAYS HI. ACTUALLY, TELL HER TOMMY SAYS BYE."),
-        ("PAIGE (ON THE PHONE)", "HE SAID WHAT? OH, IT'S ON. COME BACK TO THE SHOP. I'VE HAD AN IDEA."),
+        ("PAIGE (ON THE PHONE)", "HE SAID WHAT? OH, IT'S ON. I'VE HAD AN IDEA, BUT "
+                                  "NOBODY'LL TAKE US SERIOUSLY YET. DO THE DAILY JOBS, GET US A NAME, THEN COME SEE ME."),
     ],
     "moving_target.start": [
         ("PAIGE", "TOMMY ONLY TAKES PARKED CARS. KNOW WHY? BECAUSE TOMMY IS SCARED OF TRAFFIC."),
@@ -277,6 +282,10 @@ class Story:
         self._earn(ch.cash)
         self._story_beat(ch.key + ".end")
         self.toast("STORY: %s DONE (+$%d)" % (ch.title, ch.cash), T_MONEY)
+        for tid in ch.reward:
+            part = Part(tid, 1.0)                   # brand new: it's a present
+            self._to_locker(part)
+            self.toast("STORY REWARD: %s, IN THE LOCKER" % part.name.upper(), T_MONEY)
         self.story_ch += 1
         self.story_active = False
         self.story_n = 0
@@ -335,12 +344,14 @@ class Story:
         elif k == OBJ_CARJACK:
             if kind == "carjack":
                 self.story_flags["car"] = car.id
+                self.story_flags["name"] = V.model(getattr(car, "model", V.KEI)).name.upper()
                 self.story_n = 1
             elif kind == "deliver" and car is not None and car.id == self.story_flags.get("car"):
                 self._story_complete()
         elif k == OBJ_COPCAR:
             if kind == "steal" and car is not None and getattr(car, "copcar", False):
                 self.story_flags["car"] = car.id
+                self.story_flags["name"] = "COP CAR"
                 self.story_n = 1
             elif kind == "deliver" and car is not None and car.id == self.story_flags.get("car"):
                 self._story_complete()
@@ -379,6 +390,15 @@ class Story:
             if not self.story_told and self.players and self.story_points >= ch.rep:
                 self.story_told = True
                 self.toast("NEW STORY CHAPTER: %s. TALK TO %s." % (ch.title, GIVERS[ch.giver]), T_MONEY)
+            return
+        if ch.kind in (OBJ_CARJACK, OBJ_COPCAR) and self.story_n == 1 \
+                and self.story_flags.get("car") not in self.cars:
+            # (v0.18.2) the tracked car got towed, crushed or recycled: without this the chapter
+            # waited forever for a delivery that can't happen. Back to step 0, go nick another.
+            name = self.story_flags.get("name", "CAR")
+            self.story_n = 0
+            self.story_flags = {}
+            self.toast("THE %s GOT TOWED. GRAB ANOTHER." % name, T_BAD)
             return
         if ch.kind == OBJ_HEAT:
             if self.story_n == 0 and self.heat >= ch.arg:

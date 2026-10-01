@@ -21,7 +21,7 @@ from .characters import stamina_max
 from .enums import *  # noqa: F401,F403
 from .entities import NPC, Player
 from .lines import (BONK_LINES, BRAWL_LINES, HUMBLED_LINES, REFUND_LINES, LAUGH_LINES,
-                    OFFENDED_LINES, HOMERUN_LINES, STRIKE_LINES, WRIGGLE_LINES)
+                    OFFENDED_LINES, HOMERUN_LINES, WHIFF_LINES, STRIKE_LINES, WRIGGLE_LINES)
 
 
 class Brawl:
@@ -104,7 +104,7 @@ class Brawl:
         """A pedestrian with a grudge. Returns True if it drove n's movement."""
         q = self.players.get(n.foe)
         n.hostile_t -= dt
-        if q is None or n.hostile_t <= 0 or q.state in (CUFFED, DEAD) or q.jailed or self.in_shop(q.x, q.y):
+        if q is None or n.hostile_t <= 0 or q.state in (CUFFED, DEAD) or q.jailed or self.map.in_garage(q.x, q.y):   # (home only)
             n.hostile_t = 0.0
             n.foe = None
             return False
@@ -450,6 +450,7 @@ class Brawl:
         self.sfx(S_WHOOSH, p.x, p.y)
         p.fire_cd = C.PUNCH_COOLDOWN * 2
         if best is None:
+            self.toast(self.rng.choice(WHIFF_LINES) % p.name, T_INFO)    # (v0.18.2: it used to whiff in silence)
             return
         fx, fy = math.cos(p.ang), math.sin(p.ang)
         v = C.HAYMAKER_SPEED

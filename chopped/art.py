@@ -384,14 +384,88 @@ def make_part_icon(type_id):
 PRECINCT_FLOOR = (150, 160, 176)
 
 
+def tile_base():
+    """Each tile kind's flat colour on the map (before speckle, lines and labels)."""
+    return {M.ROAD: P["asphalt"], M.SIDEWALK: P["sidewalk"], M.BUILDING: P["ink"], M.GRASS: P["grass"],
+            M.TREE: P["grass"], M.WALL: P["wall"], M.GARAGE: P["concrete"], M.LOT: P["asphalt_l"],
+            M.PRECINCT: PRECINCT_FLOOR}
+
+
+# (v0.19) the ground kinds that get a hi-res detail tile under the first-person street
+FLOOR_DETAIL_KINDS = (M.ROAD, M.LOT, M.SIDEWALK, M.GRASS, M.TREE, M.GARAGE, M.PRECINCT)
+
+
+def floor_detail_tile(kind, variant, px):
+    """(v0.19) One 4 m tile of ground at `px` pixels a side (5 x world scale px/m), drawn at the
+    pixel it'll be seen at: asphalt aggregate and tar-sealed cracks, 2 m paving slabs with gum
+    on them, blades of grass, shop-floor concrete with tyre scuffs. fp lays the map's own pixels
+    over it wherever they aren't plain ground colour, so every lane line, label, oil stain and
+    skid mark on the map still shows -- this is only what's between them."""
+    base = tile_base()[kind]
+    s = pygame.Surface((px, px))
+    s.fill(base)
+    rng = random.Random(kind * 101 + variant * 7 + px)
+    q = max(1, px // 20)                               # pixels per old map pixel
+
+    def speck(cols, per_px, w=1, h=1):
+        for _ in range(int(px * px * per_px)):
+            s.fill(rng.choice(cols), (rng.randrange(px), rng.randrange(px), w, h))
+
+    def crack(col, steps):
+        x, y = rng.randrange(px), rng.randrange(px)
+        dx, dy = rng.choice(((1, 0), (0, 1), (1, 1), (1, -1)))
+        for _ in range(steps):
+            s.set_at((x % px, y % px), col)
+            if rng.random() < 0.35:
+                dx, dy = rng.choice(((1, 0), (0, 1), (1, 1), (1, -1), (-1, 1)))
+            x, y = x + dx, y + dy
+    if kind in (M.ROAD, M.LOT):
+        d, l = (P["asphalt_d"], P["asphalt_l"]) if kind == M.ROAD else (P["asphalt"], shade(P["asphalt_l"], 1.08))
+        speck((d, l), 0.09)                            # the aggregate
+        speck((d,), 0.006, 2, 1)                       # ...and the bigger stones
+        if rng.random() < 0.5:
+            crack(shade(base, 0.72), rng.randrange(px // 2, px * 3 // 2))      # a crack...
+        if rng.random() < 0.3:
+            crack(shade(base, 0.82), px)                                         # ...tar-sealed, badly
+        if kind == M.LOT and rng.random() < 0.4:
+            x, y = rng.randrange(px - 4 * q), rng.randrange(px - 3 * q)
+            s.fill(P["oil"], (x, y, 3 * q, 2 * q))                               # somebody's sump
+    elif kind == M.SIDEWALK:
+        half = px // 2
+        s.fill(P["sidewalk_d"], (0, half, px, 1))      # 2 m slabs (the map already draws the tile seams)
+        s.fill(P["sidewalk_d"], (half, 0, 1, px))
+        s.fill(shade(base, 1.05), (0, half + 1, px, 1))
+        s.fill(shade(base, 1.05), (half + 1, 0, 1, px))
+        speck((P["sidewalk_d"], shade(base, 1.06)), 0.04)
+        for _ in range(rng.randrange(0, 3)):           # chewing gum: a city's freckles
+            s.fill(shade(base, 0.72), (rng.randrange(px - 2), rng.randrange(px - 2), 2, 1 + (q > 1)))
+        if rng.random() < 0.3:
+            crack(shade(base, 0.8), px // 2)
+    elif kind in (M.GRASS, M.TREE):
+        speck((P["grass_d"], P["grass_l"], P["grass_d"]), 0.1, 1, 2)            # blades
+        if rng.random() < 0.3:
+            for _ in range(rng.randrange(1, 4)):       # a weed flowering, against the odds
+                s.fill(rng.choice((P["line_y"], P["white"])), (rng.randrange(px), rng.randrange(px), 1, 1))
+    elif kind == M.GARAGE:
+        speck((P["concrete_d"], shade(base, 1.05)), 0.05)
+        if rng.random() < 0.5:
+            crack(shade(base, 0.8), px // 2)
+        if rng.random() < 0.35:                        # a tyre scuff from a bad parking job
+            y = rng.randrange(px)
+            x0 = rng.randrange(px // 2)
+            for k in range(px // 3):
+                s.set_at((x0 + k, (y + k * k // (px // 2 or 1)) % px), shade(base, 0.7))
+    else:                                              # the precinct's lino: scuffed, obviously
+        speck((shade(base, 0.9), shade(base, 1.06)), 0.03)
+    return s
+
+
 def render_map(cmap):
     T = C.TILE_PX
     n = cmap.n
     surf = pygame.Surface((n * T, n * T))
     rng = random.Random(cmap.seed * 7 + 1)
-    base = {M.ROAD: P["asphalt"], M.SIDEWALK: P["sidewalk"], M.BUILDING: P["ink"], M.GRASS: P["grass"],
-            M.TREE: P["grass"], M.WALL: P["wall"], M.GARAGE: P["concrete"], M.LOT: P["asphalt_l"],
-            M.PRECINCT: PRECINCT_FLOOR}
+    base = tile_base()
     speck = {M.ROAD: (P["asphalt_d"], P["asphalt_l"]), M.SIDEWALK: (P["sidewalk_d"], P["curb"]),
              M.GRASS: (P["grass_d"], P["grass_l"]), M.TREE: (P["grass_d"], P["grass_l"]),
              M.GARAGE: (P["concrete_d"], P["concrete_d"]), M.LOT: (P["asphalt"], P["asphalt_d"]),

@@ -246,7 +246,8 @@ def encode_biz(world, me):
     orders = [o for o in world.orders if o is not None][:15]
     sales = world.sales()[:15]
     ask = me.ask if me else C.AUCTION_DEFAULT_ASK
-    out = [BIZ.pack(world.mo_byte() | ((ask & 3) << 3), min(255, len(world.lots)),
+    hint = 32 if world.wants_papers(me) else 0          # (v0.19) bit 5: "go to the records hatch" (old clients ignore it)
+    out = [BIZ.pack(world.mo_byte() | ((ask & 3) << 3) | hint, min(255, len(world.lots)),
                     min(255, int(math.ceil(world.next_hammer()))), len(orders) | (len(sales) << 4))]
     for o in orders:
         out.append(BIZ_ORDER.pack(o["contact"], o["cat"], (min(15, o["got"]) << 4) | min(15, o["need"])))
@@ -415,7 +416,7 @@ class Snapshot:
     __slots__ = ("tick", "time", "echo_ms", "pid", "cash", "rent", "strikes", "back_rent", "heat", "witness",
                  "cooling", "cops", "gameover", "run", "hold", "nplayers", "prompt", "ack_input", "day",
                  "rent_due", "alert", "story_points", "act", "today_quests", "quest_done", "shops", "story_ch", "story_st", "story_n",
-                 "dolly", "ask", "lots", "hammer", "orders", "sales",
+                 "dolly", "ask", "lots", "hammer", "orders", "sales", "papers_hint",
                  "me", "me2", "arsenal", "trunk", "menu", "inspect", "cars", "players", "npcs", "pickups", "dollies", "traps", "events", "arrival")
 
 
@@ -439,6 +440,7 @@ def decode_snapshot(payload):
     d, s.lots, s.hammer, n = BIZ.unpack_from(data, off)
     off += BIZ.size
     s.dolly, s.ask, n_o, n_s = d & 7, (d >> 3) & 3, n & 15, n >> 4
+    s.papers_hint = bool(d & 32)                # (v0.19) the green compass should point at the records hatch
     s.orders, s.sales = [], []
     for _ in range(n_o):                       # (contact, category, got, need)
         who, cat, prog = BIZ_ORDER.unpack_from(data, off)

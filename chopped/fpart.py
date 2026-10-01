@@ -26,229 +26,470 @@ AWNINGS = [(180, 40, 50), (40, 110, 70), (40, 70, 150), (200, 150, 40), (120, 50
 GRAFFITI = [(236, 90, 206), (80, 220, 230), (250, 232, 80), (255, 110, 60), (120, 230, 110)]
 
 
-def _noise(surf, rng, colors, n):
+def _noise(surf, rng, colors, n, sc=1, fine=None):
+    """Speckle. (v0.19) At texture scale sc the SAME rng draws land in sc x sc blocks, so a wall's
+    grime is in the same places at every world scale -- and with `fine` (a second rng) each hit is a
+    single hi-res pixel somewhere inside its block instead: grit, not confetti."""
     w, h = surf.get_size()
+    w, h = w // sc, h // sc
     for _ in range(n):
-        surf.set_at((rng.randrange(w), rng.randrange(h)), rng.choice(colors))
+        x, y, c = rng.randrange(w), rng.randrange(h), rng.choice(colors)
+        if sc == 1:
+            surf.set_at((x, y), c)
+        elif fine is not None:
+            surf.set_at((x * sc + fine.randrange(sc), y * sc + fine.randrange(sc)), c)
+        else:
+            surf.fill(c, (x * sc, y * sc, sc, sc))
+
+
+def _scaled_fill(surf, sc):
+    """fill() in old-texel coordinates: every rect is multiplied by the texture scale sc."""
+    if sc == 1:
+        return surf.fill
+    fill = surf.fill
+
+    def f(col, rect, special_flags=0):
+        x, y, w, h = rect
+        return fill(col, (x * sc, y * sc, w * sc, h * sc), special_flags=special_flags)
+    return f
+
+
+def _grit(surf, rng, colors, per_px, x0=0, y0=0, w=None, h=None):
+    """(v0.19) Hi-res only: single-pixel grime at `per_px` hits per pixel of the given area."""
+    W, H = surf.get_size()
+    w = W - x0 if w is None else w
+    h = H - y0 if h is None else h
+    if w <= 0 or h <= 0:
+        return
+    for _ in range(int(w * h * per_px)):
+        surf.set_at((x0 + rng.randrange(w), y0 + rng.randrange(h)), rng.choice(colors))
+
+
+def _brickwork(surf, sc, base, mortar, rng, y0=0, y1=None, course=4, brick=8, x_off=0):
+    """(v0.19) Hi-res brick detail over an already-drawn area: every brick gets its own tone and a
+    lit top edge, the mortar shrinks to one real pixel, and the head joints (which the 1x facade
+    never had room for) go in. Stays inside old-texel rows [y0, y1)."""
+    W = surf.get_width()
+    y1 = surf.get_height() // sc if y1 is None else y1
+    fill = surf.fill
+    for row, y in enumerate(range(y0, y1, course)):
+        off = (x_off + (0 if row % 2 else brick // 2)) % brick
+        py, ph = y * sc, min(course, y1 - y) * sc
+        for x in range(off - brick, W // sc, brick):
+            px = max(0, x * sc)
+            pw = min((x + brick) * sc, W) - px
+            if pw <= 0:
+                continue
+            tone = shade(base, rng.choice((0.9, 0.95, 1.0, 1.0, 1.04, 1.08)))
+            fill(tone, (px, py, pw, ph))
+            fill(shade(tone, 1.1), (px, py + 1, pw, 1))                     # lit top edge
+            if x * sc >= 0:
+                fill(mortar, (px, py, 1, ph))                               # head joint
+        fill(mortar, (0, py, W, 1))                                         # bed joint: one pixel now
 
 
 # ---------------------------------------------------------------------------
-# Walls
+# Walls. (v0.19) Every texture takes `sc`, its world scale: the layout is the same old 8 px/m
+# drawing multiplied by sc, and then the extra pixels get used -- mortar joints, window frames,
+# mullions, drips of grime under the sills. sc=1 is exactly the old texture, pixel for pixel.
 # ---------------------------------------------------------------------------
-def facade(style, floors, variant, night):
+def facade(style, floors, variant, night, sc=1):
     """One 4 m wide slice of a building: shop front at street level, windows
     above, a parapet on top. Seeded per (style, variant) so a building's
     tiles match but the street doesn't look copy-pasted."""
     rng = random.Random(style * 131 + variant * 7 + floors)
+    fine = random.Random(style * 71 + variant * 13 + floors * 3)          # (hi-res detail only)
     base = ROOF_COLORS[style % len(ROOF_COLORS)]
     wall = shade(base, 0.95 if not night else 0.55)
     dark, light = shade(wall, 0.78), shade(wall, 1.12)
     h = TEX * floors
-    s = pygame.Surface((TEX, h))
+    s = pygame.Surface((TEX * sc, h * sc))
+    F = _scaled_fill(s, sc)
     s.fill(wall)
-    _noise(s, rng, (dark, light), TEX * floors * 2)
-    # brick courses
-    for y in range(0, h, 4):
-        s.fill(dark, (0, y, TEX, 1))
+    if sc > 1:
+        _brickwork(s, sc, wall, dark, fine)
+    _noise(s, rng, (dark, light), TEX * floors * 2, sc, fine if sc > 1 else None)
+    if sc == 1:
+        for y in range(0, h, 4):                                          # brick courses
+            s.fill(dark, (0, y, TEX, 1))
     glass = P["glass_d"] if not night else (26, 30, 48)
     lit_rng = random.Random(style * 977 + variant * 31)
     for f in range(floors):
         top = h - TEX * (f + 1)
-        s.fill(shade(wall, 0.65), (0, top + TEX - 2, TEX, 2))      # floor slab line
+        F(shade(wall, 0.65), (0, top + TEX - 2, TEX, 2))                   # floor slab line
+        if sc > 1:
+            s.fill(shade(wall, 0.8), (0, (top + TEX) * sc - 1, TEX * sc, 1))
+            s.fill(light, (0, (top + TEX - 2) * sc, TEX * sc, 1))
         if f == 0:
             # street level: awning, shop window, door
             aw = AWNINGS[(style + variant) % len(AWNINGS)]
             if variant == 2:
-                s.fill(shade(wall, 0.7), (1, top + 6, 30, 26))          # roller shutter
+                F(shade(wall, 0.7), (1, top + 6, 30, 26))                  # roller shutter
                 for y in range(top + 7, top + 32, 2):
-                    s.fill(shade(wall, 0.55), (1, y, 30, 1))
+                    F(shade(wall, 0.55), (1, y, 30, 1))
+                if sc > 1:
+                    for y in range((top + 6) * sc, (top + 32) * sc, sc):   # finer slats, each lit on top
+                        s.fill(shade(wall, 0.6), (sc, y + sc - 1, 30 * sc, 1))
+                        s.fill(shade(wall, 0.78), (sc, y, 30 * sc, 1))
+                    s.fill(shade(wall, 0.45), (sc, (top + 29) * sc, 30 * sc, sc))     # bottom rail
+                    s.fill(P["metal_l"], (15 * sc, (top + 30) * sc, 2 * sc, 1))      # padlock hasp
                 col = rng.choice(GRAFFITI)
-                for k in range(9):                                    # a tag. Art.
-                    s.fill(col, (5 + k * 2 + rng.randrange(2), top + 14 + rng.randrange(8), 2, 2))
+                for k in range(9):                                        # a tag. Art.
+                    F(col, (5 + k * 2 + rng.randrange(2), top + 14 + rng.randrange(8), 2, 2))
             else:
-                s.fill(aw, (0, top + 3, TEX, 4))
+                F(aw, (0, top + 3, TEX, 4))
                 for x in range(0, TEX, 4):
-                    s.fill(shade(aw, 1.3), (x, top + 3, 2, 4))
+                    F(shade(aw, 1.3), (x, top + 3, 2, 4))
                 win = (WINDOW_LIT[variant % 4] if night else P["glass"])
-                s.fill(P["ink"], (2, top + 9, 19, 17))
-                s.fill(win, (3, top + 10, 17, 15))
-                s.fill(shade(win, 1.15) if not night else win, (3, top + 10, 17, 3))
-                s.fill(P["wood_d"], (23, top + 11, 7, 21))                # door
-                s.fill(P["gold"], (28, top + 21, 1, 2))
+                F(P["ink"], (2, top + 9, 19, 17))
+                F(win, (3, top + 10, 17, 15))
+                F(shade(win, 1.15) if not night else win, (3, top + 10, 17, 3))
+                F(P["wood_d"], (23, top + 11, 7, 21))                      # door
+                F(P["gold"], (28, top + 21, 1, 2))
+                if sc > 1:
+                    y = (top + 7) * sc
+                    for x in range(0, TEX * sc, 2 * sc):                   # the awning's scalloped hem
+                        s.fill(shade(aw, 0.7), (x + sc // 2, y, sc, max(1, sc // 2)))
+                    s.fill(shade(aw, 0.55), (0, (top + 3) * sc, TEX * sc, 1))
+                    s.fill((0, 0, 0), (2 * sc, y + sc, 28 * sc, 1))        # its shadow on the brick
+                    wx0, wy0, ww, wh = 3 * sc, (top + 10) * sc, 17 * sc, 15 * sc
+                    frame = shade(P["wood_d"], 1.2)
+                    s.fill(frame, (wx0, wy0, ww, 1))
+                    s.fill(frame, (wx0, wy0, 1, wh))
+                    s.fill(P["ink"], (wx0 + ww // 2, wy0, 1, wh))           # mullion
+                    s.fill(P["ink"], (wx0, wy0 + wh * 2 // 5, ww, 1))       # transom
+                    if not night:
+                        for k in range(min(ww, wh) // 2):                  # a reflection streak
+                            s.set_at((wx0 + 2 + k, wy0 + wh - 2 - k), shade(win, 1.25))
+                            s.set_at((wx0 + 4 + k, wy0 + wh - 2 - k), shade(win, 1.12))
+                    s.fill(light, (2 * sc, (top + 26) * sc, 19 * sc, 1))    # stone sill
+                    s.fill(shade(wall, 0.6), (2 * sc, (top + 26) * sc + 1, 19 * sc, 1))
+                    dx0, dy0, dw, dh = 23 * sc, (top + 11) * sc, 7 * sc, 21 * sc
+                    ph = dh * 2 // 5
+                    for py in (dy0 + sc, dy0 + dh // 2 + sc):              # two raised panels
+                        s.fill(shade(P["wood_d"], 0.75), (dx0 + sc, py, dw - 2 * sc, ph))
+                        s.fill(shade(P["wood_d"], 1.1), (dx0 + sc + 1, py + 1, dw - 2 * sc - 2, ph - 2))
+                    s.fill(P["metal"], (dx0 + dw // 2 - sc, dy0 + ph + sc + 1, 2 * sc, 1))   # letterbox
+                    s.fill(shade(P["wood_d"], 1.3), (dx0, dy0, 1, dh))
         else:
             for wx in (4, 18):
                 lit = night and lit_rng.random() < 0.45
                 c = rng.choice(WINDOW_LIT) if lit else glass
-                s.fill(P["ink"], (wx - 1, top + 8, 12, 15))
-                s.fill(c, (wx, top + 9, 10, 13))
-                s.fill(shade(c, 0.8), (wx, top + 15, 10, 1))
+                F(P["ink"], (wx - 1, top + 8, 12, 15))
+                F(c, (wx, top + 9, 10, 13))
+                F(shade(c, 0.8), (wx, top + 15, 10, 1))
                 if not lit and not night:
-                    s.fill(P["glass"], (wx + 1, top + 10, 3, 2))           # sky glint
-                s.fill(light, (wx - 1, top + 22, 12, 1))                   # sill
-    s.fill(shade(wall, 0.6), (0, 0, TEX, 3))                              # parapet
-    s.fill(light, (0, 3, TEX, 1))
+                    F(P["glass"], (wx + 1, top + 10, 3, 2))                # sky glint
+                F(light, (wx - 1, top + 22, 12, 1))                        # sill
+                if sc > 1:
+                    gx, gy, gw, gh = wx * sc, (top + 9) * sc, 10 * sc, 13 * sc
+                    frame = shade(wall, 1.3) if not night else shade(wall, 0.9)
+                    s.fill(frame, (gx, gy, gw, 1))                         # a painted frame, inside the reveal
+                    s.fill(frame, (gx, gy, 1, gh))
+                    s.fill(frame, (gx + gw - 1, gy, 1, gh))
+                    s.fill(frame, (gx + gw // 2, gy, 1, gh))               # sash bars
+                    s.fill(frame, (gx, (top + 15) * sc, gw, 1))
+                    if lit and fine.random() < 0.5:                        # somebody's curtains
+                        s.fill(shade(c, 0.75), (gx + 1, gy + 1, gw // 4, gh - 2))
+                    sy = (top + 23) * sc
+                    s.fill(shade(wall, 0.6), ((wx - 1) * sc, sy, 12 * sc, 1))    # the sill's shadow
+                    for _ in range(3 + fine.randrange(4)):                  # ...and the drips under it
+                        x = (wx - 1) * sc + fine.randrange(12 * sc)
+                        s.fill(shade(wall, 0.82), (x, sy + 1, 1, fine.randrange(2, 5) * sc))
+    F(shade(wall, 0.6), (0, 0, TEX, 3))                                     # parapet
+    F(light, (0, 3, TEX, 1))
+    if sc > 1:
+        s.fill(shade(wall, 1.25), (0, 0, TEX * sc, 1))                     # coping stone, lit
+        for x in range(0, TEX * sc, 4 * sc):
+            s.fill(shade(wall, 0.5), (x, 0, 1, 3 * sc))
+        s.fill(shade(wall, 0.45), (0, 4 * sc, TEX * sc, 1))                 # its drip shadow
+        _grit(s, fine, (dark, shade(wall, 0.7)), 0.05, 0, (h - 3) * sc, TEX * sc, 3 * sc)   # kerb splash
     return s
 
 
-def brick_wall(height_px, night, sign=None, sign_y=10):
-    s = pygame.Surface((TEX, height_px))
+def brick_wall(height_px, night, sign=None, sign_y=10, sc=1):
+    s = pygame.Surface((TEX * sc, height_px * sc))
     base = P["wall_l"] if not night else shade(P["wall_l"], 0.6)
     s.fill(base)
     mortar = shade(base, 0.7)
-    for y in range(0, height_px, 4):
-        s.fill(mortar, (0, y, TEX, 1))
-        off = 0 if (y // 4) % 2 else 4
-        for x in range(off, TEX, 8):
-            s.fill(mortar, (x, y, 1, 4))
+    if sc == 1:
+        for y in range(0, height_px, 4):
+            s.fill(mortar, (0, y, TEX, 1))
+            off = 0 if (y // 4) % 2 else 4
+            for x in range(off, TEX, 8):
+                s.fill(mortar, (x, y, 1, 4))
+    else:
+        rng = random.Random(4242 + height_px)
+        _brickwork(s, sc, base, mortar, rng, x_off=4)
+        _grit(s, rng, (shade(base, 0.85), shade(base, 1.08)), 0.03)
+        # soot creeping up from the pavement: denser toward the bottom
+        for k in range(1, 5):
+            h = height_px * sc * k // 16
+            _grit(s, rng, (shade(base, 0.72), mortar), 0.05, 0, height_px * sc - h, TEX * sc, h)
     if sign:
-        s.fill(P["ink"], (0, sign_y, TEX, 14))
-        s.fill(P["gold"], (0, sign_y + 1, TEX, 1))
-        s.fill(P["gold"], (0, sign_y + 12, TEX, 1))
+        F = _scaled_fill(s, sc)
+        F(P["ink"], (0, sign_y, TEX, 14))
+        F(P["gold"], (0, sign_y + 1, TEX, 1))
+        F(P["gold"], (0, sign_y + 12, TEX, 1))
+        if sc > 1:
+            for x in range(2 * sc, TEX * sc, 6 * sc):                          # the sign's screws
+                s.fill(P["metal_l"], (x, sign_y * sc + sc // 2, 1, 1))
+                s.fill(P["metal_l"], (x, (sign_y + 13) * sc + sc // 2, 1, 1))
     return s
 
 
-def precinct_wall(height_px, night):
+def precinct_wall(height_px, night, sc=1):
     """The police station: pale concrete, a blue stripe, barred windows. Cheerful."""
-    s = pygame.Surface((TEX, height_px))
+    s = pygame.Surface((TEX * sc, height_px * sc))
+    F = _scaled_fill(s, sc)
     base = (196, 198, 206) if not night else (104, 106, 118)
     s.fill(base)
     rng = random.Random(8)
-    _noise(s, rng, (shade(base, 0.9), shade(base, 1.06)), TEX * height_px // 8)
-    s.fill((40, 70, 170) if not night else (26, 44, 110), (0, height_px - 22, TEX, 5))
+    fine = random.Random(88) if sc > 1 else None
+    _noise(s, rng, (shade(base, 0.9), shade(base, 1.06)), TEX * height_px // 8, sc, fine)
+    F((40, 70, 170) if not night else (26, 44, 110), (0, height_px - 22, TEX, 5))
     for y in range(0, height_px, 16):
-        s.fill(shade(base, 0.8), (0, y, TEX, 1))
+        F(shade(base, 0.8), (0, y, TEX, 1))
     wy = 30
-    s.fill((30, 34, 44), (8, wy, 16, 12))                                  # a window...
+    F((30, 34, 44), (8, wy, 16, 12))                                        # a window...
     for x in range(9, 24, 3):
-        s.fill((150, 150, 160), (x, wy, 1, 12))                            # ...with bars
+        F((150, 150, 160), (x, wy, 1, 12))                                  # ...with bars
+    if sc > 1:
+        for y in range(0, height_px * sc, 16 * sc):                         # panel joints: thin, with a lit lip
+            s.fill(base, (0, y, TEX * sc, sc))
+            s.fill(shade(base, 0.72), (0, y, TEX * sc, 1))
+            s.fill(shade(base, 1.08), (0, y + 1, TEX * sc, 1))
+        for x in range(0, TEX * sc, 16 * sc):
+            s.fill(shade(base, 0.8), (x, 0, 1, height_px * sc))
+        for x in range(9 * sc, 24 * sc, 3 * sc):                            # round bars: lit one side
+            s.fill((96, 96, 106), (x, wy * sc, sc, 12 * sc))
+            s.fill((190, 190, 200), (x, wy * sc, 1, 12 * sc))
+        s.fill(shade(base, 1.15), (7 * sc, (wy + 12) * sc, 18 * sc, 1))     # sill
+        s.fill(shade(base, 0.7), (7 * sc, (wy + 12) * sc + 1, 18 * sc, 1))
+        for _ in range(5):                                                  # rust weeping from the bars
+            x = fine.randrange(9 * sc, 24 * sc)
+            s.fill((150, 110, 90), (x, (wy + 12) * sc + 2, 1, fine.randrange(2, 6) * sc))
+        _grit(s, fine, (shade(base, 0.84),), 0.01)
     return s
 
 
-def concrete_wall(height_px, night):
-    s = pygame.Surface((TEX, height_px))
+def concrete_wall(height_px, night, sc=1):
+    s = pygame.Surface((TEX * sc, height_px * sc))
+    F = _scaled_fill(s, sc)
     base = P["concrete"] if not night else shade(P["concrete"], 0.55)
     s.fill(base)
     rng = random.Random(5)
-    _noise(s, rng, (shade(base, 0.85), shade(base, 1.1)), TEX * height_px // 6)
+    fine = random.Random(55) if sc > 1 else None
+    _noise(s, rng, (shade(base, 0.85), shade(base, 1.1)), TEX * height_px // 6, sc, fine)
     for y in range(0, height_px, 16):
-        s.fill(shade(base, 0.75), (0, y, TEX, 1))
-    s.fill(shade(base, 0.75), (0, 0, 1, height_px))
+        F(shade(base, 0.75), (0, y, TEX, 1))
+    F(shade(base, 0.75), (0, 0, 1, height_px))
     for x in range(0, TEX, 4):                                            # razor wire
-        s.fill(P["metal_l"], (x, 0, 2, 2))
-    s.fill(P["line_y"], (0, height_px - 10, TEX, 3))                      # hazard stripe
+        F(P["metal_l"], (x, 0, 2, 2))
+    F(P["line_y"], (0, height_px - 10, TEX, 3))                           # hazard stripe
     for x in range(0, TEX, 8):
-        s.fill(P["ink"], (x, height_px - 10, 4, 3))
+        F(P["ink"], (x, height_px - 10, 4, 3))
+    if sc > 1:
+        for y in range(16 * sc, height_px * sc, 16 * sc):                 # formwork joints, one pixel
+            s.fill(base, (0, y, TEX * sc, sc))
+            s.fill(shade(base, 0.7), (0, y, TEX * sc, 1))
+        for y in range(8 * sc, (height_px - 12) * sc, 16 * sc):           # tie holes
+            for x in (4 * sc, 20 * sc):
+                s.fill(shade(base, 0.55), (x, y, max(1, sc - 1), max(1, sc - 1)))
+        s.fill(base, (0, 0, TEX * sc, 2 * sc))
+        for x in range(0, TEX * sc, 2 * sc):                              # the razor wire's coils
+            s.fill(P["metal_l"], (x, (x // sc) % 2, sc, 1))
+            s.fill(P["metal"], (x + sc // 2, sc, 1, sc))
+        _grit(s, fine, (shade(base, 0.8),), 0.015)
     return s
 
 
-def walk_door(height_px, night):
+def walk_door(height_px, night, sc=1):
     """(v0.12.1, Bryce: "make an actual door for walking") the staff entrance: brick up to the
     parapet, a steel door with a wired-glass window and a push bar in a 1.4 m frame at the
     bottom middle, a caged bulkhead light over it, and a sign nobody reads."""
-    s = brick_wall(height_px, night)
+    s = brick_wall(height_px, night, sc=sc)
+    F = _scaled_fill(s, sc)
     ppm = TEX / 4.0                                                        # 8 px per metre
     dw, dh = int(round(1.4 * ppm)), int(round(2.4 * ppm))
     x0, y0 = TEX // 2 - dw // 2, height_px - dh
     frame = (70, 70, 78) if not night else (44, 44, 50)
     door = (150, 60, 44) if not night else (84, 36, 28)                   # oxblood. Every staff door is
-    s.fill(frame, (x0 - 1, y0 - 1, dw + 2, dh + 1))                        # oxblood, it's the law
-    s.fill(door, (x0, y0, dw, dh))
-    s.fill(shade(door, 1.15), (x0, y0, 1, dh))
-    s.fill(shade(door, 0.75), (x0 + dw - 1, y0, 1, dh))
-    s.fill((150, 170, 180) if not night else (200, 180, 110), (x0 + 3, y0 + 3, dw - 6, 4))   # wired glass
-    s.fill(shade(door, 0.6), (x0 + 1, y0 + 10, dw - 2, 1))                 # the push bar
-    s.fill((200, 200, 206), (x0 + dw - 3, y0 + 11, 2, 1))                  # handle
-    s.fill((230, 230, 200) if night else (180, 180, 170), (TEX // 2 - 2, y0 - 4, 4, 2))  # bulkhead light
-    s.fill(P["ink"], (TEX // 2 - 3, y0 - 3, 6, 1))
+    F(frame, (x0 - 1, y0 - 1, dw + 2, dh + 1))                             # oxblood, it's the law
+    F(door, (x0, y0, dw, dh))
+    F(shade(door, 1.15), (x0, y0, 1, dh))
+    F(shade(door, 0.75), (x0 + dw - 1, y0, 1, dh))
+    glass = (150, 170, 180) if not night else (200, 180, 110)
+    F(glass, (x0 + 3, y0 + 3, dw - 6, 4))                                  # wired glass
+    F(shade(door, 0.6), (x0 + 1, y0 + 10, dw - 2, 1))                      # the push bar
+    F((200, 200, 206), (x0 + dw - 3, y0 + 11, 2, 1))                       # handle
+    F((230, 230, 200) if night else (180, 180, 170), (TEX // 2 - 2, y0 - 4, 4, 2))  # bulkhead light
+    F(P["ink"], (TEX // 2 - 3, y0 - 3, 6, 1))
+    if sc > 1:
+        gx, gy, gw, gh = (x0 + 3) * sc, (y0 + 3) * sc, (dw - 6) * sc, 4 * sc
+        for k in range(0, gw + gh, sc):                                    # the wire in the wired glass
+            for j in range(gh):
+                if 0 <= k - j < gw:
+                    s.set_at((gx + k - j, gy + j), shade(glass, 0.75))
+        s.fill(shade(door, 0.8), ((x0 + 1) * sc, (y0 + 1) * sc, 1, (dh - 2) * sc))       # pressed panel lines
+        s.fill(shade(door, 0.8), ((x0 + dw - 1) * sc - 1, (y0 + 1) * sc, 1, (dh - 2) * sc))
+        s.fill((200, 200, 206), ((x0 + 1) * sc, (y0 + 10) * sc, (dw - 2) * sc, 1))       # the bar's chrome edge
+        for y in (y0 + 2, y0 + dh - 4):                                    # hinges
+            s.fill((110, 110, 118), (x0 * sc - 1, y * sc, sc, 2 * sc))
+        s.fill(P["metal"], ((TEX // 2 - 2) * sc, (y0 - 4) * sc, 1, 2 * sc))              # the light's cage
+        s.fill(P["metal"], ((TEX // 2 + 2) * sc - 1, (y0 - 4) * sc, 1, 2 * sc))
+        s.fill(P["metal"], (TEX // 2 * sc, (y0 - 4) * sc, 1, 2 * sc))
+        fine = random.Random(144)                                          # scuffs where boots kick it open
+        _grit(s, fine, (shade(door, 0.7), shade(door, 1.2)), 0.06, x0 * sc, (height_px - 3) * sc, dw * sc, 3 * sc)
     return s
 
 
-def roller_door(panel, night):
+def roller_door(panel, night, sc=1):
     """(v0.9) One 4 m bay of the chop shop's roller door: galvanised slats, guide rails
     each side, a kick bar and a handle at the bottom, and somebody's tag. (v0.12.1, Bryce:
     "the garage doors need to be segmented") -- now a sectional door: four panels with a
     dark seam between each, a row of little windows in the second one, and a proper frame
     post down each side, so five doors side by side read as five doors, not one wall."""
     h = 48
-    s = pygame.Surface((TEX, h))
+    s = pygame.Surface((TEX * sc, h * sc))
+    F = _scaled_fill(s, sc)
     base = (150, 152, 160) if not night else (88, 90, 100)
     s.fill(base)
     for y in range(0, h, 3):
-        s.fill(shade(base, 0.9), (0, y, TEX, 1))                          # (fine ribbing on each panel)
+        F(shade(base, 0.9), (0, y, TEX, 1))                               # (fine ribbing on each panel)
+    if sc > 1:
+        for y in range(0, h * sc, 3 * sc):                                # ribs: a shadow and a highlight
+            s.fill(base, (0, y, TEX * sc, sc))
+            s.fill(shade(base, 0.82), (0, y, TEX * sc, 1))
+            s.fill(shade(base, 1.1), (0, y + sc, TEX * sc, 1))
     for k in range(1, 4):
         y = k * h // 4
-        s.fill(shade(base, 0.45), (0, y - 1, TEX, 2))                      # the seams between sections
-        s.fill(shade(base, 1.18), (0, y + 1, TEX, 1))
+        F(shade(base, 0.45), (0, y - 1, TEX, 2))                           # the seams between sections
+        F(shade(base, 1.18), (0, y + 1, TEX, 1))
     wy = h // 4 + 3
     for x in range(5, TEX - 6, 6):                                         # a row of windows, section two
-        s.fill((40, 46, 58) if not night else (210, 190, 120), (x, wy, 4, 4))
-        s.fill(shade(base, 0.6), (x, wy, 4, 1))
+        F((40, 46, 58) if not night else (210, 190, 120), (x, wy, 4, 4))
+        F(shade(base, 0.6), (x, wy, 4, 1))
+        if sc > 1:
+            s.fill(shade(base, 1.2), (x * sc, (wy + 4) * sc, 4 * sc, 1))
+            if not night:
+                s.fill((90, 100, 120), (x * sc + 1, wy * sc + sc, sc, 1))  # a glint
     rail = shade(base, 0.45)
     post = (84, 80, 86) if not night else (50, 48, 52)
-    s.fill(post, (0, 0, 3, h))                                             # frame posts: this door ends here
-    s.fill(post, (TEX - 3, 0, 3, h))
-    s.fill(rail, (3, 0, 1, h))
-    s.fill(rail, (TEX - 4, 0, 1, h))
-    s.fill((56, 56, 62), (0, h - 3, TEX, 3))                             # the kick bar
-    s.fill(P["line_y"], (2, h - 6, TEX - 4, 2))                          # hazard stripe
+    F(post, (0, 0, 3, h))                                                  # frame posts: this door ends here
+    F(post, (TEX - 3, 0, 3, h))
+    F(rail, (3, 0, 1, h))
+    F(rail, (TEX - 4, 0, 1, h))
+    F((56, 56, 62), (0, h - 3, TEX, 3))                                   # the kick bar
+    F(P["line_y"], (2, h - 6, TEX - 4, 2))                                # hazard stripe
     for x in range(2, TEX - 2, 6):
-        s.fill(P["ink"], (x, h - 6, 3, 2))
-    s.fill((40, 40, 46), (TEX // 2 - 3, h - 9, 6, 2))                    # the handle
+        F(P["ink"], (x, h - 6, 3, 2))
+    F((40, 40, 46), (TEX // 2 - 3, h - 9, 6, 2))                          # the handle
+    if sc > 1:
+        for y in range(2 * sc, h * sc, 6 * sc):                           # bolts down the posts
+            s.fill(shade(post, 1.4), (sc, y, 1, 1))
+            s.fill(shade(post, 1.4), ((TEX - 2) * sc, y, 1, 1))
+        s.fill(shade(post, 1.25), (0, 0, 1, h * sc))
+        s.fill(shade(post, 1.25), ((TEX - 3) * sc, 0, 1, h * sc))
+        s.fill((90, 90, 98), ((TEX // 2 - 3) * sc, (h - 9) * sc, 6 * sc, 1))
     rng = random.Random(panel * 17 + 3)
     if panel in (0, 5, 6) or rng.random() < 0.3:
         col = GRAFFITI[rng.randrange(len(GRAFFITI))]
         x, y = rng.randrange(4, 18), rng.randrange(8, 26)
         for _ in range(26):                                             # a tag. It says "DAVE". Probably.
-            s.fill(col if not night else shade(col, 0.6), (x, y, 2, 2))
+            F(col if not night else shade(col, 0.6), (x, y, 2, 2))
+            if sc > 1:                                                  # ...and the paint ran
+                s.fill(shade(col if not night else shade(col, 0.6), 0.8), (x * sc + sc // 2, (y + 2) * sc, 1, sc))
             x = max(3, min(TEX - 5, x + rng.choice((-2, 0, 2, 2))))
             y = max(4, min(h - 12, y + rng.choice((-2, -1, 1, 2))))
+    if sc > 1:
+        _grit(s, random.Random(panel * 5 + 1), (shade(base, 0.8), (70, 60, 50)), 0.01)
     return s
 
 
 def roof_texture(w_m, h_m, ppm):
     """(v0.9) The underside of the shop's roof, seen from below: corrugated steel,
     I-beams every 4 m, fluorescent tubes (two of them flickering, obviously), and a
-    skylight nobody has cleaned since 1994. Colour (255, 0, 255) = no roof."""
+    skylight nobody has cleaned since 1994. Colour (255, 0, 255) = no roof.
+    (v0.19) Past the old 8 px/m the corrugations, rivets and tube end caps get pixels of their
+    own instead of being stretched."""
     w, h = int(w_m * ppm), int(h_m * ppm)
     s = pygame.Surface((w, h))
     base = (82, 84, 94)
     s.fill(base)
+    q = max(1, ppm // 8)                                                  # hi-res factor over the old texture
     for x in range(0, w, 2):
         s.fill(shade(base, 0.8), (x, 0, 1, h))                           # the corrugations
+    if q > 1:
+        for x in range(0, w, 4 * q):
+            s.fill(shade(base, 1.12), (x + 1, 0, 1, h))                  # each sheet's lit crest
+            s.fill(shade(base, 0.62), (x, 0, 1, h))                      # ...and its overlap
     beam = (40, 40, 48)
     step = int(4 * ppm)
     for y in range(0, h + 1, step):
-        s.fill(beam, (0, y - 2, w, 4))
-        s.fill(shade(beam, 1.5), (0, y - 2, w, 1))
+        s.fill(beam, (0, y - 2 * q, w, 4 * q))
+        s.fill(shade(beam, 1.5), (0, y - 2 * q, w, q))
+        if q > 1:
+            for x in range(q * 3, w, q * 6):                             # rivets along the flange
+                s.fill(shade(beam, 1.9), (x, y - q - 1, 1, 1))
+                s.fill(shade(beam, 1.9), (x, y + q, 1, 1))
     for x in range(0, w + 1, step * 2):
-        s.fill(beam, (x - 1, 0, 3, h))
+        s.fill(beam, (x - q, 0, 3 * q, h))
+        if q > 1:
+            s.fill(shade(beam, 1.4), (x - q, 0, 1, h))
     rng = random.Random(1994)
     for y in range(step // 2, h, step):
         for x in range(step // 2, w - step // 2, step * 2):
             lw, lh = int(1.4 * ppm), max(2, int(0.25 * ppm))
-            s.fill((150, 160, 170), (x - lw // 2 - 1, y - lh // 2 - 1, lw + 2, lh + 2))
+            s.fill((150, 160, 170), (x - lw // 2 - q, y - lh // 2 - q, lw + 2 * q, lh + 2 * q))
             s.fill((235, 245, 255) if rng.random() > 0.15 else (120, 130, 140), (x - lw // 2, y - lh // 2, lw, lh))
+            if q > 1:
+                s.fill((110, 116, 126), (x - lw // 2, y - lh // 2, 2 * q, lh))       # the end caps
+                s.fill((110, 116, 126), (x + lw // 2 - 2 * q, y - lh // 2, 2 * q, lh))
+                s.fill((255, 255, 255), (x - lw // 2 + 2 * q, y - lh // 2 + q, lw - 4 * q, 1))
     sx, sy = int(w * 0.62), int(h * 0.3)
-    s.fill((60, 62, 70), (sx - 1, sy - 1, int(2.5 * ppm) + 2, int(2.5 * ppm) + 2))
-    s.fill((150, 170, 170), (sx, sy, int(2.5 * ppm), int(2.5 * ppm)))    # the skylight (grubby)
-    _noise(s, rng, ((90, 100, 96), (120, 130, 120)), int(ppm * ppm * 2))
+    sk = int(2.5 * ppm)
+    s.fill((60, 62, 70), (sx - q, sy - q, sk + 2 * q, sk + 2 * q))
+    s.fill((150, 170, 170), (sx, sy, sk, sk))                            # the skylight (grubby)
+    if q > 1:
+        s.fill((60, 62, 70), (sx + sk // 2, sy, q, sk))                  # glazing bars
+        s.fill((60, 62, 70), (sx, sy + sk // 2, sk, q))
+        _grit(s, random.Random(94), ((120, 136, 130), (100, 110, 100)), 0.08, sx, sy, sk, sk)   # leaves. Pigeons.
+    if q == 1:
+        _noise(s, rng, ((90, 100, 96), (120, 130, 120)), int(ppm * ppm * 2))
+    else:
+        _grit(s, random.Random(95), ((90, 100, 96), (120, 130, 120), (70, 72, 80)), 0.012)
     return s
 
 
 class WallTex:
     """A wall texture pre-shaded at SHADES darkness levels, sliced into
-    1-pixel columns so the raycaster just picks one and scales it."""
-    __slots__ = ("h", "cols")
+    1-pixel columns so the raycaster just picks one and scales it.
+    (v0.19) A level is shaded the first time something asks for it (a sunny street never uses
+    the darkest six), `tw` is the texture's width (TEX x its world scale) and `bytes` what it
+    weighs, so fp's texture cache can be budgeted like the sprite cache."""
+    __slots__ = ("h", "tw", "src", "_cols", "bytes")
 
     def __init__(self, surf):
-        surf = surf.convert()
-        self.h = surf.get_height()
-        self.cols = []
-        for k in range(SHADES):
+        self.src = surf.convert()
+        self.tw, self.h = self.src.get_size()
+        self._cols = [None] * SHADES
+        self.bytes = self.tw * self.h * self.src.get_bytesize()
+
+    def level(self, k):
+        c = self._cols[k]
+        if c is None:
             f = int(255 * max(0.12, 1.0 - k * 0.068))
-            lv = surf.copy()
+            lv = self.src.copy()
             lv.fill((f, f, f), special_flags=pygame.BLEND_MULT)
-            self.cols.append([lv.subsurface((u, 0, 1, self.h)) for u in range(TEX)])
+            c = self._cols[k] = [lv.subsurface((u, 0, 1, self.h)) for u in range(self.tw)]
+            self.bytes += self.tw * self.h * lv.get_bytesize()
+        return c
+
+    @property
+    def cols(self):
+        """(old callers) every level, shading any that aren't yet."""
+        return [self.level(k) for k in range(SHADES)]
 
 
 # ---------------------------------------------------------------------------
@@ -263,39 +504,72 @@ SKY_GRAD = {
 }
 
 
-def make_sky(kind, width, height):
+def make_sky(kind, width, height, sc=1):
     """A 360-degree panorama: gradient, clouds (or stars), and a hazy skyline
-    far away so long streets don't end in a flat colour."""
+    far away so long streets don't end in a flat colour.
+    (v0.19) `width` x `height` is the old 640-wide layout; the surface is sc x that. The same
+    clouds and skyline, but cloud banks get lit tops and shadowed bellies, stars are single
+    pixels (and there are more, fainter ones), the moon has craters, and the far-off towers
+    have antennas and proper little windows."""
     top, bot = SKY_GRAD[kind]
-    s = pygame.Surface((width, height))
-    for y in range(height):
-        t = y / max(1, height - 1)
-        s.fill(tuple(int(top[i] + (bot[i] - top[i]) * t) for i in range(3)), (0, y, width, 1))
+    s = pygame.Surface((width * sc, height * sc))
+    F = _scaled_fill(s, sc)
+    for y in range(height * sc):
+        t = y / max(1, height * sc - 1)
+        s.fill(tuple(int(top[i] + (bot[i] - top[i]) * t) for i in range(3)), (0, y, width * sc, 1))
     rng = random.Random(hash(kind) & 0xFFFF)
+    fine = random.Random(len(kind) * 977 + 5)
     if kind == "night":
         for _ in range(width // 5):
             c = rng.choice(((255, 255, 255), (200, 200, 255), (255, 240, 200)))
-            s.set_at((rng.randrange(width), rng.randrange(int(height * 0.8))), c)
+            x, y = rng.randrange(width), rng.randrange(int(height * 0.8))
+            if sc == 1:
+                s.set_at((x, y), c)
+            else:
+                s.set_at((x * sc + fine.randrange(sc), y * sc + fine.randrange(sc)), c)
+        if sc > 1:
+            for _ in range(width * sc // 4):                                  # the faint ones
+                s.set_at((fine.randrange(width * sc), fine.randrange(int(height * sc * 0.7))),
+                         shade(top, fine.choice((2.2, 3.0, 4.0))))
         mx = width // 3
-        pygame.draw.circle(s, (240, 240, 220), (mx, height // 4), 6)          # moon
-        pygame.draw.circle(s, top, (mx + 3, height // 4 - 2), 5)
+        pygame.draw.circle(s, (240, 240, 220), (mx * sc, height // 4 * sc), 6 * sc)          # moon
+        if sc > 1:
+            for dx, dy, r in ((-2, 1, 1), (-3, -2, 1), (0, 3, 1)):                             # craters
+                pygame.draw.circle(s, (206, 206, 190), ((mx + dx) * sc, (height // 4 + dy) * sc), r * sc)
+        pygame.draw.circle(s, top, ((mx + 3) * sc, (height // 4 - 2) * sc), 5 * sc)
     else:
         cloud = shade(bot, 1.12) if kind != "dusk" else (250, 170, 140)
+        lit, belly = shade(cloud, 1.08), shade(cloud, 0.9)
         for _ in range(width // 60):
             cx, cy = rng.randrange(width), rng.randrange(8, max(9, height // 2))
             for k in range(6):
                 w = rng.randrange(18, 40)
-                s.fill(cloud, (cx + rng.randrange(-20, 20), cy + rng.randrange(-3, 4), w, 3))
+                x, y = cx + rng.randrange(-20, 20), cy + rng.randrange(-3, 4)
+                F(cloud, (x, y, w, 3))
+                if sc > 1:
+                    s.fill(lit, (x * sc + sc, y * sc, (w - 2) * sc, 1))           # sunlit top
+                    s.fill(belly, (x * sc, (y + 3) * sc - 1, w * sc, 1))          # grey belly
+                    for _ in range(w // 6):                                       # ragged edges
+                        px = x * sc + fine.randrange(w * sc)
+                        s.fill(cloud, (px, y * sc - sc // 2, fine.randrange(2, 4) * sc, sc // 2 or 1))
     # distant skyline silhouette
     sil = shade(bot, 0.55) if kind != "night" else (18, 18, 36)
     x = 0
     while x < width:
         w = rng.randrange(8, 26)
         hgt = rng.randrange(6, max(7, height // 4))
-        s.fill(sil, (x, height - hgt, w, hgt))
+        F(sil, (x, height - hgt, w, hgt))
+        if sc > 1 and fine.random() < 0.3:                                      # an antenna
+            ax = (x + fine.randrange(w)) * sc
+            s.fill(sil, (ax, (height - hgt - 3) * sc, 1, 3 * sc))
         if kind in ("night", "dusk"):
             for _ in range(w * hgt // 30):
-                s.set_at((x + rng.randrange(w), height - rng.randrange(1, hgt)), rng.choice(WINDOW_LIT))
+                wx, wy = x + rng.randrange(w), height - rng.randrange(1, hgt)
+                col = rng.choice(WINDOW_LIT)
+                if sc == 1:
+                    s.set_at((wx, wy), col)
+                else:
+                    s.fill(col, (wx * sc, wy * sc, sc - 1, sc - 1))                # a window, with a frame's worth of gap
         x += w
     return s.convert()
 

@@ -6,7 +6,8 @@ from . import config as C
 
 # stats keys in use: stamina_max, stamina_regen, strip_time, breakin_time, hotwire_time,
 # alarm_cut_time, alarm_wires (multiplies the number of wires), sale_bonus (money from his sales),
-# fee_mult (bail and papers)
+# fee_mult (bail and papers), theft_heat (x the heat of a break-in / carjack), breakin_alarm (x0 = his
+# window-smash is silent)
 CHARACTERS = (
     {"id": 0, "name": "DASH", "title": "ATHLETE", "perk": "MORE STAMINA, FASTER RECOVERY",
      "blurb": "RUNS EVERYWHERE. HAS NEVER ONCE WALKED.",
@@ -14,11 +15,12 @@ CHARACTERS = (
     {"id": 1, "name": "SPANNER", "title": "GREASE MONKEY", "perk": "STRIPS PARTS 40% FASTER",
      "blurb": "SMELLS OF 10W-40. CAN UNBOLT A CAR IN HIS SLEEP.",
      "stats": {"strip_time": C.CHAR_SPANNER_STRIP_TIME}},
-    {"id": 2, "name": "SLIM", "title": "LIGHT FINGERS", "perk": "FASTER BREAK-INS, BETTER WIRE ODDS",
-     "blurb": "LOCKS ARE JUST SUGGESTIONS.",
+    {"id": 2, "name": "SLIM", "title": "LIGHT FINGERS", "perk": "FAST, SILENT BREAK-INS, HALF THE HEAT",
+     "blurb": "LOCKS ARE JUST SUGGESTIONS. ALARMS ARE SHY.",
      "stats": {"breakin_time": C.CHAR_SLIM_BREAKIN_TIME, "hotwire_time": C.CHAR_SLIM_HOTWIRE_TIME,
-               "alarm_cut_time": C.CHAR_SLIM_ALARM_CUT_TIME, "alarm_wires": C.CHAR_SLIM_ALARM_WIRES}},
-    {"id": 3, "name": "SMOOTH", "title": "SMOOTH TALKER", "perk": "+15% ON SALES, HALF PRICE BAIL",
+               "alarm_cut_time": C.CHAR_SLIM_ALARM_CUT_TIME, "alarm_wires": C.CHAR_SLIM_ALARM_WIRES,
+               "theft_heat": C.CHAR_SLIM_THEFT_HEAT, "breakin_alarm": C.CHAR_SLIM_BREAKIN_ALARM}},
+    {"id": 3, "name": "SMOOTH", "title": "SMOOTH TALKER", "perk": "+10% ON SALES, HALF PRICE BAIL",
      "blurb": "COULD SELL A CAR BACK TO ITS OWNER. HAS.",
      "stats": {"sale_bonus": C.CHAR_SMOOTH_SALE_BONUS, "fee_mult": C.CHAR_SMOOTH_FEE_MULT}},
 )

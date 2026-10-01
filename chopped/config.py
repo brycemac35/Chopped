@@ -94,7 +94,9 @@ CHAR_SLIM_BREAKIN_TIME = 0.5     # LIGHT FINGERS: half the time to smash in...
 CHAR_SLIM_HOTWIRE_TIME = 0.5     # ...and half the time to hotwire. He has a lot of practice, and a record.
 CHAR_SLIM_ALARM_CUT_TIME = 0.5   # snip snip
 CHAR_SLIM_ALARM_WIRES = 0.5      # wires to guess from x0.5: 4 -> 2, so a coin flip instead of a prayer
-CHAR_SMOOTH_SALE_BONUS = 1.15    # SMOOTH TALKER: +15% on sales he makes (his auction lots, orders he fills)
+CHAR_SLIM_THEFT_HEAT = 0.5       # (v0.19) ...and half the heat off every break-in / carjack / hot-seat grab: nobody remembers his face
+CHAR_SLIM_BREAKIN_ALARM = 0.0    # (v0.19) x the alarm: his window-smash is silent (no alarm, no owner running out). 0 = never rings
+CHAR_SMOOTH_SALE_BONUS = 1.10    # SMOOTH TALKER: +10% on sales he makes (his auction lots, orders he fills). Was 1.15: with half-price bail too he was the strictly-best pick
 CHAR_SMOOTH_FEE_MULT = 0.5       # bail and papers cost him half: the clerk "knows a guy"
 STAMINA_RECOVER_AT = 25.0        # exhausted until you're back above this
 JUMP_SPEED = 6.2                 # m/s straight up: ~0.9 m of air. Doomguy couldn't do this.
@@ -351,7 +353,8 @@ CRASH_EJECT_DV = 11.0            # everybody out, the fun way
 BIKE_EJECT_DV = 6.0              # (v0.13) ...and off a motorbike at a bump that'd only dent a car. The
                                  # price of 56 m/s in a 230 kg package: kiss a lamppost at jogging
                                  # speed and you're doing a forward roll into the fruit stand.
-IMPOUND_RESTOCK = 20.0           # (v0.13) s between the precinct impound putting a bike back out
+IMPOUND_RESTOCK = 75.0           # (v0.13) s between the precinct impound putting a bike back out. (v0.19) was 20: a keys-in ~$1,300 bike every 20 s for ~10 heat was free money, so now it's a slow trickle
+IMPOUND_WEAR = 0.5               # (v0.19) impound bikes' parts are worth x this condition: "impounded wrecks". They still run (the solo jail-escape ride), they just aren't a cash machine
 IMPOUND_HIDE_DIST = 30.0         # m: ...but never while somebody's close enough to watch it appear
 CRASH_WHEEL_DV = 18.7            # wheels have left the chat
 CRASH_COOLDOWN = 0.35            # sustained scraping shouldn't count as 20 crashes per second
@@ -373,6 +376,8 @@ EXPLOSION_PUSH = 14.0
 # --------------------------------------------------------------------------
 HEAT_MAX = 100.0
 HEAT_BREAKIN = 10.0
+SPORTY_HEAT_MULT = 2.0           # (v0.19) x the break-in / carjack / failed-wire heat on a sporty model (coupe, muscle, rice rocket): they're the good loot, and their owners are the ones with friends at the station
+HEAT_RUN_MIN_HEAT = 40.0         # (v0.19) HEAT RUN only counts once the crew's heat has actually reached this during the job. Before, a clean quiet delivery paid it for nothing
 # (v0.10, Bryce: "make sure the heat takes longer to come up") witness rates cut by about
 # 40% across the board, so a getaway takes longer to go from "fine" to "5 units incoming".
 WITNESS_RATE_COP = 3.0
@@ -813,7 +818,10 @@ DAY_LENGTH = 180.0               # seconds: dawn to midnight
 # it); 1-3 are the fences you can buy from World.shop_owned. SHOP_PRICE is what buying one
 # costs, once; SHOP_RENT is what it adds to the daily bill forever after.
 SHOP_PRICE = (0, 4000, 12000, 30000)
-SHOP_RENT = (100, 150, 250, 400)
+# (v0.19, QA: "the lose condition never bites mid-game") 150/250/400 was pocket change by the
+# time you could afford a second shop, so nobody ever met a strike. 300/600/1200 makes a fully
+# owned empire a $2,200/day habit: shops have to be worked, not just bought. Home shop unchanged.
+SHOP_RENT = (100, 300, 600, 1200)
 # (Bryce, after a playtester asked "can you even lose?") Rent strikes replace the old hidden
 # two-minute debt timer, which nobody could see and nobody lost to. Now it is baseball, with
 # eviction: miss a midnight (cash can't cover rent PLUS whatever's carried over) and that is a
@@ -882,14 +890,21 @@ EXTRA_SHOP_TIER = (1, 2, 0, 1)   # NOS, ejector seat, gnome mount, hydraulics (g
 # ---- Dave the auctioneer (the old sell bench) --------------------------------------------------
 # (label, price x value, chance somebody bids, s to the hammer). Ask more and you wait longer and
 # might get nothing: an unsold part goes back in the locker, an unsold car stays in the shop. The
-# expected payout falls off above FAIR -- greed is a bet, not a free upgrade -- but it's not a
-# stupid bet with a car you're happy to re-list.
-AUCTION_ASKS = (("QUICK SALE", 0.8, 1.0, 15.0),
-                ("FAIR", 1.0, 0.85, 30.0),
-                ("PUNCHY", 1.25, 0.55, 45.0),
-                ("GREEDY", 1.6, 0.25, 60.0))
+# expected payout peaks at PUNCHY and falls off hard at GREEDY -- greed is a bet, not a free
+# upgrade -- but it's not a stupid bet with a car you're happy to re-list.
+# (v0.19, QA: "QUICK currently wins": 0.8 x 100% in 15 s beat FAIR's 0.85 x 100% in 30 s outright,
+# so nobody ever waited.) Now every rung is a real trade: QUICK 70% for sure and fast, FAIR
+# 85% expected, PUNCHY 94% expected but slower, GREEDY only 64% expected AND a listing fee.
+AUCTION_ASKS = (("QUICK SALE", 0.7, 1.0, 10.0),
+                ("FAIR", 1.0, 0.85, 25.0),
+                ("PUNCHY", 1.25, 0.75, 40.0),
+                ("GREEDY", 1.6, 0.40, 60.0))
+AUCTION_UNSOLD_FEE = (0.0, 0.0, 0.0, 0.10)   # share of the ask Dave keeps when a lot of that tier fails to sell:
+                                             # only GREEDY pays it. Dave's time is money, and he's seen you coming
 AUCTION_DEFAULT_ASK = 1          # what everyone starts on: FAIR
-AUCTION_MAX_LOTS = 8             # Dave only has so much patter
+AUCTION_MAX_LOTS = 16            # (v0.19: was 8) Dave's book: the shop's patter budget...
+AUCTION_LOTS_PER_SHOP = 4        # ...plus this many for every extra garage of yours that's open. More
+                                 # counters, more lots; Dave hires a temp
 AUCTION_CAR_TIME = 1.5           # cars take this much longer to hammer than parts (x the ask's time)
 # ---- papers, from the precinct's records hatch ------------------------------------------------
 PAPERS_RATE = 0.1                # a logbook costs this share of what the car would fetch...
@@ -901,7 +916,8 @@ CONTACT_COUNT = 8                # people round town who'll buy things off you, 
 CONTACT_HANDOVER_R = 7.0         # m: park a sold car this close to its buyer and it's delivered
 ORDER_SLOTS = 3                  # standing orders at once
 ORDER_RATE = 1.5                 # they pay this x the part's value (way better than Dave, but a drive)
-ORDER_BONUS_EACH = 60            # + this x the count when the whole order's filled
+ORDER_BONUS_EACH = 30            # + this x the count when the whole order's filled (v0.19: was 60; on top of
+                                 # 1.5x value the set bonus was making Dave's auction look silly)
 ORDER_NEW_DELAY = 25.0           # s before a filled order's slot gets a new one
 ORDER_REP_PER_DAY = 2            # REP from drop-offs, capped: the daily jobs are still the main way up
 ORDER_HANDOVER_TIME = 0.8        # s of hold-E: "is it hot?" "no." "...it's warm."
@@ -1022,9 +1038,26 @@ PROP_ANGLES = 32                 # crates, the dolly, gnomes, traps, the gate (w
 # window, so the frame goes to the screen 1:1. 3 is for 4K and brave CPUs; 1 is the old look.
 RENDER_SCALE_DEFAULT = 2
 RENDER_SCALE_MIN, RENDER_SCALE_MAX = 1, 3   # (the settings slider's range) past 3x the sprite blits eat the frame
-FP_HIRES_WORLD = False           # walls, street, sky and ceilings at full render scale too. Off: they're
-                                 # 4-8 px/m textures with nothing sharper to show, and their per-column /
-                                 # per-row Python loops cost ~8 ms more a frame at 2x (fp._world_lowres)
+# (v0.19, Bryce: "update the resolution of the background assets to match the render scaling")
+# WORLD SCALE w: walls, street, ceilings and sky draw at w x 640 columns/rows, with textures built at
+# w x their old texel density (more mortar, window frames, grime -- not blur). Always <= the render
+# scale k (a 3x wall in a 2x view is 3x the work for pixels nobody can see). 1 = the v0.17 look:
+# the world at 640 wide, blown up k x under the full-res sprites (fp._world_pass).
+WORLD_SCALE_MIN, WORLD_SCALE_MAX = 1, 3
+WORLD_SCALE_DEFAULT = 1          # (set from the A/B timing in the v0.19 notes; see FPRenderer.set_world_scale)
+FLOOR_DETAIL_DIST = 22.0         # m: street rows nearer than this come from the hi-res floor chunks. Past it a
+                                 # screen row covers more than a metre of road, so 4 px/m is already too many
+FLOOR_CHUNK_M = 32.0             # m per side of one hi-res floor chunk (8 tiles): small enough that a new one is
+                                 # a ~1 ms job when you drive into it, big enough that 9 cover what you can see
+FLOOR_DETAIL_MB = 24             # LRU budget for those chunks. 32 m at 15 px/m is 0.9 MB, so ~26 at w=3: a
+                                 # 3x3 neighbourhood with room to double back without rebuilding
+FLOOR_CHUNKS_PER_FRAME = 2       # new chunks built per frame at most; the rest borrow the blurry base floor for
+                                 # a frame or two (a 60 m/s car shouldn't hitch because it outran the cache)
+SKID_LOG_PER_CHUNK = 1500        # skid segments remembered per chunk (to redraw one that was evicted). A
+                                 # minute of doughnuts in one car park; ~150 KB a chunk at worst
+WALL_TEX_MB = 96                # wall textures (every light level of every facade you've driven past), LRU.
+                                 # A 3x six-storey facade fully shaded is ~7 MB; a street's worth fits
+WALL_TEX_KEEP = 48               # ...but never fewer than this many, so one frame can't evict its own walls
 # Box-model sprites are drawn at SPRITE_DETAIL x their old pixels-per-metre when you're up close
 # (a car 12 -> 48 px/m). Only up close: each sprite has mips at 1x, 2x, 4x and the renderer picks
 # the smallest one that still covers the screen pixels, so a car 80 m away costs what it used to.

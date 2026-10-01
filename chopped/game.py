@@ -3,6 +3,7 @@ game.py -- the pygame application: window, menu, host/join flow, the frame
 loop, and the --selftest bot that proves the thing boots without a human.
 """
 
+import copy
 import math
 import os
 import random
@@ -126,12 +127,14 @@ class App:
         # (v0.17) remembered settings; --name / --char on the command line still win over them
         # (the selftest always runs on defaults: a player's saved 3x scale shouldn't move its fps)
         self.settings = SET.defaults() if self.selftest else SET.load()
-        self._saved_settings = dict(self.settings)
+        self._saved_settings = copy.deepcopy(self.settings)     # (deep: `servers` is a list Menu edits in place)
         cli_char = getattr(args, "char", None)
         self.menu = Menu(self.font, (getattr(args, "name", None) or self.settings["name"]
                                      or os.environ.get("USERNAME") or os.environ.get("USER") or "CROOK")[:12].upper(),
                          save_file=getattr(args, "save", None),
-                         char=cli_char if cli_char is not None else (self.settings["char"] or 0))
+                         char=cli_char if cli_char is not None else (self.settings["char"] or 0),
+                         servers=self.settings["servers"])
+        self._join_text = ""          # what was typed for the connect in progress (remembered once it works)
         self._menu_seed_id = (self.menu.name, self.menu.char)    # so a --name/--char isn't saved as your choice
         self.settings_panel = None     # the SETTINGS screen, when open (main menu or pause)
         self.state = "menu"
@@ -195,17 +198,25 @@ class App:
             fn = getattr(self, "set_render_scale", None)
             if callable(fn):
                 fn(s["render_scale"])
+        if key in (None, "render_scale", "world_scale"):
+            # (v0.19) WORLD DETAIL; it can't exceed the render scale, and a render-scale change re-applies it
+            fn = getattr(self, "set_world_scale", None)
+            if callable(fn):
+                fn(max(1, min(int(s.get("world_scale", 1)), int(s["render_scale"]))))
         if key in (None, "master", "music", "sfx", "engine"):
             fn = getattr(getattr(self, "audio", None), "set_volumes", None)
             if callable(fn):
                 fn(*SET.volumes(s))
 
     def _open_settings(self):
-        self.settings_panel = SettingsPanel(self.font, self.settings, self._apply_setting)
+        # a game you're hosting has its save slot open: the SAVE FILES list can't delete that one
+        locked = getattr(self.server, "save_path", None) if self.server is not None else None
+        self.settings_panel = SettingsPanel(self.font, self.settings, self._apply_setting, locked_path=locked)
         self._grab_mouse(False)
 
     def _close_settings(self):
         self.settings_panel = None
+        self.menu.refresh_slots()            # (a slot may have been deleted in there)
         self._save_settings()
 
     def _save_settings(self):
@@ -219,7 +230,7 @@ class App:
         if self.menu.char != self._menu_seed_id[1]:
             s["char"] = self.menu.char
         if s != self._saved_settings and SET.save(s):
-            self._saved_settings = dict(s)
+            self._saved_settings = copy.deepcopy(s)
 
     def _default_window(self):
         try:
@@ -269,6 +280,7 @@ class App:
 
     def join(self, text):
         self._save_settings()
+        self._join_text = text
         host, port = parse_addr(text)
         lag = max(0.0, getattr(self.args, "fake_lag", 0.0) or 0.0) / 1000.0
         self.client = self._make_client(host, port, local=False, fake_lag=lag / 2,
@@ -305,12 +317,30 @@ class App:
             if self.selftest:
                 self.error = msg
 
+    def _remember_server(self):
+        """(v0.19) A real connection to somebody else's game: keep the address (and the host's name,
+        the lowest player id that isn't you, if the first snapshot has one) for the JOIN list."""
+        c = self.client
+        if self.selftest or c is None or getattr(c, "local", True) or not self._join_text.strip():
+            return
+        name = None
+        try:
+            others = sorted(pid for pid in c.latest.players if pid != c.pid)
+            if others:
+                name = c.latest.players[others[0]][13]
+        except Exception:
+            name = None
+        self.settings["servers"] = SET.remember_server(self.settings["servers"], self._join_text, name)
+        self.menu.servers = self.settings["servers"]
+        self._save_settings()
+
     def _start_play(self):
         cm = self.client.map
         surf = self.menu_surf if cm.seed == self.menu_seed else None
         self.renderer = Renderer(cm, surf)
         k = self.render_scale
         self.fp = FPRenderer(cm, self.renderer.map_surf, W * k, VIEW_H * k, scale=k)
+        self.fp.set_world_scale(self.world_scale)          # (v0.19) WORLD DETAIL
         self._apply_setting("fov")
         self.hud = DoomHud(self.font, self.renderer.bank, self.renderer.minimap)
         self.hud.contacts = getattr(cm, "contacts", ())      # (v0.14) names for the order/sale rows
@@ -384,10 +414,13 @@ class App:
                 if self.settings_panel.handle(ev, self._to_canvas) == "back":
                     self._close_settings()
             elif self.state == "menu":
+                act = None
                 if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
-                    self.menu.click(self._to_canvas(ev.pos))
-                act = self.menu.handle(ev)
-                if act == "host":
+                    act = self.menu.click(self._to_canvas(ev.pos))
+                act = act or self.menu.handle(ev)
+                if act == "save":
+                    self._save_settings()              # (a forgotten server, a new name)
+                elif act == "host":
                     self.host()
                 elif act == "join":
                     self.join(self.menu.join_addr)
@@ -588,9 +621,12 @@ class App:
         self.audio.update_music(level)
         if self.settings_panel is not None:
             self.settings_panel.tick(dt, pygame.key.get_pressed())      # held A/D keeps stepping
+        elif self.state == "menu":
+            self.menu.tick(dt, pygame.key.get_pressed())                # held Backspace keeps deleting
         if self.state == "connecting":
             self.client.update(now)
             if self.client.state == "connected" and self.client.latest is not None:
+                self._remember_server()
                 self._start_play()
             elif self.client.state in ("failed", "closed"):
                 self.leave(self.client.error or "COULDN'T CONNECT")
@@ -636,6 +672,7 @@ class App:
                 if self.settings_panel is not None:
                     self.settings_panel.draw(low, self._canvas_mouse(), shade=True)
                 else:
+                    self.menu.mouse = self._canvas_mouse()
                     self.menu.draw(low, now)
             else:
                 low.fill(P["ink"], (0, H // 2 - 20, W, 40))
@@ -890,7 +927,13 @@ class App:
         snap, me = view.snap, view.me
         cm = self.client.map
         contacts = getattr(cm, "contacts", ())
-        if me is None or not contacts:
+        if me is None:
+            return None
+        # (v0.19) you asked Dave to sell a car whole without papers: the arrow points at the hatch
+        rec = getattr(cm, "records", None)
+        if getattr(snap, "papers_hint", False) and rec and me[2] != S.DRIVER:
+            return rec[0], rec[1], "PAPERS: RECORDS HATCH"
+        if not contacts:
             return None
         if me[2] == S.DRIVER:
             for (cid, who, price) in (getattr(snap, "sales", None) or ()):
@@ -1141,6 +1184,23 @@ class App:
         self.scaled = None
         if getattr(self, "fp", None) is not None:
             self.fp.set_scale(k)
+        # (v0.19) the world can't be sharper than the view: re-clamp what was asked for
+        self.set_world_scale(getattr(self, "_world_scale_want", C.WORLD_SCALE_DEFAULT))
+
+    def set_world_scale(self, w):
+        """(v0.19) The settings screen's WORLD DETAIL: walls, street, ceilings and sky at w x 640
+        with textures to match (clamped to WORLD_SCALE_MIN..MAX and to the render scale; what
+        was asked for is remembered, so turning the render scale back up restores it). Safe to
+        call any time, in a game or not. Returns the scale in use."""
+        try:
+            w = int(w)
+        except (TypeError, ValueError):
+            w = C.WORLD_SCALE_DEFAULT
+        self._world_scale_want = max(C.WORLD_SCALE_MIN, min(C.WORLD_SCALE_MAX, w))
+        self.world_scale = max(C.WORLD_SCALE_MIN, min(self._world_scale_want, self.render_scale or 1))
+        if getattr(self, "fp", None) is not None:
+            self.world_scale = self.fp.set_world_scale(self.world_scale)
+        return self.world_scale
 
 
 def run_selftest(args):

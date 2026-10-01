@@ -69,6 +69,7 @@ class Audio(SfxSynth):
         self.scape_ch = None                 # (day bed, night bed, chopper) channels, the top three of the 32
         self.scape_snd = None
         self.scape_state = [0.0, 0.0, 0.0]
+        self._scape_set = [None, None, None]     # last volume sent to each bed's channel (None: not playing)
         self._listen_t = None
         self._jit = random.Random(11)        # per-play level/pick jitter (its own stream: never touches synthesis)
         if not enabled:
@@ -191,6 +192,7 @@ class Audio(SfxSynth):
     # for jumps the queue. Each is ~0.12 s of pure Python; the thread naps between them so the
     # game loop isn't starved of the GIL.
     IDLE_NAP = 0.02       # s slept between the bands of a layout nobody has asked for yet
+    IDLE_START = 10.0     # s after startup before the read-ahead of unasked layouts begins
     IDLE_GAP = 0.4        # ... and between such layouts
     ENGINE_JOBS = ("i4", "v8", "i6", "i4t", "v6", "vtec", "rotary", "diesel", "electric", "bike_i4", "single",
                    "turbo", "sc", "air")
@@ -202,12 +204,16 @@ class Audio(SfxSynth):
         import time
         try:
             done = set()
+            t0 = time.monotonic()
             while True:
                 want = [w for w in reversed(list(self._eng_want)) if w not in done]
                 name = want[0] if want else next((j for j in self.ENGINE_JOBS if j not in done), None)
                 if name is None:
                     break
                 asked = bool(want)
+                if not asked and time.monotonic() - t0 < self.IDLE_START:
+                    time.sleep(0.1)           # the opening seconds belong to the music, the scene and the frame loop
+                    continue
                 self._eng_urgent = False
                 # a layout the game is waiting for renders flat out; the read-ahead of the rest is spread
                 # thin (a nap per band and between layouts) so it never holds the GIL against the frame loop
@@ -402,17 +408,28 @@ class Audio(SfxSynth):
         Pre-mixing (instead of two layers on two channels) keeps the hats
         locked to the 808s -- two channels can drift a whole audio buffer apart."""
         try:
-            street, heat = MU.compose(self.rate)
+            import time
+            street, heat = MU.compose(self.rate, 0.0015)
+            time.sleep(0.01)
+            s08 = [a * 0.8 for a in street]
+            h09 = [b * 0.9 for b in heat]
+            CH = 30000                    # work in slices with a nap between, so the frame loop keeps the GIL
             out = []
             for hv in (0.0, 0.45, 1.0):
-                vals = [a * 0.8 + b * hv * 0.9 for a, b in zip(street, heat)]
-                m = max(1e-6, max(abs(v) for v in vals))
+                vals = []
+                for i in range(0, len(s08), CH):
+                    vals += map(float.__add__, s08[i:i + CH], [b * hv for b in h09[i:i + CH]])
+                    time.sleep(0.001)
+                m = max(1e-6, max(vals), -min(vals))
                 k = 0.95 / m * 32767 * MASTER
-                pcm = array("h", (int(v * k) for v in vals))
+                pcm = array("h")
+                for i in range(0, len(vals), CH):
+                    pcm.extend([int(v * k) for v in vals[i:i + CH]])
+                    time.sleep(0.001)
                 if self.nch > 1:
-                    wide = array("h")
-                    for v in pcm:
-                        wide.extend((v,) * self.nch)
+                    wide = array("h", bytes(2 * len(pcm) * self.nch))
+                    for c in range(self.nch):
+                        wide[c::self.nch] = pcm
                     pcm = wide
                 out.append(pcm.tobytes())
             self._music_bytes = out
@@ -582,10 +599,14 @@ class Audio(SfxSynth):
             if v <= 0.002 and targets[i] <= 0.002:
                 if ch.get_busy():
                     ch.stop()
+                self._scape_set[i] = None
                 continue
             if not ch.get_busy():
                 ch.play(self.scape_snd[i], loops=-1)
-            ch.set_volume(min(1.0, v))
+                self._scape_set[i] = -1.0
+            if v != self._scape_set[i]:                    # (a settled bed costs no mixer calls)
+                ch.set_volume(min(1.0, v))
+                self._scape_set[i] = v
 
     def set_loop(self, name, vol, variant=0, bus="sfx", pregained=False, pan=0.0):
         """Keep a named loop running at `vol` (0 stops it). Scaled by its bus."""
@@ -630,6 +651,7 @@ class Audio(SfxSynth):
                     ch.stop()
             self.eng_state = [[None] * 4, [None] * 4]
             self.whistle_state = [None, None, None]
+            self._scape_set = [None, None, None]
             for i in range(15, pygame.mixer.get_num_channels()):
                 pygame.mixer.Channel(i).stop()
             for k in self.loop_state:
