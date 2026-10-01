@@ -29,8 +29,8 @@ def settings_path():
 
 
 def _num(v, lo, hi, default):
-    """A number in [lo, hi] as an int; anything unusable (None, text, NaN, bool) is the default."""
-    if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v:
+    """A number in [lo, hi] as an int; anything unusable (None, text, NaN, +-Infinity, bool) is the default."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v or v in (float("inf"), float("-inf")):
         return default
     return int(max(lo, min(hi, round(v))))
 
@@ -152,7 +152,7 @@ def sanitize(data):
 
 def load(path=None):
     try:
-        with open(path or settings_path(), "r", encoding="utf-8") as f:
+        with open(path or settings_path(), "r", encoding="utf-8-sig") as f:     # (-sig: Notepad's BOM)
             return sanitize(json.load(f))
     except (OSError, ValueError):
         return defaults()

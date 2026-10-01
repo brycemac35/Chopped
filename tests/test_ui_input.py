@@ -141,5 +141,22 @@ class TestMouseSettings(unittest.TestCase):
                 self.assertIn(ch, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,:;!?'-()/%+=*$#&\"<>[]_", ch)
 
 
+
+
+class TestSettingsFileOddities(unittest.TestCase):
+    def test_infinity_and_bom_load_safely(self):
+        import json, tempfile
+        from chopped import settings as SET
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "settings.json")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write('{"mouse_sens": Infinity, "fov": -Infinity}')
+        s = SET.load(p)
+        self.assertEqual(s["mouse_sens"], SET.defaults()["mouse_sens"])
+        with open(p, "w", encoding="utf-8-sig") as f:
+            json.dump({"mouse_sens": 150}, f)
+        self.assertEqual(SET.load(p)["mouse_sens"], 150, "a Notepad BOM doesn't reset everything")
+
+
 if __name__ == "__main__":
     unittest.main()
