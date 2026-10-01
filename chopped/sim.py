@@ -849,6 +849,11 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             if use_tap and key is not None and duration <= C.TAP_HOLD:
                 action()      # a tap shorter than one input packet still counts
             return
+        if key != p.hold_key and isinstance(p.hold_key, tuple) and p.hold_key[:1] == ("jack",)                 and p.hold > 1.0 and not p.need_release:
+            # (v0.20, QA) a bump knocked the car off the jack mid-fit: say so, and don't let the E
+            # you're still holding turn into "E: DRIVE" and hop you in with the hub still bare
+            self.toast("THE JACK SLIPPED: SOMETHING MOVED THE CAR. START AGAIN.", T_BAD)
+            p.need_release = True
         if key is None or p.need_release:
             p.hold = 0.0
             p.hold_key = key

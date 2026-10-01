@@ -333,5 +333,18 @@ class TestQAFollowUps(unittest.TestCase):
         self.assertNotEqual(p.state, S.DRIVER, "still holding E after the tumble mustn't hop you in")
 
 
+class TestJackSlips(unittest.TestCase):
+    def test_a_bump_mid_fit_says_so_and_doesnt_hop_you_in(self):
+        w, p, car = setup()
+        press(p, S.B_USE)
+        step(w, 3.0)
+        car.vx = 3.0                           # a passing car shunts it off the jack
+        step(w, 0.5)
+        car.vx = car.vy = 0.0
+        step(w, 1.0)
+        self.assertTrue(any(e[2] == 0 and "JACK SLIPPED" in e[3][1] for e in w.events))
+        self.assertNotIn(p.state, (S.DRIVER, S.PASSENGER), "still holding E mustn't get you in the car")
+
+
 if __name__ == "__main__":
     unittest.main()
