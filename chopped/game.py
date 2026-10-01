@@ -575,7 +575,7 @@ class App:
             if k[pygame.K_LEFT]: b |= S.B_LEFT
             if k[pygame.K_RIGHT]: b |= S.B_RIGHT
             if self.chase:
-                self.cam_orbit = max(-math.pi, min(math.pi, self.cam_orbit + rel * C.MOUSE_SENS))
+                self.cam_orbit = max(-math.pi, min(math.pi, self.cam_orbit + SET.yaw_delta(self.settings, rel)))
                 self.orbit_idle = 0.0 if rel else self.orbit_idle + dt
                 if self.orbit_idle > C.CHASE_ORBIT_RETURN:
                     self.cam_orbit *= math.exp(-3.0 * dt)
@@ -583,14 +583,14 @@ class App:
                 self._look_updown(rely)
         else:
             turn = (1 if k[pygame.K_RIGHT] else 0) - (1 if k[pygame.K_LEFT] else 0)
-            self.yaw = (self.yaw + turn * C.FP_TURN_SPEED * dt + rel * C.MOUSE_SENS) % (2 * math.pi)
+            self.yaw = (self.yaw + turn * C.FP_TURN_SPEED * dt + SET.yaw_delta(self.settings, rel)) % (2 * math.pi)
             self._look_updown(rely)
         return S.InputState(b, self.use_c, self.drop_c, self.exit_c, self.yaw, self.fire_c, weapon,
                             mseq, mop, ma, mb)
 
     def _look_updown(self, rely):
         lim = VIEW_H * C.PITCH_LIMIT
-        self.pitch = max(-lim, min(lim, self.pitch - rely * C.MOUSE_PITCH_SENS * VIEW_H))
+        self.pitch = max(-lim, min(lim, self.pitch + SET.pitch_delta(self.settings, rely, VIEW_H)))
 
     def _chase_cam(self, car, dt):
         """Behind and above the car, lagging a little, swinging toward where it's
