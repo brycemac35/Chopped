@@ -346,7 +346,9 @@ class DoomHud:
         for i, side in enumerate((-1, 1)):
             x = vw // 2 + side * 120 + int(sway * side)
             held = hands[i] if i < len(hands) else None
-            if held is not None:
+            if held is not None and PART_DEFS[PART_IDS[held]][1] == "wheel":
+                self._held_wheel(pen, x, by - 22, held)
+            elif held is not None:
                 ic = self._icon6(held)
                 pen.blit(ic, (x - 24, by - 48 + 6))
             self._fist(pen, x, by, skin, sleeve, side)
@@ -579,6 +581,24 @@ class DoomHud:
             n = int(48 * W / Pen.BASE_W)
             ic = self.icons6[idx] = pygame.transform.scale(self.bank.icons[idx], (n, n))
         return ic
+
+    @staticmethod
+    def _held_wheel(pen, x, y, idx):
+        """(v0.20, QA: the 8 px inventory icon blown up to fist size read as a black head with a
+        yellow fringe) A wheel you're carrying, drawn as one: grey-black tyre with a tread ring,
+        a rim (gold if tuned, dull if a steelie, silver alloy otherwise), five lug nuts. Radius 26 in pen units -- about a
+        hand-span wider than the fist, which is roughly how a 16-inch wheel looks at arm's length."""
+        d = PART_DEFS[PART_IDS[idx]]
+        rim = (214, 178, 64) if d[5] else ((120, 122, 130) if d[3] < 50 else (196, 198, 206))   # tuned gold / steelie / alloy
+        pen.circle((22, 22, 26), (x, y), 26)                  # tyre
+        pen.circle((58, 58, 64), (x, y), 26, 3)               # its shoulder catching the light
+        pen.circle((40, 40, 46), (x, y), 21, 2)               # tread line
+        pen.circle(shade(rim, 0.65), (x, y), 15)              # rim, in shadow
+        pen.circle(rim, (x - 1, y - 1), 13)                   # rim face
+        for k in range(5):                                    # lug nuts: five, like a real one
+            a = k * 2 * math.pi / 5 - math.pi / 2
+            pen.circle((70, 70, 78), (x + int(math.cos(a) * 7), y + int(math.sin(a) * 7)), 2)
+        pen.circle(shade(rim, 0.5), (x - 1, y - 1), 4)        # hub cap
 
     @staticmethod
     def _fist(pen, x, y, skin, sleeve, side):
