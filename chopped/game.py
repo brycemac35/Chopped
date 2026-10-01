@@ -744,6 +744,7 @@ class App:
                     self._compose()
                     self.ms_backdrop = self.frame.copy()
                     low.fill((0, 0, 0, 0))
+                    self._gl_frame = False          # (v0.20) present the photo, not one undarkened live GPU frame
                 else:
                     self.ms_backdrop = low.copy()
         if self.server and now < self.host_banner_until and not self.paused and not self.modshop.open:
@@ -1122,8 +1123,13 @@ class App:
 
     def _present(self):
         if self.gl is not None:
-            self._present_gl()
-            return
+            try:
+                self._present_gl()
+                return
+            except Exception as e:                # (v0.20) a lost context / driver hiccup: fall back, don't die
+                print("RENDERER: OpenGL present failed (%s: %s), switching to CLASSIC" % (e.__class__.__name__, e))
+                self.set_renderer("classic")
+                return
         sw, sh = self.screen.get_size()
         if self.fp_mode:
             k = min(sw // W, sh // H)
@@ -1276,7 +1282,6 @@ class App:
                 import traceback
                 traceback.print_exc()
                 print("RENDERER: the 3D view failed to start (%s), using CLASSIC" % e)
-                self.settings["renderer"] = "classic"
                 self._close_gl()
                 self.screen = self._set_mode(self.window_size)
         if fp is None:

@@ -32,7 +32,10 @@ import math
 import time
 from collections import OrderedDict
 
-import numpy as np
+try:                                   # (v0.20) no numpy, no 3D -- but the classic view mustn't care
+    import numpy as np
+except ImportError:
+    np = None
 import pygame
 
 from . import config as C
@@ -228,7 +231,7 @@ def project(m, x, y, z, vw, vh):
 
 def gl_available():
     """Can we even try? (moderngl installed and a video driver that might do OpenGL.)"""
-    if moderngl is None:
+    if moderngl is None or np is None:
         return False
     try:
         drv = pygame.display.get_driver()
