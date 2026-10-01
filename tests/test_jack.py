@@ -310,5 +310,28 @@ class TestPredictionUntouched(unittest.TestCase):
         self.assertAlmostEqual(car.grip, car2.grip)
 
 
+class TestQAFollowUps(unittest.TestCase):
+    """(v0.20) found by the jack QA bot."""
+
+    def test_no_jack_doesnt_steal_the_trunk_from_a_spare_wheel(self):
+        w, p, car = setup(slot="WheelRL", jack=False)
+        w.step(DT)
+        self.assertNotIn("NEED A JACK", p.prompt, "the boot should get the first go at the spare wheel")
+
+    def test_no_jack_still_says_so_at_a_front_hub(self):
+        w, p, car = setup(slot="WheelFL", jack=False)
+        w.step(DT)
+        self.assertIn("NEED A JACK", p.prompt)
+
+    def test_a_tumble_needs_a_fresh_press_of_e(self):
+        w, p, car = setup()
+        press(p, S.B_USE)
+        step(w, 2.0)
+        p.state, p.tumble_t = S.TUMBLE, 0.5
+        p.hands = []
+        step(w, 1.5)
+        self.assertNotEqual(p.state, S.DRIVER, "still holding E after the tumble mustn't hop you in")
+
+
 if __name__ == "__main__":
     unittest.main()

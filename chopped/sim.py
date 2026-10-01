@@ -736,6 +736,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             self._cuff_wriggle(p)             # an officer's got you: wriggle!
         if p.state == TUMBLE:
             p.hold = 0.0
+            p.need_release = True     # (v0.20) or the E you were holding when you went flying hops you in the car
             return
 
         if p.state in (DRIVER, PASSENGER):
@@ -965,7 +966,7 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
         # (v0.19) a wheel in your hands and a bare hub in your sights: the jack, before the trunk
         # (whose "put it in the boot" would otherwise hijack the back wheels)
         jack = self._jack_interaction(p, car, ax, ay)
-        if jack is not None:
+        if jack is not None and jack[0] is not None:
             return jack
         # the back of the car: the trunk (a delivered car's only if there's something in it,
         # otherwise the back is for stripping the bumper)
@@ -980,6 +981,8 @@ class World(Physics, Brawl, Garage, Appraisal, ShopDoor, Police, Sillies, Quests
             tr = self._trunk_interaction(p, car)
             if tr is not None:
                 return tr
+        if jack is not None:
+            return jack       # (v0.20) "NEED A JACK" only once the boot's had its chance at your spare wheel
         if car.kind == COP:
             # (v0.13.1, Bryce: "i cant seem to steal cop cars, can you make them a regular vehicle
             # i can carjack?") any cop car you can get to stop -- not just the one whose officer
